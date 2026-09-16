@@ -114,6 +114,9 @@ constexpr vint32 fourcc(char a, char b, char c, char d)
 
 constexpr vint32 effect_magic = fourcc('V', 's', 't', 'P');
 constexpr vint32 plugin_id = fourcc('S', 'M', 'U', '2');
+// VST2 event byte_size excludes the leading type and byte_size fields.
+// A VstMidiEvent therefore reports 24 even though the C structure is 32 bytes.
+constexpr vint32 midi_event_byte_size = 24;
 
 enum effect_flags : vint32 {
 	has_editor = 1 << 0,
@@ -176,6 +179,7 @@ enum plugin_category : vint32 {
 
 static_assert(sizeof(event) == 32, "VST event ABI mismatch");
 static_assert(sizeof(midi_event) == 32, "VST MIDI event ABI mismatch");
+static_assert(offsetof(midi_event, midi_data) == 24, "VST MIDI data ABI mismatch");
 static_assert(sizeof(sysex_event) == (sizeof(void *) == 8 ? 48 : 32),
               "VST SysEx event ABI mismatch");
 static_assert(offsetof(events, items) == (sizeof(void *) == 8 ? 16 : 8),

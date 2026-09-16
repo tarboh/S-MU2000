@@ -65,7 +65,9 @@ int main(int argc, char **argv)
 
 	midi_event note{};
 	note.type = midi_type;
-	note.byte_size = sizeof(note);
+	// The VST2 ABI reports the event payload size, not sizeof(VstMidiEvent).
+	// Hosts such as FL Studio send the canonical value 24.
+	note.byte_size = midi_event_byte_size;
 	note.delta_frames = 7;
 	note.midi_data[0] = 0x90;
 	note.midi_data[1] = 60;

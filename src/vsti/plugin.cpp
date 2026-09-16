@@ -276,7 +276,7 @@ private:
 			queued_event q;
 			q.offset = std::max<vint32>(0, base->delta_frames);
 			q.sequence = m_sequence++;
-			if (base->type == midi_type && base->byte_size >= vint32(sizeof(midi_event))) {
+			if (base->type == midi_type && base->byte_size >= midi_event_byte_size) {
 				const auto *m = reinterpret_cast<const midi_event *>(base);
 				const int n = smu2000::vst3::midi_length(m->midi_data[0]);
 				q.bytes.assign(m->midi_data, m->midi_data + n);
