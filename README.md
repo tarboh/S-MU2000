@@ -204,6 +204,16 @@ build/clapprobe.exe build/S-MU2000.clap <MIDI> <出力 wav>
                       DAW 無しで鳴らす（ROM の場所は環境変数 S_MU2000_ROMS でも渡せる）
 ```
 
+Windows では VST 2.4 instrument DLL も作れる。中身と画面は VST3・CLAP と共通で、
+廃止された SDK は使わず、必要なバイナリ ABI だけを `src/vsti/vst2_abi.h` に定義した。
+MIDI / SysEx は MIDI IN A に入る。詳しくは [doc/vsti.md](doc/vsti.md)。
+
+```
+make vsti           build/S-MU2000.dll を作る
+make vsti-probe     DLL の読込み・MIDI・状態・画面をホスト無しで確かめる
+make install-vsti   VSTI_INSTALL（既定は Program Files/VstPlugins）へ複製する
+```
+
 プラグインも既定で USB の口（A〜D）で起動する。DIN の口（A・B）に戻すときは、
 `%LOCALAPPDATA%\S-MU2000\plugin.ini` に `usb=0` と書く。
 
