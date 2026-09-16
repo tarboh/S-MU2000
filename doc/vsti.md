@@ -1,8 +1,8 @@
-# VST instrument (VST 2.4)
+# VST インストゥルメント（VST 2.4）
 
-The Windows build can produce a legacy VST 2.4 instrument DLL. It uses the
-same emulator engine, ROM lookup, state format, resampler, and panel view as
-the VST3 and CLAP plugins.
+Windows 版では、従来形式の VST 2.4 インストゥルメント DLL も作れる。
+エミュレータ本体、ROM の探し方、状態の保存形式、リサンプラー、パネル画面は
+VST3・CLAP 版と共通。
 
 ```
 make vsti
@@ -10,19 +10,23 @@ make vsti-probe
 make install-vsti
 ```
 
-The output is `build/S-MU2000.dll`. `vsti-probe` loads the DLL and checks its
-instrument declaration, stereo output, MIDI input, state round-trip, and editor
-attachment without requiring a plugin host.
+出力は `build/S-MU2000.dll`。`vsti-probe` は DAW を使わずに DLL を読み込み、
+インストゥルメントとしての宣言、ステレオ出力、MIDI 入力、状態の保存と復元、
+画面の取り付けを確かめる。
 
-With ROMs available, `build/vstiprobe.exe build/S-MU2000.dll --audio` also
-waits through firmware boot and requires a MIDI note to produce real audio.
+ROM が使える状態なら、次のコマンドで firmware の起動を待ち、MIDI の音符から
+実際に音が出るところまで確かめられる。
 
-The plugin accepts MIDI and SysEx on MIDI IN A and exposes one automatable
-`Output` parameter. VST 2 does not provide the two note buses used by the VST3
-and CLAP builds, so MIDI IN B is not exposed by this wrapper.
+```
+build/vstiprobe.exe build/S-MU2000.dll --audio
+```
 
-ROM lookup is shared with the other plugin formats. Put a one-line `roms.txt`
-beside `S-MU2000.dll`, or use `%LOCALAPPDATA%\S-MU2000\roms.txt`.
+プラグインは MIDI IN A で MIDI とシステムエクスクルーシブを受け取り、
+自動化できる `Output` パラメータを 1 本持つ。VST 2 には VST3・CLAP 版で使う
+2 本のノートバスが無いため、このラッパーでは MIDI IN B を公開していない。
 
-The source contains an independent minimal declaration of the public VST 2.4
-binary interface. The discontinued VST2 SDK is neither required nor included.
+ROM の探し方はほかのプラグイン形式と共通。`S-MU2000.dll` の隣、または
+`%LOCALAPPDATA%\S-MU2000\roms.txt` に、ROM のある場所を 1 行で書く。
+
+ソースには、公開されている VST 2.4 のバイナリインターフェースを必要な分だけ
+独自に宣言してある。提供終了済みの VST2 SDK は必要なく、同梱もしていない。
