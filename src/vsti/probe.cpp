@@ -96,8 +96,6 @@ int main(int argc, char **argv)
 					audible = true;
 					break;
 				}
-			if (!audible)
-				Sleep(1);
 		}
 		if (!audible) {
 			std::fprintf(stderr, "MIDI produced no audio after firmware boot\n");

@@ -13,12 +13,14 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iterator>
 #include <new>
+#include <thread>
 #include <vector>
 
 namespace smu2000::vsti {
@@ -343,6 +345,17 @@ private:
 		if (!left || !right) {
 			m_events.clear();
 			return;
+		}
+
+		// Some VST2 hosts render a complete file much faster than real time.  If
+		// MIDI has already arrived, letting those blocks race the asynchronous
+		// firmware boot can make the entire render silent.  Wait only at that
+		// first meaningful block; an idle real-time instance remains non-blocking.
+		if (!m_events.empty() && m_engine.state() == smu2000::vst3::status::loading) {
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+			while (m_engine.state() == smu2000::vst3::status::loading &&
+			       std::chrono::steady_clock::now() < deadline)
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
 		}
 
 		if (m_hush.exchange(false, std::memory_order_acq_rel)) {
