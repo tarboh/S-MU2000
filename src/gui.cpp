@@ -47,6 +47,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -121,6 +122,48 @@ struct window_state {
 };
 
 window_state g_win;
+
+double lcd_aspect()
+{
+	const double h = g_win.panel.lay().lcd[3];
+	return h > 0.0 ? g_win.panel.lay().lcd[2] / h : 1.0;
+}
+
+// Keep the client area (not the title bar and resize frame) at the LCD ratio.
+void constrain_lcd_sizing(HWND hwnd, WPARAM edge, RECT &r)
+{
+	RECT wr{}, cr{};
+	GetWindowRect(hwnd, &wr);
+	GetClientRect(hwnd, &cr);
+	const int frame_w = (wr.right - wr.left) - (cr.right - cr.left);
+	const int frame_h = (wr.bottom - wr.top) - (cr.bottom - cr.top);
+	int outer_w = r.right - r.left;
+	int outer_h = r.bottom - r.top;
+
+	if (edge == WMSZ_TOP || edge == WMSZ_BOTTOM) {
+		const int client_h = std::max(60, outer_h - frame_h);
+		outer_h = client_h + frame_h;
+		outer_w = int(std::lround(client_h * lcd_aspect())) + frame_w;
+		if (edge == WMSZ_TOP)
+			r.top = r.bottom - outer_h;
+		else
+			r.bottom = r.top + outer_h;
+		r.right = r.left + outer_w;
+		return;
+	}
+
+	const int client_w = std::max(200, outer_w - frame_w);
+	outer_w = client_w + frame_w;
+	outer_h = int(std::lround(client_w / lcd_aspect())) + frame_h;
+	if (edge == WMSZ_LEFT || edge == WMSZ_TOPLEFT || edge == WMSZ_BOTTOMLEFT)
+		r.left = r.right - outer_w;
+	else
+		r.right = r.left + outer_w;
+	if (edge == WMSZ_TOPLEFT || edge == WMSZ_TOPRIGHT)
+		r.top = r.bottom - outer_h;
+	else
+		r.bottom = r.top + outer_h;
+}
 
 // ---- パネルの配置。作り直さずに文字ファイルで直せる（doc/panel-editing.md）
 
@@ -778,6 +821,13 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		InvalidateRect(hwnd, nullptr, FALSE);
 		return 0;
 
+	case WM_SIZING:
+		if (g_win.lcd_only) {
+			constrain_lcd_sizing(hwnd, wp, *reinterpret_cast<RECT *>(lp));
+			return TRUE;
+		}
+		break;
+
 	case WM_ERASEBKGND:
 		return 1;                               // 全部自分で描く
 
@@ -1143,8 +1193,8 @@ int main(int argc, char **argv)
 		else if (dir.empty()) dir = argv[i];
 	}
 	if (lcd_only && !size_given) {
-		win_w = 898;
-		win_h = 290;
+		win_w = 878;
+		win_h = 270;
 	}
 
 	// --layout が無ければ、決まった場所を順に探す
@@ -1247,6 +1297,11 @@ int main(int argc, char **argv)
 	}
 
 	// ---- 窓を出す
+	g_win.lcd_only = lcd_only;
+	g_win.panel.set_lcd_only(lcd_only);
+	apply_layout(layout_path, false);
+	if (lcd_only)
+		win_h = std::max(60, int(std::lround(win_w / lcd_aspect())));
 
 	const HINSTANCE inst = GetModuleHandleA(nullptr);
 	WNDCLASSA wc{};
@@ -1257,9 +1312,11 @@ int main(int argc, char **argv)
 	wc.hbrBackground = nullptr;
 	RegisterClassA(&wc);
 
+	const DWORD window_style = lcd_only ? (WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX)
+	                                     : WS_OVERLAPPEDWINDOW;
 	RECT want{ 0, 0, win_w, win_h };
-	AdjustWindowRect(&want, WS_OVERLAPPEDWINDOW, FALSE);
-	HWND hwnd = CreateWindowA("SMU2000Panel", "S-MU2000", WS_OVERLAPPEDWINDOW,
+	AdjustWindowRect(&want, window_style, FALSE);
+	HWND hwnd = CreateWindowA("SMU2000Panel", "S-MU2000", window_style,
 	                          CW_USEDEFAULT, CW_USEDEFAULT,
 	                          want.right - want.left, want.bottom - want.top,
 	                          nullptr, nullptr, inst, nullptr);
@@ -1274,8 +1331,6 @@ int main(int argc, char **argv)
 
 	g_win.br   = &br;
 	g_win.eng  = &eng;
-	g_win.lcd_only = lcd_only;
-	g_win.panel.set_lcd_only(lcd_only);
 	// 窓を出すときだけ、覚えている設定で起動する（--shot は毎回同じ絵にしたい）
 	eng.use_nvram = !factory;
 	if (factory)
@@ -1286,8 +1341,6 @@ int main(int argc, char **argv)
 	g_win.mout   = &mout;
 	g_win.mout_b = &mout_b;
 	g_win.mout_mu = &mout_mu;
-	g_win.panel.resize(win_w, win_h);
-	apply_layout(layout_path, false);
 	g_win.panel.resize(win_w, win_h);
 	{
 		// VOLUME のつまみは前に閉じたときの位置から

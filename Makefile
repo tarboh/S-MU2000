@@ -172,7 +172,8 @@ ifeq ($(PLATFORM),windows)
 all: $(BUILD)/verify$(EXE) $(BUILD)/boot$(EXE) $(BUILD)/render$(EXE) \
      $(BUILD)/live$(EXE) $(BUILD)/midisend$(EXE) $(BUILD)/panel$(EXE) $(BUILD)/gui$(EXE) \
      $(BUILD)/statetest$(EXE) $(BUILD)/rec$(EXE) $(BUILD)/blocktime$(EXE) \
-     vst3 $(BUILD)/vst3probe$(EXE) clap $(BUILD)/clapprobe$(EXE)
+     vst3 $(BUILD)/vst3probe$(EXE) clap $(BUILD)/clapprobe$(EXE) \
+     vsti $(BUILD)/vstiprobe$(EXE)
 else
 # macOS. vst3 and vst3probe are defined below
 all: $(BUILD)/verify$(EXE) $(BUILD)/boot$(EXE) $(BUILD)/render$(EXE) \
@@ -385,6 +386,40 @@ install-clap: $(CLAP_BIN)
 	mkdir -p "$(CLAP_INSTALL)"
 	cp -f $(CLAP_BIN) "$(CLAP_INSTALL)/"
 	@echo "入れた: $(CLAP_INSTALL)/S-MU2000.clap"
+
+# ---- VST 2.4 instrument (Windows)
+#
+# The discontinued SDK is not used. src/vsti/vst2_abi.h declares only the
+# binary interface needed by this wrapper. The engine and panel are shared with
+# VST3 and CLAP.
+
+VSTI_BIN  := $(BUILD)/S-MU2000.dll
+VSTI_OBJS := $(BUILD)/vstiobj/src/vsti/plugin.o \
+             $(filter-out $(BUILD)/vst3obj/src/vst3/plugin.o,$(VST3_OBJS))
+
+$(BUILD)/vstiobj/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(VST3_INC) $(IMGUI_FLAGS) -c -o $@ $<
+
+vsti: $(VSTI_BIN)
+
+$(VSTI_BIN): $(OBJS) $(BUILD)/src/mu2000.o $(VSTI_OBJS) $(PC_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -shared -o $@ $^ $(LDFLAGS) -lwinmm -lole32 -lgdi32 -luser32 -lavrt -lcomdlg32 -lshell32 -ld3d11 -ldxgi -ld3dcompiler -ldwmapi -limm32
+
+VSTI_INSTALL ?= $(PROGRAMFILES)/VstPlugins
+
+install-vsti: $(VSTI_BIN)
+	mkdir -p "$(VSTI_INSTALL)"
+	cp -f $(VSTI_BIN) "$(VSTI_INSTALL)/"
+	@echo "入れた: $(VSTI_INSTALL)/S-MU2000.dll"
+
+$(BUILD)/vstiprobe$(EXE): $(BUILD)/src/vsti/probe.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) -luser32
+
+vsti-probe: $(BUILD)/vstiprobe$(EXE) $(VSTI_BIN)
+	$(BUILD)/vstiprobe$(EXE) $(VSTI_BIN)
 
 # The Audio Unit is a macOS port; nothing to build here
 au install-au au-probe check-au:
@@ -805,8 +840,15 @@ regen:
 	$(PYTHON) tools/gen_sh7042_map.py $(MAME_SH7042)
 
 # Checks that need no ROMs; this is how the port is shown to hold together
-check: $(BUILD)/verify$(EXE)
+ifeq ($(PLATFORM),windows)
+CHECK_PLUGIN := $(BUILD)/vstiprobe$(EXE) $(VSTI_BIN)
+endif
+
+check: $(BUILD)/verify$(EXE) $(CHECK_PLUGIN)
 	$(BUILD)/verify$(EXE)
+ifeq ($(PLATFORM),windows)
+	$(BUILD)/vstiprobe$(EXE) $(VSTI_BIN)
+endif
 
 # 回帰試験。直したことで音が変わっていないかを見る。
 #
@@ -838,4 +880,4 @@ clean:
 # 別の場所を触りに行っていた）。だから build の下にある .d を全部拾う
 -include $(shell find $(BUILD) -name '*.d' 2>/dev/null)
 
-.PHONY: all clean regen check test test-update vst3 install-vst3 probe clap install-clap au install-au au-probe check-au
+.PHONY: all clean regen check test test-update vst3 install-vst3 probe clap install-clap vsti install-vsti vsti-probe au install-au au-probe check-au

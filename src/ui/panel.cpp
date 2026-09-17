@@ -189,12 +189,9 @@ void panel::resize(int w, int h)
 	m_h = std::max(h, 60);
 
 	if (m_lcd_only) {
-		const double margin = 5.0;
-		const double view_w = m_lay.lcd[2] + margin * 2;
-		const double view_h = m_lay.lcd[3] + margin * 2;
-		m_scale = std::min(double(m_w) / view_w, double(m_h) / view_h);
-		m_ox = int((m_w - view_w * m_scale) / 2 - (m_lay.lcd[0] - margin) * m_scale);
-		m_oy = int((m_h - view_h * m_scale) / 2 - (m_lay.lcd[1] - margin) * m_scale);
+		m_scale = std::min(double(m_w) / m_lay.lcd[2], double(m_h) / m_lay.lcd[3]);
+		m_ox = int(-m_lay.lcd[0] * m_scale);
+		m_oy = int(-m_lay.lcd[1] * m_scale);
 	} else {
 		m_scale = std::min(double(m_w) / LOGICAL_W, double(m_h) / LOGICAL_H);
 		m_ox = int((m_w - LOGICAL_W * m_scale) / 2);
@@ -202,6 +199,8 @@ void panel::resize(int w, int h)
 	}
 
 	m_lcd    = scale(m_lay.lcd[0], m_lay.lcd[1], m_lay.lcd[2], m_lay.lcd[3]);
+	if (m_lcd_only)
+		m_lcd = RECT{ 0, 0, m_w, m_h };
 	m_volume = scale(m_lay.volume[0] - m_lay.volume[2], m_lay.volume[1] - m_lay.volume[2],
 	                 m_lay.volume[2] * 2, m_lay.volume[2] * 2);   // 当たりは丸で見る
 	m_status = scale(20, 372, 700, 13);
@@ -312,9 +311,11 @@ void panel::draw_tabs(HDC dc) const
 
 void panel::draw_lcd(HDC dc, const snapshot &s) const
 {
-	RECT bez = m_lcd;
-	InflateRect(&bez, int(5 * m_scale), int(5 * m_scale));
-	round_box(dc, bez, RGB(60, 58, 52), RGB(110, 106, 96), int(5 * m_scale));
+	if (!m_lcd_only) {
+		RECT bez = m_lcd;
+		InflateRect(&bez, int(5 * m_scale), int(5 * m_scale));
+		round_box(dc, bez, RGB(60, 58, 52), RGB(110, 106, 96), int(5 * m_scale));
+	}
 	fill(dc, m_lcd, LCD_BACK);
 
 	// 実機の窓は、DDRAM の桁がそのまま横一列に並んでいるのではない。
@@ -927,8 +928,6 @@ void panel::draw_grid(HDC dc) const
 void panel::paint(HDC dc, const snapshot &s, u64 pressed, const char *status) const
 {
 	if (m_lcd_only) {
-		RECT client{ 0, 0, m_w, m_h };
-		fill(dc, client, RGB(24, 25, 27));
 		draw_lcd(dc, s);
 		return;
 	}
