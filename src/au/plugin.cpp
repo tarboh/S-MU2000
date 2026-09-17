@@ -29,10 +29,13 @@
 
 #include "editor.h"
 #include "state.h"
+#include "ui/midi_split.h"
+#include "mu2000.h"
 #include "vst3/engine.h"
 
 #include <AudioToolbox/AudioToolbox.h>
 #include <CoreFoundation/CoreFoundation.h>
+#include <CoreMIDI/CoreMIDI.h>
 
 #include <algorithm>
 #include <atomic>
@@ -81,6 +84,11 @@ constexpr UInt32 kMaxFramesDefault = 1156;
 // How many MIDI messages may be waiting between two render blocks. Past this
 // the oldest is dropped rather than growing the queue without limit
 constexpr size_t kMidiReserveMsgs  = 512;
+// MIDI OUT. The machine's own transmit buffer is 4096 bytes, so nothing longer
+// than that can come out of one block; the packet list gets room for the same
+// bytes plus the per-packet headers
+constexpr size_t kMidiOutBytes       = 4096;
+constexpr size_t kMidiOutPacketBytes = 8192;
 
 // ---- Where MIDI from the host waits
 //
@@ -146,6 +154,23 @@ struct au_instance
 	std::mutex midi_mutex;
 	std::vector<msg> midi_in;
 	std::vector<msg> midi_work;
+
+	// ---- MIDI OUT: the machine's own OUT jack (SCI ch0 of the SH7043).
+	//
+	// The firmware answers XG enquiries and dump requests there, and an AUv2
+	// passes that on through a callback the host installs with
+	// kAudioUnitProperty_MIDIOutputCallback. Nothing is sent if the host did
+	// not install one, which most do not.
+	//
+	// The engine hands back the raw byte stream the real cable carries, so it
+	// has to be cut back into messages before it can go in a MIDIPacketList --
+	// that is ui::midi_split. Both buffers are sized in au_open so that the
+	// render thread never allocates
+	AUMIDIOutputCallbackStruct midi_out_cb{};
+	bool midi_out_cb_set = false;
+	std::vector<UInt8> midi_out_bytes;       // raw, straight from the engine
+	std::vector<Byte>  midi_out_packets;     // the MIDIPacketList built from them
+	ui::midi_split     midi_out_split;
 
 	void notify_all(AudioUnitPropertyID id, AudioUnitScope scope, AudioUnitElement element)
 	{
@@ -235,8 +260,46 @@ struct au_instance
 			midi_work.swap(midi_in);
 	}
 
+	// ---- Which channels have actually sounded, per port.
+	//
+	// Stopping the transport used to send all-sound-off and all-notes-off to
+	// every channel. That is 192 bytes per port, and the emulated MIDI line
+	// carries them at 31250bps -- 61 ms during which anything queued behind
+	// waits, so the first note after a restart arrived late and every note
+	// after it was on time (issue #15, fixed for the VST3 in 90e7960).
+	//
+	// Remembering which channels were used costs one OR per note-on and turns
+	// the burst into only what is needed. The AUv2's MIDI has no cable number,
+	// so in practice only port 0 is ever set; the array is per port anyway so
+	// that this reads the same as the VST3 side
+	uint16_t sounded[mu2000::MIDI_PORTS] = {};
+
+	void note_sounded(const UInt8 *bytes, size_t n, int port)
+	{
+		// A note-on with a non-zero velocity. Note-off and a zero-velocity
+		// note-on cannot start a voice, so they do not need silencing later
+		if (n >= 3 && (bytes[0] & 0xf0) == 0x90 && bytes[2])
+			sounded[port] |= uint16_t(1u << (bytes[0] & 0x0f));
+	}
+
+	// Silence what has sounded, and forget it. Called when the host resets or
+	// switches preset
+	void hush()
+	{
+		uint16_t mask[mu2000::MIDI_PORTS];
+		bool any = false;
+		for (int p = 0; p < mu2000::MIDI_PORTS; p++) {
+			mask[p] = sounded[p];
+			sounded[p] = 0;
+			any = any || mask[p];
+		}
+		if (any)
+			eng.all_notes_off(mask, mu2000::MIDI_PORTS);
+	}
+
 	void queue(UInt32 offset, const UInt8 *bytes, size_t n)
 	{
+		note_sounded(bytes, n, 0);
 		std::lock_guard<std::mutex> lock(midi_mutex);
 		if (midi_in.size() >= kMidiReserveMsgs)
 			midi_in.erase(midi_in.begin());     // overflow: drop the oldest
@@ -266,6 +329,10 @@ OSStatus au_open(void *self, AudioComponentInstance instance)
 	// Reserve up front so the queue never makes the audio thread allocate
 	au->midi_in.reserve(kMidiReserveMsgs);
 	au->midi_work.reserve(kMidiReserveMsgs);
+	// The same for MIDI OUT: the raw bytes and the packet list they are built
+	// into are both sized once, here
+	au->midi_out_bytes.assign(kMidiOutBytes, 0);
+	au->midi_out_packets.assign(kMidiOutPacketBytes, 0);
 
 	// Find and read the ROMs and start booting on another thread. Returns at once
 	au->eng.start();
@@ -299,6 +366,40 @@ OSStatus au_render(void *self, AudioUnitRenderActionFlags *flags, const AudioTim
 	if (io->mNumberBuffers == 0)
 		return noErr;
 	return render_block(au, flags, ts, frames, io);
+}
+
+// What the firmware sent out of MIDI OUT during this block, handed to the host.
+//
+// Called once at the end of a render, on the audio thread, and only if the host
+// installed a callback. **Nothing here allocates**: both buffers were sized in
+// au_open, and a message too long for what is left is dropped rather than
+// growing the packet list
+void drain_midi_out(au_instance *au, const AudioTimeStamp *ts)
+{
+	if (!au->midi_out_cb_set || !au->midi_out_cb.midiOutputCallback)
+		return;
+	const size_t got = au->eng.midi_out(au->midi_out_bytes.data(),
+	                                    au->midi_out_bytes.size());
+	if (!got)
+		return;
+
+	MIDIPacketList *list = reinterpret_cast<MIDIPacketList *>(au->midi_out_packets.data());
+	MIDIPacket *pkt = MIDIPacketListInit(list);
+
+	struct ctx { MIDIPacketList *list; MIDIPacket *pkt; size_t cap; } c{ list, pkt,
+	                                                                     au->midi_out_packets.size() };
+	// ui::midi_split hands over one whole message at a time, which is what
+	// MIDIPacketListAdd wants; a byte stream is not
+	au->midi_out_split.feed(au->midi_out_bytes.data(), got,
+	                        [](void *p, const uint8_t *bytes, size_t n) {
+		auto *k = static_cast<ctx *>(p);
+		if (!k->pkt)
+			return;                    // the list filled up; the rest is dropped
+		k->pkt = MIDIPacketListAdd(k->list, k->cap, k->pkt, 0, n, bytes);
+	}, &c);
+
+	if (list->numPackets)
+		au->midi_out_cb.midiOutputCallback(au->midi_out_cb.userData, ts, 0, list);
 }
 
 // Let the host watch the render, before and after. Pre-render carries the action
@@ -376,6 +477,7 @@ OSStatus render_block(au_instance *au, AudioUnitRenderActionFlags *flags,
 			}
 			done += n;
 		}
+		drain_midi_out(au, ts);
 		if (flags)
 			*flags &= ~kAudioUnitRenderAction_OutputIsSilence;
 		tell_notifies(au, kAudioUnitRenderAction_PostRender, nullptr, ts, frames, io);
@@ -440,6 +542,9 @@ OSStatus render_block(au_instance *au, AudioUnitRenderActionFlags *flags,
 				right[i] *= au->gain;
 		}
 	}
+
+	// What the firmware sent back out of MIDI OUT while that was made
+	drain_midi_out(au, ts);
 
 	if (flags)
 		*flags &= ~kAudioUnitRenderAction_OutputIsSilence;
@@ -713,6 +818,26 @@ OSStatus prop_info(au_instance *au, AudioUnitPropertyID id, AudioUnitScope scope
 		out.writable = false;
 		return noErr;
 
+	// ---- MIDI OUT, the machine's own OUT jack.
+	//
+	// A host that wants it reads the Info property to learn how many cables
+	// there are and what they are called, then writes a callback into the
+	// Callback property. Most hosts do neither, and then nothing is sent
+	case kAudioUnitProperty_MIDIOutputCallbackInfo:
+		if (!want_global(scope, element, err))
+			return err;
+		out.size = sizeof(CFArrayRef);
+		out.writable = false;
+		return noErr;
+
+	case kAudioUnitProperty_MIDIOutputCallback:
+		if (!want_global(scope, element, err))
+			return err;
+		out.size = sizeof(AUMIDIOutputCallbackStruct);
+		// write-only in practice: a host installs it and never reads it back
+		out.writable = true;
+		return noErr;
+
 	default:
 		break;
 	}
@@ -813,6 +938,30 @@ OSStatus prop_get(au_instance *au, AudioUnitPropertyID id, AudioUnitScope scope,
 		*static_cast<Float64 *>(data) = 4.0;
 		*size = sizeof(Float64);
 		return noErr;
+
+	// The names of the MIDI OUT cables. There is one, the machine's OUT jack.
+	// The array belongs to the host once it has been handed over
+	case kAudioUnitProperty_MIDIOutputCallbackInfo: {
+		if (*size < sizeof(CFArrayRef))
+			return kAudioUnitErr_InvalidPropertyValue;
+		CFStringRef name = CFSTR("MIDI Out");
+		CFArrayRef arr = CFArrayCreate(kCFAllocatorDefault,
+		                               reinterpret_cast<const void **>(&name), 1,
+		                               &kCFTypeArrayCallBacks);
+		if (!arr)
+			return kAudioUnitErr_InvalidPropertyValue;
+		*static_cast<CFArrayRef *>(data) = arr;
+		*size = sizeof(CFArrayRef);
+		return noErr;
+	}
+
+	case kAudioUnitProperty_MIDIOutputCallback: {
+		if (*size < sizeof(AUMIDIOutputCallbackStruct))
+			return kAudioUnitErr_InvalidPropertyValue;
+		*static_cast<AUMIDIOutputCallbackStruct *>(data) = au->midi_out_cb;
+		*size = sizeof(AUMIDIOutputCallbackStruct);
+		return noErr;
+	}
 
 	// Where the editor is. Both references are made fresh here and belong to the
 	// host afterwards; the view itself is built by editor_mac.mm
@@ -1053,13 +1202,24 @@ OSStatus prop_set(au_instance *au, AudioUnitPropertyID id, AudioUnitScope scope,
 		au->render_quality = *static_cast<const UInt32 *>(data);
 		return noErr;
 
+	// The host's MIDI OUT callback. Writing a null one takes it away again
+	case kAudioUnitProperty_MIDIOutputCallback: {
+		if (size < sizeof(AUMIDIOutputCallbackStruct))
+			return kAudioUnitErr_InvalidPropertyValue;
+		const auto *cb = static_cast<const AUMIDIOutputCallbackStruct *>(data);
+		au->midi_out_cb = *cb;
+		au->midi_out_cb_set = cb->midiOutputCallback != nullptr;
+		au->midi_out_split.reset();
+		return noErr;
+	}
+
 	case kAudioUnitProperty_PresentPreset:
 		// There is only the one factory preset, so choosing one just puts the
 		// defaults back
 		if (size < sizeof(AUPreset))
 			return kAudioUnitErr_InvalidPropertyValue;
 		param_set(au, kParamGain, 1.0f);
-		au->eng.all_notes_off();
+		au->hush();
 		return noErr;
 
 	case kAudioUnitProperty_ParameterValueFromString: {
@@ -1138,6 +1298,21 @@ OSStatus au_initialize(void *self)
 	auto *au = static_cast<au_instance *>(self);
 	if (!au)
 		return kAudio_ParamError;
+
+	// **Wait here for the boot to finish, before any sound is asked for.**
+	//
+	// Initialize is the AU's "get ready to render", and it is not the audio
+	// thread, so waiting is allowed. Returning without it means every block is
+	// silence until the machine comes up, and the MIDI that arrives meanwhile
+	// only piles up. In a host that renders faster than realtime that silence
+	// becomes the first ten-odd seconds of the song, notes and all. With the
+	// boot snapshot this returns in milliseconds (doc/auv3.md).
+	//
+	// A machine that never came up (no ROMs, say) still initializes: it plays
+	// silence and says why in the log, which is better than refusing to load
+	(void)au->eng.wait_ready(120000);
+
+	au->eng.set_processing(true);
 	au->initialized = true;
 	return noErr;
 }
@@ -1324,7 +1499,7 @@ OSStatus au_reset(void *self, AudioUnitScope scope, AudioUnitElement element)
 		return kAudio_ParamError;
 	(void)scope;
 	(void)element;
-	au->eng.all_notes_off();
+	au->hush();
 	return noErr;
 }
 

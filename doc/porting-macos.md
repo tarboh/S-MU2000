@@ -16,6 +16,7 @@ Target: **Apple silicon (arm64) only.** Build with the system clang++.
 | 3 | GUI window (`gui`) — CoreGraphics drawing + Cocoa window | **done** |
 | 4 | VST3 bundle for `Contents/MacOS` + `probe` | **done** |
 | 5 | Audio Unit wrapper (AUv2, `aumu`), its editor + `au-probe` | **done** |
+| 6 | Audio Unit v3 (`aumu`, an app extension), sharing that editor — [auv3.md](auv3.md) | **done** |
 
 ```
 make          build every tool and both plug-in bundles
@@ -24,6 +25,8 @@ make test     the regression suite (audio fingerprints + xgtest)
 make probe    load the VST3 bundle in a headless host
 make au-probe load the AU bundle in a headless host
 make check-au same, plus the AU's torture test
+make auv3     build the AUv3 and the application that carries it
+make autest   run the AUv3 in process, without registering anything
 ```
 
 ### Since the upstream merge
@@ -691,11 +694,14 @@ Objective-C++ and holds the class. That is the same split, for the same reason,
 as `src/ui/window_mac.mm`: Cocoa's `BOOL` and Quickdraw's `Polygon` cannot share
 a translation unit with `compat/gdi.h`.
 
-The view built there is an `SMUAUEditorView` holding a
+The view built there is an `SMU2000PanelView` holding a
 `smu2000::vst3::plug_view` — the panel the VST3 build already shows, not a second
-one. What is shared is the panel, not the host interface around it: the AU needs
-an `NSView` and the VST3 wants an `IPlugView`, so each format keeps its own
-wrapper and both draw the same thing.
+one. It is made by `src/vst3/panel_nsview.mm`, which is also what the AUv3's view
+controller calls (`src/auv3/factory.mm`), so the two Audio Unit formats do not
+merely look alike: they are handed the same view by the same function. What is
+not shared is the host interface around it — the AUv2 publishes an
+`AUCocoaUIBase` class, the AUv3 publishes an `AUViewController`, and the VST3
+wants an `IPlugView` — so each format keeps its own way of being asked.
 
 One detail is worth knowing before touching this. The `AudioUnit` a host passes
 to the view factory is **not** the pointer the plug-in was given as `self` — the
@@ -709,6 +715,15 @@ dispatch in plugin.cpp and so arrives with the instance already resolved.
 runtime and checks that a view comes back with a live subview in it, and `auval`
 reports `VERIFYING CUSTOM UI / Cocoa Views Available: 1 / SMU2000AUViewFactory /
 PASS` without being told where to look.
+
+## How the AUv3 port works
+
+Its own page: [auv3.md](auv3.md). The short version is that it runs the same
+engine and shows the same editor, its ports are the machine's actual jacks
+(four MIDI ins, an A/D input, a MIDI out), and it is registered rather than
+installed — an app extension inside an application, which macOS will not
+register unless it is sandboxed. Being sandboxed is why the ROMs have to be
+built into the bundle.
 
 ## Building
 

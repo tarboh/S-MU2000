@@ -90,8 +90,11 @@ void logf(const char *fmt, ...)
 	std::fclose(f);
 }
 
-// ROM 置き場を探す。見つかった場所を返す。無ければ空で、探した場所が tried に入る
-std::string find_roms(std::string &tried)
+} // namespace
+
+// Find the ROM directory; see engine.h. Published rather than file-local so the
+// AUv3's carrier application can report the same search the plug-in performs
+std::string find_rom_dir(std::string &tried)
 {
 	std::vector<std::string> cand;
 
@@ -162,8 +165,6 @@ std::string find_roms(std::string &tried)
 	}
 	return {};
 }
-
-} // namespace
 
 
 // ---- 読み込んだ ROM の使い回し。
@@ -239,7 +240,7 @@ bool engine::wait_ready(int ms)
 void engine::boot()
 {
 	std::string tried;
-	const std::string dir = find_roms(tried);
+	const std::string dir = find_rom_dir(tried);
 	if (dir.empty()) {
 		m_message = "ROM が見つからない。探した場所:\n" + tried +
 		            "環境変数 S_MU2000_ROMS で場所を指定できる";
@@ -340,8 +341,12 @@ void engine::boot()
 	// 回した結果と 1 ビットも違わないので音は同じで、DAW に何枚挿しても
 	// そのたびに黙ることが無くなる。
 	// **reset() のあとで読むこと**（タイマが揃っていないと形が合わない）
-	if (bootcache::load(*mu, boot_key)) {
-		logf("起動: 前の写しから（%s）", bootcache::path(boot_key).c_str());
+	std::string boot_from;
+	if (bootcache::load(*mu, boot_key, &boot_from)) {
+		// **Name the one that was actually read.** The copy baked into the
+		// bundle (AUv3) and the one under the settings directory are different
+		// files, and logging path() names whichever was not opened
+		logf("起動: 前の写しから（%s）", boot_from.c_str());
 		m_mu = mu;
 		m_message = warn.empty() ? std::string("ROM: ") + dir
 		                         : std::string("ROM: ") + dir + "\n警告: " + warn;
@@ -527,6 +532,31 @@ void engine::push_input(const float *in_l, const float *in_r, int n)
 	}
 }
 
+// ---- MIDI OUT: the machine's own OUT jack.
+//
+// What pump_out() passes by is collected here; on overflow the oldest goes.
+// Written and read on the audio thread, so no lock
+void engine::tx_push(uint8_t v)
+{
+	const int next = (m_tx_w + 1) & TX_MASK;
+	if (next == m_tx_r)
+		m_tx_r = (m_tx_r + 1) & TX_MASK;
+	m_tx[m_tx_w] = v;
+	m_tx_w = next;
+}
+
+size_t engine::midi_out(uint8_t *dst, size_t max)
+{
+	if (!dst || !max)
+		return 0;
+	size_t n = 0;
+	while (n < max && m_tx_r != m_tx_w) {
+		dst[n++] = m_tx[m_tx_r];
+		m_tx_r = (m_tx_r + 1) & TX_MASK;
+	}
+	return n;
+}
+
 void engine::fill(float *left, float *right, int n, const float *in_l, const float *in_r)
 {
 	if (n <= 0)
@@ -558,7 +588,7 @@ void engine::fill(float *left, float *right, int n, const float *in_l, const flo
 	if (m_direct) {
 		for (int i = 0; i < n; i++)
 			one_sample(left[i], right[i]);
-		m_drv.pump_out(*m_mu, m_bridge);
+		m_drv.pump_out(*m_mu, m_bridge, [this](u8 v) { tx_push(v); });
 		m_drv.publish(*m_mu, m_bridge, u32(n), u32(NATIVE_RATE), true, nullptr);
 		return;
 	}
@@ -595,7 +625,7 @@ void engine::fill(float *left, float *right, int n, const float *in_l, const flo
 	}
 
 	// firmware が MIDI OUT から送り出したもの（画面の問い合わせの返事）
-	m_drv.pump_out(*m_mu, m_bridge);
+	m_drv.pump_out(*m_mu, m_bridge, [this](u8 v) { tx_push(v); });
 	m_drv.publish(*m_mu, m_bridge, u32(n), u32(NATIVE_RATE), true, nullptr);
 
 	// 桁が落ちる前に原点を戻す。RING の倍数だけずらせば環の並びは変わらない

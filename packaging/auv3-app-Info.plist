@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Info.plist for the application the AUv3 extension is carried inside.
+
+  macOS registers an app extension only when it is inside an application, so
+  this exists to be that application. It makes no sound; launching it once is
+  what gets the .appex in Contents/PlugIns registered (src/auv3/main_app.mm).
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>S-MU2000</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.tarboh.smu2000</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>S-MU2000</string>
+	<key>CFBundleDisplayName</key>
+	<string>S-MU2000</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleSignature</key>
+	<string>????</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>0.1.0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>BSD-3-Clause. See LICENSE.txt and NOTICE.txt.</string>
+</dict>
+</plist>

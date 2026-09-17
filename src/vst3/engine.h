@@ -51,6 +51,13 @@ inline int midi_length(uint8_t status)
 	}
 }
 
+// Find the ROM directory. Returns where they were found, or "" with every place
+// that was tried, in order, appended to `tried`. This is the same search boot()
+// performs, published so that the AUv3's carrier application
+// (src/auv3/main_app.mm) can report it exactly as the plug-in performs it,
+// instead of keeping a second copy that can drift
+std::string find_rom_dir(std::string &tried);
+
 enum class status {
 	loading,   // ROM を読んで起動している最中。音は出ない
 	ready,
@@ -87,6 +94,12 @@ public:
 	// 192 バイト＝31250bps で 61ms かかり、そのあとに続く音が丸ごと遅れるので、
 	// 鳴らした覚えのあるチャンネルだけに絞る
 	void all_notes_off(const uint16_t *mask, int ports);
+
+	// MIDI OUT: the machine's own OUT jack (SCI ch0 of the SH7043, or the USB
+	// side when that is the host port). What the firmware sent -- replies to XG
+	// enquiries, answers to dump requests. **Call it from the same thread as
+	// fill(), after fill().** Returns how many bytes were put in dst, or 0
+	size_t midi_out(uint8_t *dst, size_t max);
 
 	// n サンプルぶん作る。左右は別々の配列（VST3 はそういう渡し方をする）。
 	// in_l / in_r はホストの周波数で n サンプルぶんの A/D INPUT（無ければ nullptr）
@@ -182,9 +195,28 @@ private:
 
 	// 起動前や、機械を他が使っている間に来た MIDI。口ごとに持つ。音声スレッドしか触らない
 	std::vector<uint8_t> m_pending[mu2000::MIDI_PORTS];
+
+	// ---- A copy of MIDI OUT.
+	//
+	// **The machine's own queue cannot be drained directly.** fill() runs
+	// pump_out() first and hands those bytes to the panel's display, so a
+	// midi_out_take() afterwards always finds it empty. What pump_out() passes
+	// by is teed in here instead, and midi_out() reads this. Both ends are the
+	// audio thread, so no lock is needed
+	static constexpr int TX_RING = 4096, TX_MASK = TX_RING - 1;
+	uint8_t m_tx[TX_RING] = {};
+	int     m_tx_w = 0, m_tx_r = 0;
+	void tx_push(uint8_t v);
 };
 
 } // namespace vst3
+
+// This engine is not VST3-only -- not one VST3 type appears in it. The AUv2
+// (src/au/) and the AUv3 (src/auv3/) run the same thing, so they get a name for
+// it that does not make them say "vst3". The directory keeps its name for the
+// sake of history
+namespace plug = vst3;
+
 } // namespace smu2000
 
 #endif // S_MU2000_VST3_ENGINE_H

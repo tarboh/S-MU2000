@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Info.plist for the AUv3 app extension (the plug-in itself).
+
+  An AUv3 is not a bundle a host opens: it is an app extension the system
+  registers, and NSExtension below is what it is registered as. The
+  AudioComponents entry inside NSExtensionAttributes is what puts it in a DAW's
+  instrument list, and NSExtensionPrincipalClass names the Objective-C class the
+  system instantiates — SMU2000ViewController in src/auv3/factory.mm, which is
+  both the AUAudioUnitFactory and the editor's view controller.
+
+  Type aumu is MusicDevice, which is what a synth is: MIDI in, audio out.
+
+  **The identity here is not the AUv2's.** The AUv2 component is aumu/SMU2/Trbh
+  (packaging/au-macos-Info.plist). Two components sharing a type, subtype and
+  manufacturer are the same component as far as the system is concerned, so the
+  AUv3 takes its own subtype — MU2k for the product name — while keeping the
+  vendor code. A host can then show both, and a session saved against one still
+  finds the one it was saved with.
+
+    manufacturer  Trbh   tarboh
+    subtype       MU2k   MU2000
+    name          "tarboh: MU2000"    vendor, then product; hosts split on ": "
+
+  version is the AudioComponent version as a number: 0x00010000 = 0.1.0.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>S-MU2000AU</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.tarboh.smu2000.auv3</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>MU2000</string>
+	<key>CFBundleDisplayName</key>
+	<string>tarboh: MU2000</string>
+	<key>CFBundlePackageType</key>
+	<string>XPC!</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>0.1.0</string>
+	<key>CFBundleSupportedPlatforms</key>
+	<array>
+		<string>MacOSX</string>
+	</array>
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>BSD-3-Clause. See LICENSE.txt and NOTICE.txt.</string>
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionAttributes</key>
+		<dict>
+			<key>NSExtensionActivationRule</key>
+			<string>TRUEPREDICATE</string>
+			<key>NSExtensionServiceRoleType</key>
+			<string>NSExtensionServiceRoleTypeEditor</string>
+			<key>AudioComponents</key>
+			<array>
+				<dict>
+					<key>name</key>
+					<string>tarboh: MU2000</string>
+					<key>manufacturer</key>
+					<string>Trbh</string>
+					<key>type</key>
+					<string>aumu</string>
+					<key>subtype</key>
+					<string>MU2k</string>
+					<key>version</key>
+					<integer>65536</integer>
+					<!--
+					  Unlike the AUv2, this one really is sandbox safe: an app
+					  extension is always sandboxed, which is also why the ROMs
+					  have to be inside the bundle (see appex.entitlements).
+					-->
+					<key>sandboxSafe</key>
+					<true/>
+					<key>tags</key>
+					<array>
+						<string>Synthesizer</string>
+						<string>Sampler</string>
+						<string>MIDI</string>
+					</array>
+				</dict>
+			</array>
+		</dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.AudioUnit-UI</string>
+		<key>NSExtensionPrincipalClass</key>
+		<string>SMU2000ViewController</string>
+	</dict>
+</dict>
+</plist>

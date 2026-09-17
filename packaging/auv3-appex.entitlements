@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  **A macOS app extension is not registered unless it is sandboxed.**
+
+	  Without this the signature is still valid and LaunchServices still sees
+	  the bundle, but pluginkit never lists it and pkd logs nothing at all —
+	  which is a hard failure to read. The kind of certificate does not matter;
+	  ad-hoc registers just as well.
+
+	  Being sandboxed is also why the ROMs go inside the bundle: $HOME is
+	  redirected into a container, so neither ~/Library/Application Support nor
+	  anything a roms.txt points at is reachable.
+
+	      make auv3 AUV3_ROMS=roms
+	-->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<key>com.apple.security.files.user-selected.read-only</key>
+	<true/>
+	<!--
+	  The SH2 and MEG JITs map their code with MAP_JIT. Under the hardened
+	  runtime that needs this entitlement, or they fall back to the interpreter.
+	-->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+</dict>
+</plist>

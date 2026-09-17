@@ -320,6 +320,9 @@ install-clap: $(CLAP_BIN)
 au install-au au-probe check-au:
 	@echo "Audio Unit は macOS の口です。doc/porting-macos.md を見よ"
 
+auv3 install-auv3 auval-auv3 autest:
+	@echo "AUv3 は macOS の口です。doc/auv3.md を見よ"
+
 else # macOS
 
 # ---- macOS-side ports (CoreAudio output, CoreMIDI input and output)
@@ -419,9 +422,22 @@ VST3_SDK_SRCS := \
 # this Makefile names the same drawing layer in its own VST3_SRCS, with
 # view_win.cpp in place of view_mac.mm)
 PANEL_VIEW_SRCS := src/vst3/view.cpp src/vst3/view_mac.mm
+
+# engine.cpp calls ui::xgui::set_voice_rom so the voice names and the instrument
+# pictures come from the ROM, the same as gui does. That lives in xg_ui.cpp,
+# which is written against Dear ImGui, so the core of ImGui comes with it.
+#
+# The Windows side gets this by linking the whole PC editor ($(PC_OBJS)) into the
+# plug-ins, because there the panel's context menu can open those windows. Here
+# it cannot yet -- plug_window::pc_frame keeps its do-nothing default on macOS --
+# so only the two files the symbol actually needs are linked, and none of the
+# ImGui backends
+PANEL_XG_SRCS := src/ui/xg_ui.cpp src/ui/fx_help.cpp $(IMGUI_CORE)
+
 PANEL_SRCS := src/compat/gdi_mac.cpp \
               src/ui/panel.cpp src/ui/layout.cpp src/ui/svg.cpp src/ui/editor.cpp \
-              src/ui/effects.cpp src/xg/model.cpp
+              src/ui/effects.cpp src/xg/model.cpp \
+              $(PANEL_XG_SRCS)
 
 VST3_SRCS := src/vst3/plugin.cpp src/vst3/engine.cpp src/vst3/iids.cpp \
              $(PANEL_VIEW_SRCS) $(PANEL_SRCS) $(VST3_SDK_SRCS)
@@ -430,11 +446,11 @@ VST3_OBJS := $(VST3_OBJS:%.mm=$(BUILD)/vst3obj/%.o)
 
 $(BUILD)/vst3obj/%.o: %.cpp
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(VST3_INC) -c -o $@ $<
+	$(CXX) $(CXXFLAGS) $(VST3_INC) $(IMGUI_FLAGS) -c -o $@ $<
 
 $(BUILD)/vst3obj/%.o: %.mm
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(VST3_INC) -fobjc-arc -c -o $@ $<
+	$(CXX) $(CXXFLAGS) $(VST3_INC) $(IMGUI_FLAGS) -fobjc-arc -c -o $@ $<
 
 vst3: $(VST3_BIN)
 
@@ -524,12 +540,15 @@ probe: $(BUILD)/vst3probe$(EXE) $(VST3_BIN)
 AU_DIR := $(BUILD)/S-MU2000.component
 AU_BIN := $(AU_DIR)/Contents/MacOS/S-MU2000
 
-# The editor is the VST3 view, so the AU carries that too: editor_mac.mm makes a
-# smu2000::vst3::plug_view and hands it to the host inside an NSView. Its own
-# files are plugin.cpp and editor_mac.mm; everything below them is the same panel
+# The editor is the VST3 view, so the AU carries that too: panel_nsview.mm makes
+# a smu2000::vst3::plug_view inside an NSView, and editor_mac.mm is only the
+# AUv2 way a host asks for it (the AUv3 asks its own way and gets the same
+# view). Its own files are plugin.cpp and editor_mac.mm; everything below them
+# is the same panel
 # iids.cpp is view.cpp's: it answers IPlugView's interface id, and view.cpp
 # refers to it even when the host on the other side is an AU rather than a VST3
 AU_SRCS := src/au/plugin.cpp src/au/editor_mac.mm src/vst3/engine.cpp src/vst3/iids.cpp \
+           src/vst3/panel_nsview.mm \
            $(PANEL_VIEW_SRCS) $(PANEL_SRCS) $(VST3_SDK_SRCS)
 AU_OBJS := $(AU_SRCS:%.cpp=$(BUILD)/vst3obj/%.o)
 AU_OBJS := $(AU_OBJS:%.mm=$(BUILD)/vst3obj/%.o)
@@ -570,6 +589,163 @@ au-probe: $(BUILD)/aubprobe$(EXE) $(AU_BIN)
 
 check-au: $(BUILD)/aubprobe$(EXE) $(AU_BIN)
 	S_MU2000_ROMS=$(ROMS) $(BUILD)/aubprobe$(EXE) $(AU_DIR) --torture
+
+# ---- Audio Unit v3 (macOS)
+#
+# The same engine again (src/vst3/engine.h) and the same editor again
+# (src/vst3/panel_nsview.mm), behind the AUv3 interface. The ports are the real
+# machine's jacks -- doc/auv3.md:
+#
+#   output MAIN OUT L/R  / input A/D INPUT
+#   MIDI in cable 0 = IN A, cable 1 = IN B  / MIDI out MIDI OUT
+#
+# **An AUv3 is only recognised as an .appex inside an application**, so a
+# carrier app is built around it. It makes no sound; launching it once is what
+# registers the extension.
+#
+#   make auv3           build/S-MU2000.app, with the .appex inside
+#   make install-auv3   copy it to ~/Applications and launch it once
+#   make auval-auv3     run Apple's validator against the registered one
+#   make autest         build the in-process host (no .appex involved)
+#
+# Its identity is aumu/MU2k/Trbh -- "tarboh: MU2000" -- deliberately not the
+# AUv2's aumu/SMU2/Trbh, so the two can be installed side by side
+# (packaging/auv3-appex-Info.plist says why).
+
+AUV3_APP   := $(BUILD)/S-MU2000.app
+AUV3_APPEX := $(AUV3_APP)/Contents/PlugIns/S-MU2000AU.appex
+AUV3_BIN   := $(AUV3_APPEX)/Contents/MacOS/S-MU2000AU
+AUV3_HOST  := $(AUV3_APP)/Contents/MacOS/S-MU2000
+
+# panel_nsview.mm is the shared editor: the AUv2 hands it back from its
+# AUCocoaUIBase class and the AUv3 puts it in its view controller
+AUV3_SRCS := src/auv3/audio_unit.mm src/auv3/factory.mm \
+             src/vst3/engine.cpp src/vst3/iids.cpp src/vst3/panel_nsview.mm \
+             $(PANEL_VIEW_SRCS) $(PANEL_SRCS) $(VST3_SDK_SRCS)
+AUV3_OBJS := $(AUV3_SRCS:%.cpp=$(BUILD)/auv3obj/%.o)
+AUV3_OBJS := $(AUV3_OBJS:%.mm=$(BUILD)/auv3obj/%.o)
+
+AUV3_FW := $(MAC_FRAMEWORKS) -framework AVFoundation -framework CoreAudioKit
+
+# Its own object directory rather than vst3obj: the extension's objects are
+# built with -fapplication-extension, which the AU's and the VST3's are not
+$(BUILD)/auv3obj/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(VST3_INC) $(IMGUI_FLAGS) -fapplication-extension -c -o $@ $<
+
+$(BUILD)/auv3obj/%.o: %.mm
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(VST3_INC) $(IMGUI_FLAGS) -fobjc-arc -fapplication-extension -c -o $@ $<
+
+# The certificate to sign with. Ad-hoc (-) registers just as well; what
+# registration actually needs is the sandbox entitlement below. Use a
+# Developer ID to distribute.
+#   security find-identity -v -p codesigning     lists what is on this machine
+CODESIGN_ID ?= -
+
+# Putting the ROMs inside the bundle.
+#
+# **Inside the sandbox only the extension's own bundle can be read.** An AUv3
+# extension is always sandboxed (it is not registered otherwise), so $HOME is
+# redirected into a container and neither ~/Library/Application Support nor
+# whatever roms.txt points at is reachable. Building them in is the only way an
+# AUv3 finds them:
+#
+#   make auv3 AUV3_ROMS=roms
+#
+# The ROMs cannot be redistributed, so nothing is copied in by default -- the
+# plug-in then loads and plays silence, with the reason in the log
+AUV3_ROMS ?=
+
+# Finishing the bundle (the ROMs, the boot snapshot, the signature) happens
+# **every time**. Tying it to the executable being relinked means that adding
+# AUV3_ROMS afterwards does nothing at all
+auv3: $(AUV3_HOST) $(BUILD)/autest$(EXE)
+	# The ROMs go in **before** signing: adding them after breaks the seal
+ifneq ($(AUV3_ROMS),)
+	@rm -rf $(AUV3_APPEX)/Contents/Resources/roms
+	@mkdir -p $(AUV3_APPEX)/Contents/Resources
+	@cp -R $(AUV3_ROMS) $(AUV3_APPEX)/Contents/Resources/roms
+	@echo "ROMs built in: $(AUV3_ROMS)"
+	# Bake the boot snapshot in as well, so **the first insert does not wait**.
+	#
+	# A sandboxed plug-in has no NVRAM of its own (its container starts empty),
+	# so the snapshot has to be made **with an empty HOME too** or the key will
+	# not match and the baked copy is ignored
+	@rm -rf $(AUV3_APPEX)/Contents/Resources/boot
+	@tmp=$$(mktemp -d); \
+	 HOME=$$tmp S_MU2000_ROMS=$(AUV3_ROMS) $(BUILD)/autest$(EXE) --state /dev/null >/dev/null 2>&1; \
+	 if [ -d "$$tmp/Library/Application Support/S-MU2000/boot" ]; then \
+	   mkdir -p $(AUV3_APPEX)/Contents/Resources/boot; \
+	   cp "$$tmp/Library/Application Support/S-MU2000/boot/"*.bin \
+	      $(AUV3_APPEX)/Contents/Resources/boot/ 2>/dev/null; \
+	   echo "boot snapshot baked in: $$(ls $(AUV3_APPEX)/Contents/Resources/boot | head -1)"; \
+	 else echo "could not make a boot snapshot (the first insert will wait)"; fi; \
+	 rm -rf "$$tmp"
+else
+	@rm -rf $(AUV3_APPEX)/Contents/Resources/roms
+	@rm -rf $(AUV3_APPEX)/Contents/Resources/boot
+endif
+	#
+	# **The App Sandbox entitlement is required.** macOS does not register an
+	# app extension that is not sandboxed. Signing without it fails in a way
+	# that is hard to read: LaunchServices sees the bundle, pluginkit never
+	# lists it, and pkd logs nothing. **The kind of certificate is irrelevant**
+	@codesign --force --sign "$(CODESIGN_ID)" --timestamp=none \
+	          --entitlements packaging/auv3-appex.entitlements $(AUV3_APPEX)
+	@codesign --force --sign "$(CODESIGN_ID)" --timestamp=none \
+	          --entitlements packaging/auv3-app.entitlements $(AUV3_APP)
+	@echo "built: $(AUV3_APP)"
+
+# The extension itself. Its entry point is NSExtensionMain; it has no main()
+$(AUV3_BIN): $(OBJS) $(BUILD)/src/mu2000.o $(AUV3_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) $(AUV3_FW) \
+	       -e _NSExtensionMain -fapplication-extension
+	@mkdir -p $(AUV3_APPEX)/Contents/Resources
+	@cp -f packaging/auv3-appex-Info.plist $(AUV3_APPEX)/Contents/Info.plist
+	@cp -f LICENSE $(AUV3_APPEX)/Contents/Resources/LICENSE.txt
+	@cp -f NOTICE.txt $(AUV3_APPEX)/Contents/Resources/NOTICE.txt
+
+# The carrier application. It makes no sound; it exists so that the extension
+# inside it gets registered
+# It only asks engine.cpp where the ROMs are, but that is one translation unit,
+# so everything engine.cpp refers to comes along -- xg_ui among it
+AUV3_HOST_XG := $(PANEL_XG_SRCS:%.cpp=$(BUILD)/auv3obj/%.o) \
+                $(BUILD)/auv3obj/src/xg/model.o
+AUV3_HOST_OBJS := $(BUILD)/auv3obj/src/auv3/main_app.o \
+                  $(BUILD)/auv3obj/src/vst3/engine.o $(AUV3_HOST_XG) \
+                  $(OBJS) $(BUILD)/src/mu2000.o
+
+$(AUV3_HOST): $(AUV3_BIN) $(AUV3_HOST_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -o $@ $(AUV3_HOST_OBJS) $(LDFLAGS) $(MAC_FRAMEWORKS)
+	@cp -f packaging/auv3-app-Info.plist $(AUV3_APP)/Contents/Info.plist
+	@printf 'APPL????' > $(AUV3_APP)/Contents/PkgInfo
+	@mkdir -p $(AUV3_APP)/Contents/Resources
+	@cp -f LICENSE $(AUV3_APP)/Contents/Resources/LICENSE.txt
+	@cp -f NOTICE.txt $(AUV3_APP)/Contents/Resources/NOTICE.txt
+
+# Get it registered: put it in ~/Applications and launch it once
+install-auv3: auv3
+	rm -rf "$(HOME)/Applications/S-MU2000.app"
+	@mkdir -p "$(HOME)/Applications"
+	cp -R $(AUV3_APP) "$(HOME)/Applications/"
+	@echo "installed: $(HOME)/Applications/S-MU2000.app"
+	@echo "launch it once and it appears in a DAW's instrument list"
+
+# A host that skips the .appex entirely and checks the ports, the sound and the
+# MIDI in process (doc/auv3.md)
+$(BUILD)/autest$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/smf.o $(AUV3_OBJS) \
+                       $(BUILD)/auv3obj/src/auv3/autest.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) $(AUV3_FW)
+
+autest: $(BUILD)/autest$(EXE)
+
+auval-auv3: install-auv3
+	@sleep 2
+	auval -v aumu MU2k Trbh
 
 endif # windows / macOS
 
@@ -618,4 +794,5 @@ clean:
 # 別の場所を触りに行っていた）。だから build の下にある .d を全部拾う
 -include $(shell find $(BUILD) -name '*.d' 2>/dev/null)
 
-.PHONY: all clean regen check test test-update vst3 install-vst3 probe clap install-clap au install-au au-probe check-au
+.PHONY: all clean regen check test test-update vst3 install-vst3 probe clap install-clap \
+        au install-au au-probe check-au auv3 install-auv3 auval-auv3 autest

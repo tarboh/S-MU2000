@@ -81,11 +81,30 @@ inline std::string path(u64 k)
 	return smu2000::join(dir, name);
 }
 
-// 起動後の状態を読む。読めたら機械はもう起動し切った姿になっている。
-// **reset() の代わりに呼ぶ**（reset() したあとに呼んでも構わない）
-inline bool load(mu2000 &mu, u64 k)
+// A copy baked into the bundle, read only. "" if there is none.
+//
+// **A sandboxed plug-in has nothing at path().** An AUv3 extension has $HOME
+// redirected into a container, so the boot/ inside it is empty the first time
+// and every first insert would sit through a boot. Baking one in at build time
+// (make auv3 AUV3_ROMS=roms) means it does not. Returns "" when not running
+// from inside a bundle
+inline std::string baked_path(u64 k)
 {
-	const std::string p = path(k);
+	const std::string dir =
+	    smu2000::module_dir(reinterpret_cast<const void *>(&baked_path));
+	if (dir.empty())
+		return {};
+	const std::string res = smu2000::full_path(smu2000::join(dir, "../Resources/boot"));
+	if (!smu2000::is_dir(res))
+		return {};
+	char name[32];
+	std::snprintf(name, sizeof(name), "%016llx.bin", (unsigned long long)k);
+	return smu2000::join(res, name);
+}
+
+// Try one file. True if it read and loaded as a state
+inline bool load_from(mu2000 &mu, const std::string &p)
+{
 	if (p.empty())
 		return false;
 	std::FILE *f = std::fopen(p.c_str(), "rb");
@@ -105,6 +124,22 @@ inline bool load(mu2000 &mu, u64 k)
 		return false;
 	}
 	return true;
+}
+
+// Read the state of a booted machine. If it succeeds the machine is already in
+// the shape it would have booted into. **Call it instead of reset()** (calling
+// it after reset() is fine too). The baked copy is tried first, because inside a
+// sandbox it is the only one there is. `used` receives whichever file was
+// actually read, so a log line can name it
+inline bool load(mu2000 &mu, u64 k, std::string *used = nullptr)
+{
+	for (const std::string &p : { baked_path(k), path(k) })
+		if (load_from(mu, p)) {
+			if (used)
+				*used = p;
+			return true;
+		}
+	return false;
 }
 
 // 起動し切った所で残す。**起動に成功したときだけ呼ぶこと**

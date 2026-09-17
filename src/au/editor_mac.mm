@@ -2,17 +2,15 @@
 //
 // The AU's editor: the machine's front panel, in Cocoa.
 //
-// There is no second copy of the panel in here. A host reads
-// kAudioUnitProperty_CocoaUI, makes the class at the bottom of this file and
-// calls uiViewForAudioUnit:withSize:; what it gets back is the *same* view the
-// VST3 build shows -- smu2000::vst3::plug_view, which is src/vst3/view.cpp
-// drawing through compat/gdi_mac.cpp, inside the NSView from
-// src/vst3/view_mac.mm. Only the way a host asks for it differs, which is the
-// whole reason the two formats can share one engine.
+// There is no panel in here. A host reads kAudioUnitProperty_CocoaUI, makes the
+// class at the bottom of this file and calls uiViewForAudioUnit:withSize:; what
+// it gets back is what src/vst3/panel_nsview.mm builds -- the *same* view the
+// VST3 build shows and the *same* view the AUv3 puts in its view controller
+// (src/auv3/factory.mm). All this file does is the AUv2 way of asking.
 //
 // Objective-C++ for the same reason view_mac.mm is: compat/gdi.h and Cocoa both
 // define BOOL, and Quickdraw defines Polygon, so the drawing layer is reached
-// only through the void* entry points on plug_view and never included here.
+// only through panel_nsview.h and never included here.
 
 #import <Cocoa/Cocoa.h>
 
@@ -23,10 +21,7 @@
 #include "editor.h"
 
 #include "vst3/engine.h"
-#include "vst3/plug_window.h"
-#include "vst3/view.h"
-
-using smu2000::vst3::plug_view;
+#include "vst3/panel_nsview.h"
 
 namespace smu2000 {
 namespace au {
@@ -34,14 +29,6 @@ namespace au {
 // Must match the @interface below: this is the string a host hands to
 // NSClassFromString
 const char *const kViewClassName = "SMU2000AUViewFactory";
-
-// The panel's own size, and the smallest a host can ask for before it is given
-// the panel's size rather than a squeezed one. The same numbers and the same
-// clamping the VST3 view applies in onSize() / checkSizeConstraint()
-constexpr int kPanelWidth  = 1400;
-constexpr int kPanelHeight = 360;
-constexpr int kMinWidth    = 640;
-constexpr int kMinHeight   = 180;
 
 bool view_info(CFURLRef *out_bundle_url, CFStringRef *out_class_name)
 {
@@ -81,42 +68,6 @@ bool view_info(CFURLRef *out_bundle_url, CFStringRef *out_class_name)
 } // namespace smu2000
 
 
-// The view a host is handed. It is only a frame: the panel, the child view that
-// paints it and the input handling all belong to the plug_view inside, which
-// this holds for as long as it lives
-@interface SMUAUEditorView : NSView
-{
-@public
-	plug_view *_plug;
-}
-@end
-
-@implementation SMUAUEditorView
-
-- (BOOL)isFlipped { return YES; }
-
-- (void)dealloc
-{
-	// plug_view counts its own references (it implements FUnknown's addRef /
-	// release); the factory below took one, and this gives it back
-	if (_plug)
-		_plug->release();
-}
-
-// A host that lets the editor window be resized moves this view's frame. The
-// panel and the child view inside have to follow it, which is plug_view::onSize
-- (void)setFrameSize:(NSSize)size
-{
-	[super setFrameSize:size];
-	if (!_plug)
-		return;
-	Steinberg::ViewRect r(0, 0, (Steinberg::int32)size.width, (Steinberg::int32)size.height);
-	_plug->onSize(&r);
-}
-
-@end
-
-
 // Builds one editor for an open instance, or nil if it cannot be built. A
 // factory function: every call makes a new view, as AUCocoaUIBase requires
 static NSView *make_editor(AudioUnit unit, NSSize preferred)
@@ -130,31 +81,8 @@ static NSView *make_editor(AudioUnit unit, NSSize preferred)
 	                         &eng, &size) != noErr || !eng)
 		return nil;
 
-	plug_view *plug = new plug_view(*static_cast<smu2000::vst3::engine *>(eng));
-
-	int w = (int)preferred.width;
-	int h = (int)preferred.height;
-	if (w < smu2000::au::kMinWidth || h < smu2000::au::kMinHeight) {
-		w = smu2000::au::kPanelWidth;
-		h = smu2000::au::kPanelHeight;
-	}
-	// onSize clamps the way the VST3 host's size is clamped, and resizes the
-	// panel to match, so the frame below is what the panel was laid out for
-	Steinberg::ViewRect r(0, 0, w, h);
-	plug->onSize(&r);
-	w = plug->width();
-	h = plug->height();
-
-	SMUAUEditorView *view = [[SMUAUEditorView alloc] initWithFrame:NSMakeRect(0, 0, w, h)];
-	// attached() answers a VST3 tresult, where kResultOk is 0 -- so this is a
-	// comparison and not a truth test, or a view that attached perfectly would
-	// be thrown away
-	if (plug->attached((__bridge void *)view, smu2000::vst3::plug_window_type()) != Steinberg::kResultOk) {
-		plug->release();
-		return nil;
-	}
-	view->_plug = plug;
-	return view;
+	return smu2000::vst3::make_panel_view(*static_cast<smu2000::vst3::engine *>(eng),
+	                                      preferred);
 }
 
 
