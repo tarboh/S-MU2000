@@ -233,6 +233,7 @@ void panel::resize(int w, int h)
 void panel::build_spots()
 {
 	m_held = nullptr;
+	m_release_pending = false;
 	m_spots.clear();
 	if (m_lcd_only)
 		return;

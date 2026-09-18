@@ -22,6 +22,7 @@
 #include "snapshot.h"
 #include "xg/model.h"
 
+#include <chrono>
 #include <string>
 #include <vector>
 
@@ -152,6 +153,8 @@ private:
 	const xg::param *knob_param(int ctl) const;
 	bool value_of(int ctl, int &v) const;
 	void set_value(int ctl, int v, bridge &br);
+	// A still-pending minimum-hold release, completed now (press calls this first)
+	void flush_release(bridge &br);
 
 	int m_w = LOGICAL_W, m_h = LOGICAL_H;
 	double m_scale = 1.0;
@@ -163,6 +166,15 @@ private:
 
 	// 掴んでいるもの
 	const spot *m_held = nullptr;
+	// A momentary button stays down a minimum time once pressed. A tap shorter
+	// than an audio block would otherwise never reach the firmware (which
+	// samples the button matrix once per block) and never paint lit.
+	// m_press_at is stamped on press; release() within MIN_HOLD only marks
+	// m_release_pending, and tick() completes it. A press in between flushes
+	// it first, so it can never strand a button.
+	std::chrono::steady_clock::time_point m_press_at{};
+	bool m_release_pending = false;
+	static constexpr std::chrono::milliseconds MIN_HOLD{100};
 	int  m_drag_x = 0, m_drag_y = 0, m_drag_from = 0;
 	int  m_wheel_angle = 0;
 	// ダイヤルを掴んで上下に動かしているとき（editor.cpp の press / drag）。まだ目盛りにならない端の画素

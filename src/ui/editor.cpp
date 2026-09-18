@@ -88,6 +88,13 @@ void panel::set_value(int ctl, int v, bridge &br)
 
 bool panel::tick(bridge &br)
 {
+	// A minimum-hold release whose time has come (see release())
+	if (m_release_pending && m_held && m_held->kind == spot_kind::button &&
+	    std::chrono::steady_clock::now() - m_press_at >= MIN_HOLD) {
+		br.press(m_held->button, false);
+		m_held = nullptr;
+		m_release_pending = false;
+	}
 	// 値は MU2000 に問い合わせずに、音声の糸が 25ms ごとに写すワーク RAM から読む
 	// （xg/ram.h）。問い合わせは MIDI IN に入るので、LCD の受信マークが点きっぱなしになる
 	br.read_xg(m_ram);
@@ -222,6 +229,7 @@ bool panel::press(int x, int y, bridge &br)
 	const spot *sp = hit(x, y);
 	if (!sp)
 		return false;
+	flush_release(br);
 
 	switch (sp->kind) {
 	case spot_kind::tab:
@@ -232,6 +240,8 @@ bool panel::press(int x, int y, bridge &br)
 
 	case spot_kind::button:
 		m_held = sp;
+		m_press_at = std::chrono::steady_clock::now();
+		m_release_pending = false;
 		br.press(sp->button, true);
 		// VALUE −/+ はダイヤルとまったく同じ働き（実測で 1 目盛り = 1 回 = ±1）。
 		// 同じものだと見て分かるよう、絵のダイヤルも一緒に回す
@@ -334,10 +344,25 @@ bool panel::release(bridge &br)
 {
 	if (!m_held)
 		return false;
-	if (m_held->kind == spot_kind::button)
+	if (m_held->kind == spot_kind::button) {
+		// A tap shorter than an audio block would never reach the firmware:
+		// hold it until the minimum, tick() completes the release
+		if (std::chrono::steady_clock::now() - m_press_at < MIN_HOLD) {
+			m_release_pending = true;
+			return true;
+		}
 		br.press(m_held->button, false);
+	}
 	m_held = nullptr;
 	return true;
+}
+
+void panel::flush_release(bridge &br)
+{
+	if (!m_release_pending || !m_held || m_held->kind != spot_kind::button)
+		return;
+	br.press(m_held->button, false);
+	m_release_pending = false;
 }
 
 // ダイヤルを掴んで上下に動かす。上へ動かすと +、下へ動かすと −（ホイールと同じ向き）。
