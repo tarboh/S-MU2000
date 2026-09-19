@@ -28,6 +28,11 @@
 // not trip over <immintrin.h> (which errors out on non-x86 targets).
 #if defined(_MSC_VER)
 #  include <intrin.h>
+#  if defined(_WIN64)
+#    define __builtin_popcountll __popcnt64
+#  else
+#    define __builtin_popcountll __popcnt
+#  endif
 #elif defined(__i386__) || defined(__x86_64__)
 #  include <immintrin.h>
 #endif

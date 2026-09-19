@@ -6,6 +6,12 @@ build-*/
 *.wav
 roms/
 
+# CMake plugin build (anchored — must not swallow .github/workflows/build-*)
+/build-cmake/
+# VST2 SDK headers dropped into iPlug2's stub dir (proprietary, never committed)
+/aeffect.h
+/aeffectx.h
+
 # 同じところで MAME を走らせたときに出るもの
 cfg/
 nvram/

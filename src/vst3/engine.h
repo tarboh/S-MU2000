@@ -66,8 +66,12 @@ public:
 	~engine();
 	bool m_voicecache = false;      // plugin.ini の voicecache=1
 
-	// ROM を探して読み、起動するまでを別スレッドで進める。すぐ返る
-	void start();
+	// ROM を探して読み、起動するまでを別スレッドで進める。すぐ返る。
+	// block をたてると呼んだスレッドのまま起動を済ませる（返るころには
+	// state() が ready か failed）。DAW は音作りを待ってくれないので、
+	// プラグインは構築の場で起動を終えておき、曲頭から音を鳴らせるようにする。
+	// plugin.ini の boot=async か SMU2000_SYNC_BOOT=0 で裏スレッドに戻せる
+	void start(bool block = false);
 	// 起動が終わるまで待つ。**DAW の本スレッドからだけ**呼ぶこと。
 	// 待ちきれずに時間切れなら false。始まっていなければ始めてから待つ
 	bool wait_ready(int ms);

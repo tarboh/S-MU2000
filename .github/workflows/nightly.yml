@@ -1,0 +1,211 @@
+name: Nightly VST2+CLAP Release
+
+# Rolling prerelease ("nightly") published on every push to the long-lived
+# branches, with downloadable Win32 + x64 VST2 (.dll) and CLAP (.clap)
+# artifacts. Difference from build-native.yml: VST2 is NOT gated OFF — it
+# builds against the committed clean-room ABI layer (cmake/vst2_compat, see
+# third_party/vst2/README.md), which cmake/iplug2_paths.cmake drops (renamed)
+# into the untracked iPlug2 stub dir automatically when no proprietary
+# vstsdk2.4 exists (always the case on GitHub runners).
+#
+# The VST2 SDK itself is never referenced, downloaded or committed here
+# (hard rule #3). ROMs are never staged on CI (hard rule #1) — every artifact
+# folder ships ROM-REQUIRED.txt instead.
+
+on:
+  push:
+    branches:
+      - main
+      - iPlug-experiment
+  workflow_dispatch:
+
+permissions:
+  contents: write   # create/move the rolling `nightly` tag + release
+
+# Two fast pushes must not interleave their release steps; let the older run
+# finish rather than killing it mid-upload.
+concurrency:
+  group: nightly-release
+  cancel-in-progress: false
+
+env:
+  PROJECT_NAME: SMU2000_VST2
+
+jobs:
+  build-windows:
+    # NOTE: literal here on purpose - the `env` context is NOT allowed in a
+    # job's `name:` (workflow fails to plan with zero jobs). PROJECT_NAME env
+    # is only usable from step-level keys below.
+    name: SMU2000_VST2 windows ${{ matrix.arch }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            preset: ci-win64
+            pe_machine: 8664
+          - arch: Win32
+            preset: ci-win32
+            pe_machine: 14c
+
+    steps:
+    - name: Check out repository (with iPlug2 submodule)
+      uses: actions/checkout@v4
+      with:
+        submodules: true
+        fetch-depth: 1
+
+    - name: Download CLAP SDK + helpers
+      # Same tracked-stub + network approach as build-native.yml. VST2 needs no
+      # equivalent: the clean-room pair is already in the repo.
+      working-directory: iPlug2/Dependencies/IPlug
+      run: ./download-clap-sdks.sh
+      shell: bash
+
+    - name: Configure (${{ matrix.arch }})
+      # VST2 stays ON (the ci-* presets build it by default). No VST2_SDK_DIR
+      # on the runner, so cmake/iplug2_paths.cmake falls to its clean-room
+      # branch and the configure log shows vst2=.../compat. If anyone ever
+      # stages a proprietary SDK on this repo, PREFER_COMPAT keeps the nightly
+      # reproducible from committed sources regardless.
+      run: cmake --preset ${{ matrix.preset }} -DSMU2000_VST2_PREFER_COMPAT=ON
+      shell: pwsh
+
+    - name: Build Release (${{ matrix.arch }})
+      run: cmake --build --preset ${{ matrix.preset }}-release
+      shell: pwsh
+
+    - name: "Gate: VST2 + CLAP artifacts exist (${{ matrix.arch }})"
+      run: |
+        $art = @(
+          "build-cmake/vst2/${{ matrix.arch }}/Release/SMU2000_VST2.dll",
+          "build-cmake/clap/${{ matrix.arch }}/Release/SMU2000_VST2.clap"
+        )
+        foreach ($f in $art) {
+          if (-not (Test-Path $f)) { throw "missing artifact: $f" }
+          Get-Item $f | Select-Object FullName, Length
+        }
+      shell: pwsh
+
+    - name: "Gate: PE machine + VSTPluginMain export (${{ matrix.arch }})"
+      # Headless smoke of the clean-room ABI build, BITNESS-AGNOSTIC on purpose:
+      # ParseMachine + the PE export directory straight out of the file. (A WOW64
+      # LoadLibrary smoke for Win32 is impossible from the 64-bit pwsh host -
+      # ERROR_BAD_EXE_FORMAT 193 - which sank run #2's Win32 leg.) Real
+      # LoadLibrary + GetProcAddress still runs for x64, where bitness matches.
+      # The DLL is NOT booted (no ROMs on CI; hard rule #1).
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $dll = "build-cmake/vst2/${{ matrix.arch }}/Release/SMU2000_VST2.dll"
+        $b = [IO.File]::ReadAllBytes((Resolve-Path $dll))
+        $peOff = [BitConverter]::ToInt32($b, 0x3C)
+        if ([BitConverter]::ToUInt32($b, $peOff) -ne 0x00004550) { throw "no PE signature" }
+        $machine = ('{0:x}' -f [BitConverter]::ToUInt16($b, $peOff + 4))
+        # NB: no field width — 0x014c must render "14c" to match the matrix
+        # ('x4' would pad to "014c" and sink every Win32 leg, run #2 finding).
+        if ($machine -ne '${{ matrix.pe_machine }}') {
+          throw "PE machine 0x$machine != expected 0x${{ matrix.pe_machine }} for ${{ matrix.arch }}"
+        }
+        $optOff = $peOff + 24
+        $magic = [BitConverter]::ToUInt16($b, $optOff)
+        $ddOff = switch ($magic) { 0x10b { $optOff + 96 } 0x20b { $optOff + 112 } default { throw "unknown PE magic 0x$($magic.ToString('x'))" } }
+        $nSec = [BitConverter]::ToUInt16($b, $peOff + 6)
+        $secOff = $optOff + [BitConverter]::ToUInt16($b, $peOff + 20)
+        function script:RvaToOff([int]$rva) {
+          for ($i = 0; $i -lt $nSec; $i++) {
+            $o = $secOff + $i * 40
+            $va = [BitConverter]::ToInt32($b, $o + 12); $vs = [BitConverter]::ToInt32($b, $o + 8)
+            if ($rva -ge $va -and $rva -lt ($va + $vs)) { return $rva - $va + [BitConverter]::ToInt32($b, $o + 20) }
+          }
+          throw "RVA 0x$($rva.ToString('x')) not in any section"
+        }
+        $expRva = [BitConverter]::ToInt32($b, $ddOff)   # data directory[0] = export
+        if ($expRva -eq 0) { throw "no export directory" }
+        $exp = RvaToOff $expRva
+        $nNames = [BitConverter]::ToInt32($b, $exp + 24)
+        $nameOff = RvaToOff ([BitConverter]::ToInt32($b, $exp + 32))
+        $found = $false
+        for ($i = 0; $i -lt $nNames; $i++) {
+          $no = RvaToOff ([BitConverter]::ToInt32($b, $nameOff + 4 * $i))
+          $end = $no; while ($b[$end] -ne 0) { $end++ }
+          if ([Text.Encoding]::ASCII.GetString($b, $no, $end - $no) -eq 'VSTPluginMain') { $found = $true; break }
+        }
+        if (-not $found) { throw "VSTPluginMain not exported" }
+        Write-Host "PE 0x$machine OK; VSTPluginMain in export table."
+        if ($machine -eq '8664') {
+          Add-Type -Namespace Win32 -Name Native -MemberDefinition '[DllImport("kernel32", SetLastError=true)] public static extern IntPtr LoadLibrary(string name); [DllImport("kernel32", SetLastError=true)] public static extern IntPtr GetProcAddress(IntPtr h, string proc);'
+          $h = [Win32.Native]::LoadLibrary((Resolve-Path $dll).Path)
+          if ($h -eq [IntPtr]::Zero) { throw "LoadLibrary failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
+          $p = [Win32.Native]::GetProcAddress($h, "VSTPluginMain")
+          if ($p -eq [IntPtr]::Zero) { throw "GetProcAddress(VSTPluginMain) failed" }
+          Write-Host "x64 LoadLibrary + GetProcAddress OK."
+        }
+      shell: pwsh
+
+    - name: Stage ROM-REQUIRED stub (paths only — ROMs are not redistributable)
+      run: |
+        Get-ChildItem build-cmake -Recurse -Directory -Filter Release | ForEach-Object {
+          Set-Content -Path (Join-Path $_.FullName "ROM-REQUIRED.txt") -Value 'This build has no Yamaha MU2000 ROMs (not redistributable). Place the dumped `roms/` folder (mu2000_flash.bin + dump/ + standin/) next to the plugin binary, or set env `S_MU2000_ROMS`, before use.'
+        }
+      shell: pwsh
+
+    - name: Package (${{ matrix.arch }})
+      # One zip per arch: the VST2 .dll and the CLAP .clap share the base name
+      # SMU2000_VST2 (hosts want it) and differ only by extension.
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $stage = "staging/${{ matrix.arch }}"
+        New-Item -ItemType Directory -Force -Path $stage | Out-Null
+        Copy-Item "build-cmake/vst2/${{ matrix.arch }}/Release/SMU2000_VST2.dll" $stage
+        Copy-Item "build-cmake/clap/${{ matrix.arch }}/Release/SMU2000_VST2.clap" $stage
+        Copy-Item "build-cmake/vst2/${{ matrix.arch }}/Release/ROM-REQUIRED.txt" $stage
+        Set-Content -Path "$stage/README.txt" -Value @"
+        ${{ env.PROJECT_NAME }} nightly - Windows ${{ matrix.arch }} (VST2 + CLAP)
+
+        Install either/both into your DAW's plugin folder:
+          SMU2000_VST2.dll   VST2 instrument (${{ matrix.arch }})
+          SMU2000_VST2.clap  CLAP instrument
+
+        See ROM-REQUIRED.txt - the Yamaha MU2000 ROMs are NOT included.
+        Built by GitHub Actions from commit ${{ github.sha }}.
+        "@
+        Compress-Archive -Path "$stage/*" -DestinationPath "${{ env.PROJECT_NAME }}-nightly-win-${{ matrix.arch }}.zip"
+        Get-Item "${{ env.PROJECT_NAME }}-nightly-win-${{ matrix.arch }}.zip" | Select-Object Name, Length
+      shell: pwsh
+
+    - name: Upload artifacts (${{ matrix.arch }})
+      uses: actions/upload-artifact@v4
+      with:
+        name: nightly-win-${{ matrix.arch }}
+        path: ${{ env.PROJECT_NAME }}-nightly-win-${{ matrix.arch }}.zip
+        if-no-files-found: error
+
+  release:
+    name: Publish rolling `nightly` release
+    needs: build-windows
+    runs-on: ubuntu-latest
+    steps:
+    - name: Download all arch zips
+      uses: actions/download-artifact@v4
+      with:
+        path: dist
+        merge-multiple: true
+
+    - name: Delete previous nightly release + tag
+      # Deterministic rolling tag: remove last night's release (and its tag)
+      # so the tag always points at THIS commit. A concurrent second push is
+      # serialised by the workflow's concurrency group.
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: gh release delete nightly --cleanup-tag --yes || true
+
+    - name: Publish nightly release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: nightly
+        name: "Nightly ${{ github.ref_name }} @ ${{ github.sha }}"
+        target_commitish: ${{ github.sha }}
+        prerelease: true
+        generate_release_notes: true
+        files: dist/*.zip

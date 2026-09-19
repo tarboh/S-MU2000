@@ -1,0 +1,143 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "generator": "Visual Studio 18 2026",
+      "binaryDir": "${sourceDir}/build-cmake/_bld/${presetName}",
+      "cacheVariables": {
+        "CMAKE_CONFIGURATION_TYPES": "Debug;Release"
+      }
+    },
+    {
+      "name": "vs-x64",
+      "displayName": "VS 2026 x64",
+      "description": "VST2+CLAP, x64 (NanoVG/GL2, GUI/GDI editor on by default). SDKs via SMU2000_* cache vars / env.",
+      "inherits": "base",
+      "architecture": { "value": "x64", "strategy": "set" }
+    },
+    {
+      "name": "vs-win32",
+      "displayName": "VS 2026 Win32",
+      "description": "VST2+CLAP, Win32 (NanoVG/GL2, GUI/GDI editor on by default). SDKs via SMU2000_* cache vars / env.",
+      "inherits": "base",
+      "architecture": { "value": "Win32", "strategy": "set" }
+    },
+    {
+      "name": "ci-win64",
+      "displayName": "CI x64",
+      "description": "CI: SDK dirs from env (VST2_SDK_DIR), no ROM staging.",
+      "inherits": "vs-x64",
+      "cacheVariables": {
+        "SMU2000_VST2_SDK_DIR": "$env{VST2_SDK_DIR}",
+        "SMU2000_COPY_ROMS": "OFF"
+      }
+    },
+    {
+      "name": "ci-win32",
+      "displayName": "CI Win32",
+      "description": "CI: SDK dirs from env (VST2_SDK_DIR), no ROM staging.",
+      "inherits": "vs-win32",
+      "cacheVariables": {
+        "SMU2000_VST2_SDK_DIR": "$env{VST2_SDK_DIR}",
+        "SMU2000_COPY_ROMS": "OFF"
+      }
+    },
+    {
+      "name": "vs-x64-tools",
+      "displayName": "VS 2026 x64 + native tools",
+      "description": "vs-x64 plus the native render/live/gui exes (native/CMakeLists.txt; imgui/D3D allowed there). Own binaryDir _bld/vs-x64-tools. Artifacts add build-cmake/tools/x64/<Config>/*.exe.",
+      "inherits": "vs-x64",
+      "cacheVariables": {
+        "SMU2000_BUILD_TOOLS": "ON"
+      }
+    },
+    {
+      "name": "vs-win32-tools",
+      "displayName": "VS 2026 Win32 + native tools",
+      "description": "vs-win32 plus the native render/live/gui exes (JIT32 default-ON per CPU32_LEDGER.md). Own binaryDir _bld/vs-win32-tools. Artifacts add build-cmake/tools/Win32/<Config>/*.exe.",
+      "inherits": "vs-win32",
+      "cacheVariables": {
+        "SMU2000_BUILD_TOOLS": "ON"
+      }
+    },
+    {
+      "name": "mingw-base",
+      "hidden": true,
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-cmake/_bld/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "mingw-x64",
+      "displayName": "MinGW-w64 x64 (GCC, Release)",
+      "description": "MSYS2 MINGW64 shell required. Ninja + gcc. Graphics-free default; JIT on (x86_64). Artifacts in build-cmake/<api>/x64-mingw/Release/. SDKs via SMU2000_* cache vars / env.",
+      "inherits": "mingw-base",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++"
+      }
+    },
+    {
+      "name": "mingw-clang-x64",
+      "displayName": "MinGW-w64 x64 (Clang, Release)",
+      "description": "MSYS2 MINGW64 shell required (clang from mingw-w64-x86_64 toolchain). Ninja + clang. Artifacts in build-cmake/<api>/x64-mingw-clang/Release/.",
+      "inherits": "mingw-base",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++"
+      }
+    },
+    {
+      "name": "mingw-win32",
+      "displayName": "MinGW-w64 Win32 (GCC, Release)",
+      "description": "MSYS2 MINGW32 shell required (mingw-w64-i686 toolchain). Ninja + gcc. JIT compiled-in since 2026-09-16 (dual-mode JITs; see CPU32_LEDGER.md). CI builds this via build-native.yml (build-mingw matrix); verified working on the dev box with MSYS2 gcc 16.1 Rev5. Artifacts in build-cmake/<api>/Win32-mingw/Release/.",
+      "inherits": "mingw-base",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++"
+      }
+    },
+    {
+      "name": "mingw-ci-x64",
+      "displayName": "MinGW-w64 x64 CI (GCC)",
+      "description": "CI: SDK dirs from env (VST2_SDK_DIR), no ROM staging. MSYS2 MINGW64 shell.",
+      "inherits": "mingw-x64",
+      "cacheVariables": {
+        "SMU2000_VST2_SDK_DIR": "$env{VST2_SDK_DIR}",
+        "SMU2000_COPY_ROMS": "OFF"
+      }
+    },
+    {
+      "name": "mingw-ci-win32",
+      "displayName": "MinGW-w64 Win32 CI (GCC)",
+      "description": "CI: SDK dirs from env (VST2_SDK_DIR), no ROM staging. MSYS2 MINGW32 shell.",
+      "inherits": "mingw-win32",
+      "cacheVariables": {
+        "SMU2000_VST2_SDK_DIR": "$env{VST2_SDK_DIR}",
+        "SMU2000_COPY_ROMS": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "vs-x64-debug", "configurePreset": "vs-x64", "configuration": "Debug" },
+    { "name": "vs-x64-release", "configurePreset": "vs-x64", "configuration": "Release" },
+    { "name": "vs-win32-debug", "configurePreset": "vs-win32", "configuration": "Debug" },
+    { "name": "vs-win32-release", "configurePreset": "vs-win32", "configuration": "Release" },
+    { "name": "vs-x64-tools-release", "configurePreset": "vs-x64-tools", "configuration": "Release" },
+    { "name": "vs-win32-tools-release", "configurePreset": "vs-win32-tools", "configuration": "Release" },
+    { "name": "ci-win64-release", "configurePreset": "ci-win64", "configuration": "Release" },
+    { "name": "ci-win32-release", "configurePreset": "ci-win32", "configuration": "Release" },
+    { "name": "mingw-x64-release", "configurePreset": "mingw-x64" },
+    { "name": "mingw-clang-x64-release", "configurePreset": "mingw-clang-x64" },
+    { "name": "mingw-win32-release", "configurePreset": "mingw-win32" },
+    { "name": "mingw-ci-x64-release", "configurePreset": "mingw-ci-x64" },
+    { "name": "mingw-ci-win32-release", "configurePreset": "mingw-ci-win32" }
+  ]
+}

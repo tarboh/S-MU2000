@@ -25,6 +25,10 @@
 #include <mutex>
 #include <thread>
 
+#if !defined(_WIN32)
+#include <unistd.h>   // getpid（ブートキャッシュの temp 名）
+#endif
+
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
@@ -168,6 +172,93 @@ std::string find_roms(std::string &tried)
 	return {};
 }
 
+// ---- plugin.ini と環境変数の仕度
+//
+// threaded= を読んでいるのと同じ紙（%LOCALAPPDATA%\S-MU2000\plugin.ini）を
+// 1 か所で読む。環境変数があればそれが最優先、無ければ ini の "key=value"。
+// 後から書かれた行が勝つ
+
+std::string ini_value(const char *env_name, const char *key)
+{
+	if (const std::string ev = smu2000::env(env_name); !ev.empty())
+		return ev;
+	const std::string dir = smu2000::config_dir();
+	if (dir.empty())
+		return {};
+	std::FILE *f = std::fopen(smu2000::join(dir, "plugin.ini").c_str(), "rb");
+	if (!f)
+		return {};
+	std::string out;
+	const std::string pat = std::string(key) + "=";
+	char line[256];
+	while (std::fgets(line, sizeof(line), f)) {
+		std::string s(line);
+		if (s.rfind(pat, 0) != 0)
+			continue;
+		s.erase(0, pat.size());
+		while (!s.empty() && (s.back() == '\r' || s.back() == '\n' ||
+		                      s.back() == ' '  || s.back() == '\t'))
+			s.pop_back();
+		out = s;
+	}
+	std::fclose(f);
+	return out;
+}
+
+// 同期起動（呼んだスレッドのまま起動を済ませる）が既定。
+// plugin.ini の boot=async か SMU2000_SYNC_BOOT=0 で裏スレッド起動に戻す
+bool sync_boot_wanted()
+{
+	const std::string v = ini_value("SMU2000_SYNC_BOOT", "boot");
+	return !(v == "async" || v == "0");
+}
+
+// ブートキャッシュ（bootcache.bin）を読むか・書くか。既定は両方やる。
+// plugin.ini の bootcache=0 か SMU2000_BOOT_CACHE=0 で両方止める
+bool boot_cache_wanted()
+{
+	const std::string v = ini_value("SMU2000_BOOT_CACHE", "bootcache");
+	return !(v == "0" || v == "off");
+}
+
+// ファイルの大きさ。無ければ 0
+uint64_t file_bytes(const std::string &p)
+{
+	if (p.empty())
+		return 0;
+#if defined(_WIN32)
+	WIN32_FILE_ATTRIBUTE_DATA fa{};
+	if (!GetFileAttributesExA(p.c_str(), GetFileExInfoStandard, &fa))
+		return 0;
+	ULARGE_INTEGER s;
+	s.HighPart = fa.nFileSizeHigh;
+	s.LowPart  = fa.nFileSizeLow;
+	return s.QuadPart;
+#else
+	struct stat st{};
+	return ::stat(p.c_str(), &st) == 0 ? uint64_t(st.st_size) : 0;
+#endif
+}
+
+// ファイルの最終更新。無ければ 0（比較の向きが合えば単位は素直でよい）
+uint64_t file_mtime(const std::string &p)
+{
+	if (p.empty())
+		return 0;
+#if defined(_WIN32)
+	WIN32_FILE_ATTRIBUTE_DATA fa{};
+	if (!GetFileAttributesExA(p.c_str(), GetFileExInfoStandard, &fa))
+		return 0;
+	ULARGE_INTEGER t;
+	t.HighPart = fa.ftLastWriteTime.dwHighDateTime;
+	t.LowPart  = fa.ftLastWriteTime.dwLowDateTime;
+	return t.QuadPart;
+#else
+	struct stat st{};
+	return ::stat(p.c_str(), &st) == 0 ? uint64_t(st.st_mtime) : 0;
+#endif
+}
+
 } // namespace
 
 
@@ -186,6 +277,153 @@ struct rom_set {
 std::mutex             g_rom_mutex;
 std::string            g_rom_dir;
 std::weak_ptr<rom_set> g_roms;
+
+} // namespace
+
+
+// ---- ブートキャッシュ
+//
+// 起動し終えた機械まるごと（mu2000::save_state の塊）を
+// %LOCALAPPDATA%\S-MU2000\bootcache.bin に置いておく。次からは reset() したての
+// 機械へそれを戻して、2〜4 秒ぶんの空回しを丸ごと飛ばす（render.exe が
+// midi_ready() まで空回ししてから MIDI を流すのと同じ状態を、最初から済ませておく）。
+// 頭に機械の指紋を乗せる：mu2000_flash.bin の大きさと更新時刻、sin 表の有無、
+// ROM 置き場、標本化周波数。違う機械のキャッシュを戻さないためと、
+// firmware を差し替えたのに古い機械が生き返るのを防ぐため。
+// NVRAM（gui / live が残す設定）がキャッシュより新しければ、その設定を知らない
+// 古い機械なので捨てる。SCI の受信許可（midi_ready の印）も波形 RAM も、
+// sh7042_device::state が m_scr も m_ram も込みで保存するのでそのまま戻る。
+// 書き置きは temp に書いてから置き換える（nvram::save と同じ手はず）。
+// 止めるなら plugin.ini の bootcache=0 か SMU2000_BOOT_CACHE=0
+
+namespace {
+
+constexpr uint32_t CACHE_MAGIC   = 0x43423253;   // "S2BC"
+constexpr uint32_t CACHE_VERSION = 1;             // この頭の形
+
+std::string boot_cache_path()
+{
+	const std::string dir = smu2000::ensure_config_dir();
+	return dir.empty() ? std::string() : smu2000::join(dir, "bootcache.bin");
+}
+
+template <typename T>
+void put_be(std::FILE *f, T v) { std::fwrite(&v, sizeof(T), 1, f); }
+
+template <typename T>
+bool get_be(std::FILE *f, T &v) { return std::fread(&v, sizeof(T), 1, f) == 1; }
+
+// 起動し終えた機械を戻す。頭の検算 → 機械の指紋 → NVRAM の新しさ → load_state
+// → midi_ready() の順に確かめ、どれか怪しければ false（呼び手が cold boot へ）
+bool cache_restore(mu2000 &mu, const std::string &path, const std::string &rom_dir)
+{
+	std::FILE *f = std::fopen(path.c_str(), "rb");
+	if (!f)
+		return false;
+	const auto fail = [&](const char *why) {
+		std::fclose(f);
+		logf("bootcache: 使えない（%s）— 普通の起動でやり直す", why);
+		return false;
+	};
+	uint32_t magic = 0, ver = 0;
+	uint64_t flash_size = 0, flash_mtime = 0;
+	uint32_t sintab = 0, dir_len = 0;
+	double rate = 0.0;
+	if (!get_be(f, magic) || !get_be(f, ver) || magic != CACHE_MAGIC ||
+	    ver != CACHE_VERSION)
+		return fail("頭が違うか版が古い");
+	if (!get_be(f, flash_size) || !get_be(f, flash_mtime) || !get_be(f, sintab) ||
+	    !get_be(f, rate) || !get_be(f, dir_len) || dir_len > 4096)
+		return fail("頭を読み切れない");
+	std::string dir(dir_len, '\0');
+	if (dir_len && std::fread(&dir[0], 1, dir_len, f) != dir_len)
+		return fail("ROM 置き場まで読み切れなかった");
+	if (dir != rom_dir)
+		return fail("ROM 置き場が変わった");
+	const std::string flash = smu2000::join(rom_dir, "mu2000_flash.bin");
+	if (file_bytes(flash) != flash_size || file_mtime(flash) != flash_mtime)
+		return fail("mu2000_flash.bin が変わった");
+	if (sintab != (mu.sintab_rom() ? 1u : 0u))
+		return fail("sin 表の有無が変わった");
+	if (rate != NATIVE_RATE)
+		return fail("標本化周波数の印が違う");
+	// gui / live が設定を書き直したなら、その設定を知らない古い機械。捨てる
+	if (const std::string nv = nvram::path(mu); !nv.empty() && file_mtime(nv) > file_mtime(path))
+		return fail("NVRAM の方が新しい");
+
+	const long head = std::ftell(f);
+	std::fseek(f, 0, SEEK_END);
+	const long total = std::ftell(f);
+	std::fseek(f, head, SEEK_SET);
+	if (total <= head)
+		return fail("本体が入っていない");
+	std::vector<uint8_t> blob(size_t(total - head));
+	size_t got = 0;
+	while (got < blob.size()) {
+		const size_t n = std::fread(blob.data() + got, 1, blob.size() - got, f);
+		if (!n)
+			break;
+		got += n;
+	}
+	std::fclose(f);
+	if (got != blob.size()) {
+		logf("bootcache: 使えない（本体が足りない）— 普通の起動でやり直す");
+		return false;
+	}
+	std::string err;
+	if (!mu.load_state(blob.data(), blob.size(), err)) {
+		// load_state は途中で失敗すると機械を半分書き換える。reset() で引き直す
+		mu.reset();
+		logf("bootcache: 使えない（%s）— 普通の起動でやり直す", err.c_str());
+		return false;
+	}
+	if (!mu.midi_ready()) {
+		mu.reset();
+		logf("bootcache: 使えない（戻したが MIDI 受信が有効でない）— 普通の起動でやり直す");
+		return false;
+	}
+	return true;
+}
+
+// 起動し終えた機械を書き置く。temp に全部書いてから置き換えるので、
+// 途中で落ちても前のキャッシュは壊れない
+void cache_store(const mu2000 &mu, const std::string &path, const std::string &rom_dir)
+{
+	const std::vector<uint8_t> blob = mu.save_state();
+	if (blob.empty())
+		return;
+#if defined(_WIN32)
+	const unsigned long long pid = (unsigned long long)GetCurrentProcessId();
+#else
+	const unsigned long long pid = (unsigned long long)getpid();
+#endif
+	char tail[32];
+	std::snprintf(tail, sizeof(tail), ".%llu.tmp", pid);
+	const std::string tmp = path + tail;
+	std::FILE *f = std::fopen(tmp.c_str(), "wb");
+	if (!f) {
+		logf("bootcache: 書けない（%s）", tmp.c_str());
+		return;
+	}
+	const std::string flash = smu2000::join(rom_dir, "mu2000_flash.bin");
+	put_be(f, uint32_t(CACHE_MAGIC));
+	put_be(f, uint32_t(CACHE_VERSION));
+	put_be(f, file_bytes(flash));
+	put_be(f, file_mtime(flash));
+	put_be(f, uint32_t(mu.sintab_rom() ? 1 : 0));
+	put_be(f, double(NATIVE_RATE));
+	put_be(f, uint32_t(rom_dir.size()));
+	std::fwrite(rom_dir.data(), 1, rom_dir.size(), f);
+	std::fwrite(blob.data(), 1, blob.size(), f);
+	const bool ok = std::fclose(f) == 0;
+	if (!ok || !smu2000::replace_file(tmp, path)) {
+		std::remove(tmp.c_str());
+		logf("bootcache: 置き換えに失敗（%s）", path.c_str());
+		return;
+	}
+	logf("bootcache: 保存 %.1f MB → %s", double(blob.size()) / (1024.0 * 1024.0),
+	     path.c_str());
+}
 
 } // namespace
 
@@ -226,8 +464,15 @@ void engine::log_line(const char *text)
 	logf("%s", text);
 }
 
-void engine::start()
+void engine::start(bool block)
 {
+	// DAW はプラグインを造った瞬間から音作りを始める（時間軸は止められない）。
+	// だからプラグインは block=true で呼んで、造る糸のまま起動を済ませる。
+	// plugin.ini の boot=async か SMU2000_SYNC_BOOT=0 の時だけ裏スレッド
+	if (block && sync_boot_wanted()) {
+		boot();
+		return;
+	}
 	if (!m_thread.joinable())
 		m_thread = std::thread([this] { boot(); });
 }
@@ -387,26 +632,46 @@ void engine::boot()
 
 	ui::driver::publish_message(m_bridge, "MU2000 起動中");
 
-	// 起動を待つ。ここを待たずに MIDI を流すと音色指定が全部捨てられる
-	const auto t0 = std::chrono::steady_clock::now();
-	const int64_t limit = int64_t(30.0 * NATIVE_RATE);
+	// 先にブートキャッシュを試す。前に起動し終えた機械が置いてあれば、
+	// そこへ戻して空回しを丸ごと飛ばす（戻した機械は midi_ready() が
+	// 立った状態）。怪しければ reset() で引き直して普通に起動する
+	const auto  t_boot      = std::chrono::steady_clock::now();
+	const bool  cache_wanted = boot_cache_wanted();
+	const std::string cache  = cache_wanted ? boot_cache_path() : std::string();
+	bool restored = false;
+	if (!cache.empty())
+		restored = cache_restore(*mu, cache, dir);   // 壊れたら自分で reset() して返す
+
 	int64_t i = 0;
-	for (; i < limit; i++) {
-		if (!(i & 4095) && m_abort.load(std::memory_order_relaxed)) {
+	if (!restored) {
+		// 起動を待つ。ここを待たずに MIDI を流すと音色指定が全部捨てられる
+		const auto t0 = std::chrono::steady_clock::now();
+		const int64_t limit = int64_t(30.0 * NATIVE_RATE);
+		for (; i < limit; i++) {
+			if (!(i & 4095) && m_abort.load(std::memory_order_relaxed)) {
+				delete mu;
+				return;
+			}
+			if (mu->midi_ready())
+				break;
+			s32 l = 0, r = 0;
+			mu->run_sample(l, r);
+		}
+		if (i >= limit) {
+			m_message = "MU2000 が起動しなかった（ROM が壊れている可能性）";
+			logf("%s", m_message.c_str());
 			delete mu;
+			m_state.store(status::failed, std::memory_order_release);
 			return;
 		}
-		if (mu->midi_ready())
-			break;
-		s32 l = 0, r = 0;
-		mu->run_sample(l, r);
-	}
-	if (i >= limit) {
-		m_message = "MU2000 が起動しなかった（ROM が壊れている可能性）";
-		logf("%s", m_message.c_str());
-		delete mu;
-		m_state.store(status::failed, std::memory_order_release);
-		return;
+
+		const double wall = std::chrono::duration<double>(
+		    std::chrono::steady_clock::now() - t0).count();
+		logf("起動: 音 %.2f 秒ぶん / 実時間 %.2f 秒", double(i) / NATIVE_RATE, wall);
+
+		// 起動し終えた機械まるごとを書き置く。次からはここから始める
+		if (cache_wanted && !cache.empty())
+			cache_store(*mu, cache, dir);
 	}
 
 	// Run past midi_ready until the firmware settles: at midi_ready the LCD
@@ -423,8 +688,7 @@ void engine::boot()
 	}
 
 	const double wall = std::chrono::duration<double>(
-	    std::chrono::steady_clock::now() - t0).count();
-	logf("起動: 音 %.2f 秒ぶん / 実時間 %.2f 秒", double(i) / NATIVE_RATE, wall);
+	    std::chrono::steady_clock::now() - t_boot).count();
 	// 次からはここまでを飛ばせるように残す
 	if (bootcache::save(*mu, boot_key))
 		logf("起動の写しを残した: %s", bootcache::path(boot_key).c_str());

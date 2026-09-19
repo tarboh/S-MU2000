@@ -1,0 +1,12 @@
+Native Win32/GDI editor (Phase 7) — NOT IGraphics.
+
+SMU2000Editor.{h,cpp} is a near-verbatim port of src/vst3/view.cpp: it hosts the shared
+ui::panel (GDI, src/ui/draw.h) in a child HWND that iPlug2 attaches to the host's parent
+window via IEditorDelegate::OpenWindow (VST2 effEditOpen / CLAP guiSetParent). The child's
+own WndProc owns all mouse/keyboard/wheel input + a 33ms paint timer, so it is host-agnostic.
+
+Built only with -DSMU2000_ENABLE_GUI=ON (see CMakeLists.txt -> smu2000_gui static lib:
+this dir + src/ui/{panel,editor,effects,layout,svg}.cpp + src/xg/model.cpp). GUI-ON stays
+graphics-free — links no IGraphics/NanoVG/OpenGL/Skia (only gdi32/comdlg32/user32), exactly
+like the default GUI-OFF build. Layout data comes from the panel's built-in defaults, or
+%LOCALAPPDATA%\S-MU2000\panel.txt if present (doc/panel-editing.md).

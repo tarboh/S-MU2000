@@ -1,0 +1,173 @@
+name: Build Native
+
+on:
+  push:
+  workflow_dispatch:
+
+env:
+  PROJECT_NAME: SMU2000_VST2
+
+# CMake pipeline (Phase 6 of the iPlug2 port — see VST2_LEDGER.md §Phase 6), adapted from
+# ../sw10_plug build-native.yml. Deltas here: NO app target, NO VST3 target (so no vst3sdk
+# checkout and no download-prebuilt-libs.sh — the default NanoVG backend needs no prebuilt
+# libs), GUI OFF by default (hard rule #6: a default build links no IGraphics/GL/Skia).
+# Never cache/upload roms/, aeffect*.h or the VST2 SDK here (ledger ROM policy + hard rules).
+jobs:
+  build-windows:
+    name: Windows CMake (${{ matrix.arch }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            preset: ci-win64
+          - arch: Win32
+            preset: ci-win32
+
+    steps:
+    - name: Check out repository (with iPlug2 submodule)
+      uses: actions/checkout@v4
+      with:
+        submodules: true
+        fetch-depth: 1
+
+    - name: Download CLAP SDK + helpers
+      # Tracked readme.txt stubs live in iPlug2/Dependencies/IPlug/CLAP_{SDK,HELPERS},
+      # so the script runs standalone on a clean submodule checkout (Git-Bash, network).
+      working-directory: iPlug2/Dependencies/IPlug
+      run: ./download-clap-sdks.sh
+      shell: bash
+
+    - name: Configure (${{ matrix.arch }})
+      # VST2 is ON: it builds against the committed clean-room ABI layer
+      # (cmake/vst2_compat → dropped into the untracked iPlug2 stub dir by
+      # cmake/iplug2_paths.cmake; PREFER_COMPAT keeps that choice explicit even
+      # if a proprietary SDK ever appears on the runner). The proprietary
+      # vstsdk2.4 is still never downloaded or referenced (hard rule #3).
+      # The ci-win32/ci-win64 presets already set SMU2000_COPY_ROMS=OFF (no ROMs
+      # on CI — each Release dir ships ROM-REQUIRED.txt instead, hard rule #1).
+      run: cmake --preset ${{ matrix.preset }} -DSMU2000_VST2_PREFER_COMPAT=ON
+      shell: pwsh
+
+    - name: Build Release (${{ matrix.arch }})
+      run: cmake --build --preset ${{ matrix.preset }}-release
+      shell: pwsh
+
+    - name: "Gate: VST2 + CLAP artifacts exist (${{ matrix.arch }})"
+      # Replaces sw10's app-launch smoke: this project has no app target.
+      run: |
+        $art = @(
+          "build-cmake/vst2/${{ matrix.arch }}/Release/SMU2000_VST2.dll",
+          "build-cmake/clap/${{ matrix.arch }}/Release/SMU2000_VST2.clap"
+        )
+        foreach ($f in $art) {
+          if (-not (Test-Path $f)) { throw "missing artifact: $f" }
+          Get-Item $f | Select-Object FullName, Length
+        }
+      shell: pwsh
+
+    - name: Stage ROM-REQUIRED stub (paths only — ROMs are not redistributable)
+      run: |
+        # Consumers must supply their own dumped MU2000 ROMs (find_roms() probes
+        # <dllDir>\roms, then env S_MU2000_ROMS). CI cannot ship them (copyrighted);
+        # drop a stub into each artifact Release dir instead. Anchored under build-cmake
+        # only — never touches the repo roms/ tree (hard rule #1/#3).
+        Get-ChildItem build-cmake -Recurse -Directory -Filter Release | ForEach-Object {
+          Set-Content -Path (Join-Path $_.FullName "ROM-REQUIRED.txt") -Value 'This build has no Yamaha MU2000 ROMs (not redistributable). Place the dumped `roms/` folder (mu2000_flash.bin + dump/ + standin/) next to the plugin binary, or set env `S_MU2000_ROMS`, before use.'
+        }
+      shell: pwsh
+
+    - name: Upload artifacts (${{ matrix.arch }})
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.PROJECT_NAME }}-win-${{ matrix.arch }}
+        # VST2 .dll + CLAP .clap (+ ROM-REQUIRED.txt staged into each dir above);
+        # no app/vst3 targets exist here. Precise paths so no glob can ever sweep
+        # up roms/ or SDK files (hard rules #1/#3).
+        path: |
+          build-cmake/vst2/${{ matrix.arch }}/Release/
+          build-cmake/clap/${{ matrix.arch }}/Release/
+        if-no-files-found: error
+
+  build-mingw:
+    name: MinGW-w64 ${{ matrix.arch }} (MSYS2 GCC)
+    runs-on: windows-latest
+    continue-on-error: false
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - arch: x64
+          msystem: MINGW64
+          pkgarch: x86_64
+          outarch: x64-mingw
+          preset: mingw-ci-x64
+        - arch: Win32
+          msystem: MINGW32
+          pkgarch: i686
+          outarch: Win32-mingw
+          preset: mingw-ci-win32
+    steps:
+    - name: Setup MSYS2 (${{ matrix.msystem }})
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: ${{ matrix.msystem }}
+        update: true
+        install: >-
+          git
+          make
+          mingw-w64-${{ matrix.pkgarch }}-gcc
+          mingw-w64-${{ matrix.pkgarch }}-ninja
+          mingw-w64-${{ matrix.pkgarch }}-cmake
+
+    - name: Check out repository (with iPlug2 submodule)
+      uses: actions/checkout@v4
+      with:
+        submodules: true
+        fetch-depth: 1
+
+    - name: Download CLAP SDK + helpers
+      run: cd iPlug2/Dependencies/IPlug && ./download-clap-sdks.sh
+      shell: msys2 {0}
+
+    - name: Configure (${{ matrix.arch }} MinGW GCC)
+      # VST2 ON via the clean-room ABI pair (plain C decls + static_asserts;
+      # GCC-proven locally on BOTH legs: mingw-ci-win32 + mingw-ci-x64 with
+      # PREFER_COMPAT, artifacts PE-gated post-build). The Win32 leg additionally
+      # picks up cmake/mingw_compat.cmake's i686 SEH link fix — REQUIRED since
+      # mingw-w64-i686-gcc 16.1 Rev5 or every MODULE link dies on
+      # __mingw_SEH_error_handler. Both ci presets set SMU2000_COPY_ROMS=OFF.
+      run: cmake --preset ${{ matrix.preset }} -DSMU2000_VST2_PREFER_COMPAT=ON
+      shell: msys2 {0}
+
+    - name: Build Release (${{ matrix.arch }} MinGW GCC)
+      run: cmake --build --preset ${{ matrix.preset }}-release
+      shell: msys2 {0}
+
+    - name: "Gate: VST2 + CLAP artifacts exist (${{ matrix.outarch }})"
+      run: |
+        for f in "build-cmake/vst2/${{ matrix.outarch }}/Release/SMU2000_VST2.dll" "build-cmake/clap/${{ matrix.outarch }}/Release/SMU2000_VST2.clap"; do
+          test -f "$f" || { echo "missing artifact: $f" >&2; exit 1; }
+          ls -la "$f"
+        done
+        # VSTPluginMain must be exported (i686 cdecl shows _VSTPluginMain — grep matches both).
+        nm -g --defined-only "build-cmake/vst2/${{ matrix.outarch }}/Release/SMU2000_VST2.dll" | grep -q VSTPluginMain \
+          || { echo "VSTPluginMain not exported from MinGW dll" >&2; exit 1; }
+      shell: msys2 {0}
+
+    - name: Stage ROM-REQUIRED stub (paths only — ROMs are not redistributable)
+      run: |
+        Get-ChildItem build-cmake -Recurse -Directory -Filter Release | ForEach-Object {
+          Set-Content -Path (Join-Path $_.FullName "ROM-REQUIRED.txt") -Value 'This build has no Yamaha MU2000 ROMs (not redistributable). Place the dumped `roms/` folder (mu2000_flash.bin + dump/ + standin/) next to the plugin binary, or set env `S_MU2000_ROMS`, before use.'
+        }
+      shell: pwsh
+
+    - name: Upload artifacts (${{ matrix.outarch }})
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.PROJECT_NAME }}-win-${{ matrix.outarch }}
+        path: |
+          build-cmake/vst2/${{ matrix.outarch }}/Release/
+          build-cmake/clap/${{ matrix.outarch }}/Release/
+        if-no-files-found: error
