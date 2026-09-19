@@ -340,7 +340,13 @@ static const unsigned short kKeyCodeF5 = 0x60;
 				continue;
 			}
 			NSMenuItem *mi = [[NSMenuItem alloc] init];
-			[mi setTitle:[NSString stringWithUTF8String:item.label.c_str()]];
+			NSString *title = [NSString stringWithUTF8String:item.label.c_str()];
+			if (!item.shortcut.empty()) {
+				NSString *hint = [NSString stringWithUTF8String:item.shortcut.c_str()];
+				title = [[title stringByAppendingString:@"（"] stringByAppendingString:hint];
+				title = [title stringByAppendingString:@"）"];
+			}
+			[mi setTitle:title];
 			[mi setTag:item.id];
 			[mi setTarget:self];
 			[mi setAction:@selector(menuItemChosen:)];

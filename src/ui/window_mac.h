@@ -15,6 +15,8 @@
 
 #pragma once
 
+#include "menu.h"
+
 #include <string>
 #include <vector>
 
@@ -24,21 +26,8 @@ namespace ui {
 // the app maps keys to panel buttons and has no business knowing about NSEvent
 constexpr int MAC_KEY_FUNCTION_BASE = 0x10000;
 
-// One line in a popup menu
-struct menu_item {
-	std::string label;
-	int         id = 0;
-	bool        checked = false;
-	bool        enabled = true;
-	bool        separator = false;
-};
-
-// A titled group of items. A group whose title is empty is drawn at the top
-// level rather than as a submenu, which is what the card slot's menu wants
-struct menu_group {
-	std::string            title;
-	std::vector<menu_item> items;
-};
+// The menu lines themselves (menu_item/menu_group) are shared with the
+// Windows front end in menu.h; only showing them is AppKit's business.
 
 // What the window asks the app to do
 class mac_app

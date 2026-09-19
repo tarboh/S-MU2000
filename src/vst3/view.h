@@ -70,7 +70,7 @@ public:
 	void mouse_drag(int x, int y);
 	void mouse_up();
 	void wheel(int x, int y, int steps);
-	void key(int code, bool down);          // code is a plug_key
+	void key(int code, bool down);          // code is a mu2000::button value
 	void focus_lost();
 	void mouse_right(int x, int y);         // the card slot answers a right click
 	void log_line(const char *text);        // one line to the engine's log

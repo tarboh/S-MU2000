@@ -16,7 +16,9 @@
 #import <Cocoa/Cocoa.h>
 
 #include "ui/fx_editor.h"
+#include "ui/keymap.h"
 #include "ui/master_editor.h"
+#include "ui/menu.h"
 #include "ui/overview.h"
 #include "ui/part_shapes.h"
 #include "ui/pc_editor.h"
@@ -36,48 +38,15 @@ namespace vst3 {
 
 const char *plug_window_type() { return kPlatformTypeNSView; }
 
-namespace {
-
-// plug_key_of()'s counterpart for this platform. A character where the key has
-// one, which is what the GUI front end maps too, so the same physical key is
-// the same panel button in both programs.
-int plug_key_of_char(int c)
-{
-	switch (c) {
-	case 'a': return PLUG_KEY_PLAY;
-	case 'e': return PLUG_KEY_EDIT;
-	case 'u': return PLUG_KEY_UTIL;
-	case 'f': return PLUG_KEY_EFFECT;
-	case 's': return PLUG_KEY_MUTE_SOLO;
-	case ']': return PLUG_KEY_PART_PLUS;
-	case '[': return PLUG_KEY_PART_MINUS;
-	case '=': case '+': return PLUG_KEY_VALUE_PLUS;
-	case '-': return PLUG_KEY_VALUE_MINUS;
-	case '\r': return PLUG_KEY_ENTER;
-	case 0x7f: case 0x08: return PLUG_KEY_EXIT;
-	case '.': return PLUG_KEY_SELECT_RIGHT;
-	case ',': return PLUG_KEY_SELECT_LEFT;
-	case 'q': return PLUG_KEY_SEQ;
-	case 'z': return PLUG_KEY_AUDITION;
-	case 'x': return PLUG_KEY_SELECT;
-	case 'm': return PLUG_KEY_SAMPLING_MODE;
-	default: break;
-	}
-	return PLUG_KEY_NONE;
-}
-
-} // namespace
 } // namespace vst3
 } // namespace smu2000
 
 // The panel's view is declared at global scope on purpose: clang accepts an
 // Objective-C class declared inside a namespace, but its ivars stop resolving
-// there, and every method of this one touches them. The two names the methods
-// need are pulled in by hand, since unqualified lookup from here cannot see
-// into the namespaces above
+// there, and every method of this one touches them. The name the methods need
+// is pulled in by hand, since unqualified lookup from here cannot see into
+// the namespaces above
 using smu2000::vst3::plug_view;
-using smu2000::vst3::plug_key_of_char;
-using smu2000::vst3::PLUG_KEY_NONE;
 
 // mac_window, defined below: the card menu's choices open its PC windows
 namespace smu2000 { namespace vst3 { class mac_window; } }
@@ -310,12 +279,17 @@ namespace smu2000 { namespace vst3 { class mac_window; } }
 
 // ---- keys
 
+// A mu2000::button value for the key, or -1. The table is shared
+// (ui/keymap.h, same as the GUI front end)
 - (int)plugKeyForEvent:(NSEvent *)event
 {
 	NSString *chars = [[event charactersIgnoringModifiers] lowercaseString];
 	if ([chars length] < 1)
-		return PLUG_KEY_NONE;
-	return plug_key_of_char((int)[chars characterAtIndex:0]);
+		return -1;
+	mu2000::button b = mu2000::button::count;
+	if (!ui::button_for_char((int)[chars characterAtIndex:0], b))
+		return -1;
+	return int(b);
 }
 
 - (void)keyDown:(NSEvent *)event
@@ -328,7 +302,7 @@ namespace smu2000 { namespace vst3 { class mac_window; } }
 	if ([event isARepeat])
 		return;
 	const int k = [self plugKeyForEvent:event];
-	if (k != PLUG_KEY_NONE)
+	if (k >= 0)
 		_owner->key(k, true);
 }
 
@@ -337,7 +311,7 @@ namespace smu2000 { namespace vst3 { class mac_window; } }
 	if (!_owner)
 		return;
 	const int k = [self plugKeyForEvent:event];
-	if (k != PLUG_KEY_NONE)
+	if (k >= 0)
 		_owner->key(k, false);
 }
 
@@ -413,18 +387,20 @@ private:
 		return;
 	const int tag = (int)[sender tag];
 
-	if (tag == 1 || tag == 2 || tag == 4 || tag == 8) {          // 16 / 32 / 64 / 128 MB
+	if (tag >= ui::ID_PLUG_CARD_NEW16 && tag <= ui::ID_PLUG_CARD_NEW128) {
 		NSSavePanel *panel = [NSSavePanel savePanel];
 		[panel setTitle:@"新しい SmartMedia の保存先"];
 		[panel setNameFieldStringValue:@"smartmedia.img"];
 		[panel setAllowedFileTypes:@[ @"img" ]];
 		if ([panel runModal] != NSModalResponseOK)
 			return;
-		_owner->card_make(std::string([[[panel URL] path] UTF8String]), tag * 16);
+		// 16 / 32 / 64 / 128 MB, in the shared ID order
+		_owner->card_make(std::string([[[panel URL] path] UTF8String]),
+		                  16 << (tag - ui::ID_PLUG_CARD_NEW16));
 		return;
 	}
 
-	if (tag == 9) {                                              // 差す
+	if (tag == ui::ID_PLUG_CARD_OPEN) {                          // 差す
 		NSOpenPanel *panel = [NSOpenPanel openPanel];
 		[panel setTitle:@"差す SmartMedia"];
 		[panel setCanChooseFiles:YES];
@@ -436,11 +412,11 @@ private:
 		return;
 	}
 
-	if (tag == 10)                                               // 抜く
+	if (tag == ui::ID_PLUG_CARD_EJECT)                           // 抜く
 		_owner->card_eject();
-	else if (tag == 11 && _win)                                  // 一覧
+	else if (tag == ui::ID_PLUG_LIST && _win)                      // 一覧
 		_win->open_list();
-	else if (tag == 12 && _win)                                  // エディタ
+	else if (tag == ui::ID_PLUG_EDITOR && _win)                    // エディタ
 		_win->open_editor();
 }
 
@@ -458,6 +434,42 @@ void mac_window::alert(const std::string &text)
 	[a runModal];
 }
 
+// NSMenu rendering for the shared ui/menu.h content. A titled group becomes
+// a submenu; the standalone window (ui/window_mac.mm) renders them the same
+// way from the same structs
+NSMenu *plug_menu(const std::vector<ui::menu_group> &groups, SMUCardMenu *target)
+{
+	NSMenu *m = [[NSMenu alloc] init];
+	[m setAutoenablesItems:NO];
+	for (const ui::menu_group &g : groups) {
+		NSMenu *into = m;
+		if (!g.title.empty()) {
+			NSMenuItem *head = [[NSMenuItem alloc] init];
+			[head setTitle:[NSString stringWithUTF8String:g.title.c_str()]];
+			NSMenu *sub = [[NSMenu alloc] init];
+			[sub setAutoenablesItems:NO];
+			[head setSubmenu:sub];
+			[m addItem:head];
+			into = sub;
+		}
+		for (const ui::menu_item &item : g.items) {
+			if (item.separator) {
+				[into addItem:[NSMenuItem separatorItem]];
+				continue;
+			}
+			NSMenuItem *mi = [[NSMenuItem alloc] init];
+			[mi setTitle:[NSString stringWithUTF8String:item.label.c_str()]];
+			[mi setTag:item.id];
+			[mi setTarget:target];
+			[mi setAction:@selector(choose:)];
+			[mi setEnabled:item.enabled];
+			[mi setState:item.checked ? NSControlStateValueOn : NSControlStateValueOff];
+			[into addItem:mi];
+		}
+	}
+	return m;
+}
+
 // The card slot's menu, offered as a native popup. A card menu needs a target
 // to receive the choice, so one is made per call and released as the menu goes
 void mac_window::card_menu(int x, int y)
@@ -469,50 +481,8 @@ void mac_window::card_menu(int x, int y)
 	target->_owner = &m_owner;
 	target->_win = this;
 
-	NSMenu *m = [[NSMenu alloc] init];
-	[m setAutoenablesItems:NO];
-
-	NSMenuItem *item = [m addItemWithTitle:@"新しい SmartMedia を作って差す" action:nil keyEquivalent:@""];
-	NSMenu *sizes = [[NSMenu alloc] init];
-	const int mbs[4] = { 16, 32, 64, 128 };
-	const int tags[4] = { 1, 2, 4, 8 };
-	for (int i = 0; i < 4; i++) {
-		NSMenuItem *size = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"%dMB", mbs[i]]
-		                                              action:@selector(choose:)
-		                                       keyEquivalent:@""];
-		[size setTarget:target];
-		[size setTag:tags[i]];
-		[size setEnabled:m_owner.card_ready() ? YES : NO];
-		[sizes addItem:size];
-	}
-	[m setSubmenu:sizes forItem:item];
-
-	item = [m addItemWithTitle:@"SmartMedia を差す..." action:@selector(choose:) keyEquivalent:@""];
-	[item setTarget:target];
-	[item setTag:9];
-	[item setEnabled:m_owner.card_ready() ? YES : NO];
-
-	// The card in the slot, by file name, so it is clear which one is going out
-	const std::string path = m_owner.card_path();
-	NSString *eject_title = @"SmartMedia を抜く";
-	if (!path.empty()) {
-		const size_t slash = path.find_last_of("/");
-		NSString *name = [NSString stringWithUTF8String:path.substr(slash == std::string::npos ? 0 : slash + 1).c_str()];
-		eject_title = [NSString stringWithFormat:@"SmartMedia を抜く（%@）", name];
-	}
-	item = [m addItemWithTitle:eject_title action:@selector(choose:) keyEquivalent:@""];
-	[item setTarget:target];
-	[item setTag:10];
-	[item setEnabled:path.empty() ? NO : YES];
-
-	// The PC windows, where the Windows menu has them
-	[m addItem:[NSMenuItem separatorItem]];
-	item = [m addItemWithTitle:@"一覧を開く" action:@selector(choose:) keyEquivalent:@""];
-	[item setTarget:target];
-	[item setTag:11];
-	item = [m addItemWithTitle:@"エディタを開く" action:@selector(choose:) keyEquivalent:@""];
-	[item setTarget:target];
-	[item setTag:12];
+	ui::plug_menu_state s{ m_owner.card_path(), m_owner.card_ready() };
+	NSMenu *m = plug_menu(ui::menu_plug_card(s), target);
 
 	// In the view's own coordinates. The view is flipped, which is the space the
 	// panel's hit testing already worked in
@@ -528,15 +498,7 @@ void mac_window::panel_menu(int x, int y)
 	target->_owner = &m_owner;
 	target->_win = this;
 
-	NSMenu *m = [[NSMenu alloc] init];
-	[m setAutoenablesItems:NO];
-
-	NSMenuItem *item = [m addItemWithTitle:@"一覧を開く" action:@selector(choose:) keyEquivalent:@""];
-	[item setTarget:target];
-	[item setTag:11];
-	item = [m addItemWithTitle:@"エディタを開く" action:@selector(choose:) keyEquivalent:@""];
-	[item setTarget:target];
-	[item setTag:12];
+	NSMenu *m = plug_menu(ui::menu_plug_panel(), target);
 
 	[m popUpMenuPositioningItem:nil atLocation:NSMakePoint(x, y) inView:m_view];
 }

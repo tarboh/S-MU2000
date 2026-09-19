@@ -33,41 +33,6 @@ using namespace Steinberg;
 namespace smu2000 {
 namespace vst3 {
 
-namespace {
-
-// plug_key -> mu2000::button: the one place that decides. Each platform maps
-// its own key codes onto plug_key, so this stays the single answer to "what
-// does this key do", and it matches gui.cpp
-mu2000::button button_of(int code, bool &ok)
-{
-	ok = true;
-	switch (code) {
-	case PLUG_KEY_PLAY:          return mu2000::button::play;
-	case PLUG_KEY_EDIT:          return mu2000::button::edit;
-	case PLUG_KEY_UTIL:          return mu2000::button::util;
-	case PLUG_KEY_EFFECT:        return mu2000::button::effect;
-	case PLUG_KEY_MUTE_SOLO:     return mu2000::button::mute_solo;
-	case PLUG_KEY_PART_PLUS:     return mu2000::button::part_plus;
-	case PLUG_KEY_PART_MINUS:    return mu2000::button::part_minus;
-	case PLUG_KEY_VALUE_PLUS:    return mu2000::button::value_plus;
-	case PLUG_KEY_VALUE_MINUS:   return mu2000::button::value_minus;
-	case PLUG_KEY_ENTER:         return mu2000::button::enter;
-	case PLUG_KEY_EXIT:          return mu2000::button::exit;
-	case PLUG_KEY_SELECT_RIGHT:  return mu2000::button::select_right;
-	case PLUG_KEY_SELECT_LEFT:   return mu2000::button::select_left;
-	case PLUG_KEY_SEQ:           return mu2000::button::seq;
-	case PLUG_KEY_AUDITION:      return mu2000::button::audition;
-	case PLUG_KEY_SELECT:        return mu2000::button::select;
-	case PLUG_KEY_SAMPLING_MODE: return mu2000::button::sampling_mode;
-	default: break;
-	}
-	ok = false;
-	return mu2000::button::count;
-}
-
-} // namespace
-
-
 // The panel lives here so that view.h can stay free of compat/gdi.h
 struct plug_view::impl
 {
@@ -319,10 +284,11 @@ void plug_view::wheel(int x, int y, int steps)
 
 void plug_view::key(int code, bool down)
 {
-	bool ok = false;
-	const mu2000::button b = button_of(code, ok);
-	if (ok)
-		m_engine.panel().press(b, down);
+	// code is a mu2000::button value: both platform windows map their keys
+	// through the shared ui/keymap.h table before calling here
+	if (code < 0 || code >= int(mu2000::button::count))
+		return;
+	m_engine.panel().press(mu2000::button(code), down);
 }
 
 void plug_view::focus_lost() { m_engine.panel().release_all(); }
