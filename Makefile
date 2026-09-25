@@ -446,13 +446,13 @@ VSTI_OBJS := $(BUILD)/vstiobj/src/vsti/plugin.o \
 
 $(BUILD)/vstiobj/%.o: %.cpp
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(VST3_INC) -c -o $@ $<
+	$(CXX) $(CXXFLAGS) $(VST3_INC) $(IMGUI_FLAGS) -c -o $@ $<
 
 vsti: $(VSTI_BIN)
 
-$(VSTI_BIN): $(OBJS) $(BUILD)/src/mu2000.o $(VSTI_OBJS)
+$(VSTI_BIN): $(OBJS) $(BUILD)/src/mu2000.o $(VSTI_OBJS) $(PC_OBJS)
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) -shared -o $@ $^ $(LDFLAGS) -lwinmm -lole32 -lgdi32 -luser32 -lavrt -lcomdlg32
+	$(CXX) $(CXXFLAGS) -shared -o $@ $^ $(LDFLAGS) -lwinmm -lole32 -lgdi32 -luser32 -lavrt -lcomdlg32 -lshell32 -ld3d11 -ldxgi -ld3dcompiler -ldwmapi -limm32
 
 VSTI_INSTALL ?= $(PROGRAMFILES)/VstPlugins
 

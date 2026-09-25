@@ -361,7 +361,7 @@ private:
 		if (m_hush.exchange(false, std::memory_order_acq_rel)) {
 			const std::uint16_t sounded = m_sounded.exchange(0, std::memory_order_acq_rel);
 			if (sounded)
-				m_engine.all_notes_off(sounded, 0);
+				m_engine.all_notes_off(&sounded, 1);
 		}
 
 		std::stable_sort(m_events.begin(), m_events.end(), [](const queued_event &a, const queued_event &b) {
