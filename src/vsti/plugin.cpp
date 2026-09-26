@@ -257,7 +257,7 @@ private:
 		case eff_get_vst_version:
 			return 2400;
 		case eff_set_process_precision:
-			return value == 0; // 32-bit floating point only
+			return value == 0;
 		case eff_get_midi_input_channels:
 			return 16;
 		case eff_get_midi_output_channels:
@@ -282,7 +282,7 @@ private:
 				const auto *m = reinterpret_cast<const midi_event *>(base);
 				const int n = smu2000::vst3::midi_length(m->midi_data[0]);
 				q.bytes.assign(m->midi_data, m->midi_data + n);
-			} else if (base->type == sysex_type && base->byte_size >= vint32(sizeof(sysex_event))) {
+			} else if (base->type == sysex_type && base->byte_size >= sysex_event_byte_size) {
 				const auto *s = reinterpret_cast<const sysex_event *>(base);
 				if (s->dump && s->dump_bytes > 0 && s->dump_bytes <= 1024 * 1024)
 					q.bytes.assign(reinterpret_cast<const std::uint8_t *>(s->dump),
@@ -347,10 +347,6 @@ private:
 			return;
 		}
 
-		// Some VST2 hosts render a complete file much faster than real time.  If
-		// MIDI has already arrived, letting those blocks race the asynchronous
-		// firmware boot can make the entire render silent.  Wait only at that
-		// first meaningful block; an idle real-time instance remains non-blocking.
 		if (!m_events.empty() && m_engine.state() == smu2000::vst3::status::loading) {
 			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
 			while (m_engine.state() == smu2000::vst3::status::loading &&
