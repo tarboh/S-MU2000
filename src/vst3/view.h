@@ -105,7 +105,7 @@ private:
 
 	// When the card was last written back, in milliseconds
 	uint64_t m_last_flush = 0;
-	int m_w = 1400, m_h = 360;
+	int m_w = 1000, m_h = 400;
 	Steinberg::int32 m_refs = 1;
 	Steinberg::IPlugFrame *m_frame = nullptr;
 };

@@ -398,7 +398,7 @@ private:
 	std::vector<queued_event> m_events;
 	std::vector<std::uint8_t> m_chunk;
 	std::uint32_t m_sequence = 0;
-	rect m_rect{0, 0, 360, 1400};
+	rect m_rect{0, 0, 400, 1000};
 };
 
 } // namespace
