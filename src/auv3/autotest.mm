@@ -433,8 +433,9 @@ int main(int argc, const char *argv[])
 						    AUEventSampleTimeImmediate + (off < BLOCK ? off : BLOCK - 1);
 						// 直した Cog と同じ: **SysEx も含めて全部 UMP 1 本**で送る。
 						// 道が 1 本なら、同じ時刻の SysEx と音色指定の前後が入れ替わらない
-						// schedList が入说的是 12.0 以降なので、中で聞かなくても
-						// ここに来ている時点で UMP の口は使える
+						// schedList が入るのは 12.0 以降だけなので、ここに来ていれば
+						// UMP の口は使える。@available はコンパイラに知らせるため
+						// （11.0 向けに作るので、聞かずに呼ぶと警告になる）
 						if (split && schedList) {
 							if (@available(macOS 12.0, *))
 								send_ump(schedList, when, uint8_t(port), b.data(), b.size());
