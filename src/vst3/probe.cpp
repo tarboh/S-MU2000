@@ -1049,7 +1049,8 @@ int main(int argc, char **argv)
 
 	if (argc < 2) {
 		std::fprintf(stderr,
-			"使い方: vst3probe <DLL> [<MIDI> <出力 wav>] [--rate 48000] [--block 512] [--data-midi]\n");
+			"使い方: vst3probe <DLL> [<MIDI> <出力 wav>] [--rate 48000] [--block 512] [--data-midi]\n"
+			"          [--state <file>]（起動中に状態を戻してから鳴らす） [--save-state <file>]\n");
 		return 1;
 	}
 	std::string dll = argv[1], mid, wav;
@@ -1063,6 +1064,9 @@ int main(int argc, char **argv)
 	bool restart = false;    // DAW の「止めて再生」のまね（流す直前に setProcessing を切り入れする）
 	bool automation = false;
 	int  view_seconds = 0;
+	// ホストが保存した状態を戻してから鳴らす（issue #51。foobar2000 の foo_midi は
+	// 起動中のプラグインに状態を戻してから、すぐ曲頭を流す）
+	std::string state_in, state_out;
 	for (int i = 2; i < argc; i++) {
 		if (!std::strcmp(argv[i], "--rate") && i + 1 < argc) rate = std::atof(argv[++i]);
 		else if (!std::strcmp(argv[i], "--block") && i + 1 < argc) block = std::atoi(argv[++i]);
@@ -1073,6 +1077,8 @@ int main(int argc, char **argv)
 		else if (!std::strcmp(argv[i], "--data-midi")) data_midi = true;
 		else if (!std::strcmp(argv[i], "--restart")) restart = true;
 		else if (!std::strcmp(argv[i], "--automation")) automation = true;
+		else if (!std::strcmp(argv[i], "--state") && i + 1 < argc) state_in = argv[++i];
+		else if (!std::strcmp(argv[i], "--save-state") && i + 1 < argc) state_out = argv[++i];
 		else if (!std::strcmp(argv[i], "--view")) view_seconds =
 		    (i + 1 < argc && argv[i + 1][0] != '-') ? std::atoi(argv[++i]) : 20;
 		else if (mid.empty()) mid = argv[i];
@@ -1228,6 +1234,21 @@ int main(int argc, char **argv)
 	if (proc->setupProcessing(setup) != kResultOk) {
 		std::fprintf(stderr, "setupProcessing に失敗\n");
 		return 1;
+	}
+	// 起動がまだ終わらないうちに状態を戻す（ホストが曲を開いたときの順）
+	if (!state_in.empty()) {
+		std::vector<uint8> bytes;
+		if (FILE *f = std::fopen(state_in.c_str(), "rb")) {
+			uint8 buf[65536];
+			size_t k;
+			while ((k = std::fread(buf, 1, sizeof(buf), f)) > 0)
+				bytes.insert(bytes.end(), buf, buf + k);
+			std::fclose(f);
+		}
+		mem_stream st;
+		st.assign(bytes);
+		std::printf("状態を戻す: %zu バイト → %s\n", bytes.size(),
+		            comp->setState(&st) == kResultOk ? "OK" : "NG");
 	}
 	comp->setActive(true);
 	proc->setProcessing(true);
@@ -1453,6 +1474,17 @@ int main(int argc, char **argv)
 	std::printf("書き出した: %s（%.1f 秒 / %.0f Hz、実時間 %.1f 秒）\n",
 	            wav.c_str(), double(total) / rate, rate, (t1 - t0) / 1000.0);
 	std::printf("最大 %.0f  平均 %.1f\n", peak, sum / std::max<size_t>(pcm.size(), 1));
+
+	if (!state_out.empty()) {
+		mem_stream st;
+		if (comp->getState(&st) == kResultOk) {
+			if (FILE *f = std::fopen(state_out.c_str(), "wb")) {
+				std::fwrite(st.bytes().data(), 1, st.size(), f);
+				std::fclose(f);
+			}
+			std::printf("状態を書き出した: %zu バイト\n", st.size());
+		}
+	}
 
 	proc->setProcessing(false);
 	comp->setActive(false);
