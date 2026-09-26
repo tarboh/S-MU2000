@@ -1,0 +1,60 @@
+name: Bug report
+description: Report a bug/incorrect behavior found in S-MU2000.
+
+labels: ["bug"]
+body:
+    - type: checkboxes
+      attributes:
+          label: Checklist
+          description: A checklist to confirm that this bug report can be submitted.
+          options:
+              - label: I confirm that I have searched the existing issues.
+                required: true
+              - label: I confirm that I am using the latest version of S-MU2000.
+                required: true
+    - type: textarea
+      id: description
+      attributes:
+          label: Description
+          description: Describe the bug that occurs.
+      validations:
+          required: true
+    - type: textarea
+      id: expected
+      attributes:
+          label: Expected Behavior
+          description: A concise description of what you expected to happen.
+      validations:
+          required: true
+    - type: textarea
+      id: reproduction
+      attributes:
+          label: Reproduction steps
+          description: Concrete steps to reproduce the behavior.
+          placeholder: |
+              1. Launch S-MU2000 in GUI mode ...
+              2. Play this MIDI file ...
+              3. Click on ...
+              4. See error...
+      validations:
+          required: true
+    - type: dropdown
+      id: os
+      attributes:
+          label: Operating system
+          description: Which operating system are you using?
+          options:
+              - Microsoft Windows
+              - MacOS
+              - Linux
+              - Other (please specify in additional info)
+      validations:
+          required: false
+    - type: textarea
+      attributes:
+          label: Additional info
+          description: |
+              Any additional info and attachments (screenshots, MIDIs, other environments) go here.
+              **Please do not post modified firmware or any ROM files here. Doing so will have this issue deleted.**
+      validations:
+          required: false
