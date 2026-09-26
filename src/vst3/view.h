@@ -68,6 +68,9 @@ public:
 	// CGContextRef on macOS.
 	int  width() const { return m_w; }
 	int  height() const { return m_h; }
+	// 開く前の大きさ（VST2 は窓を作る前に聞いてくる）。1000 × (400 + 上の帯)
+	static int default_width();
+	static int default_height();
 
 	void repaint(void *native, int w, int h);
 	void mouse_down(int x, int y);

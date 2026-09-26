@@ -175,6 +175,9 @@ plug_view::plug_view(engine &eng)
 	m_impl->panel.resize(m_w, m_h);
 }
 
+int plug_view::default_width()  { return ui::LOGICAL_W; }
+int plug_view::default_height() { return ui::LOGICAL_H + ui::toolbar::HEIGHT; }
+
 plug_view::~plug_view()
 {
 	removed();

@@ -117,6 +117,10 @@ constexpr vint32 plugin_id = fourcc('S', 'M', 'U', '2');
 // VST2 event byte_size excludes the leading type and byte_size fields.
 // A VstMidiEvent therefore reports 24 even though the C structure is 32 bytes.
 constexpr vint32 midi_event_byte_size = 24;
+// Some VST2 hosts use the same convention for SysEx: byte_size excludes
+// the leading type and byte_size fields. Thus it is sizeof(sysex_event) - 8.
+// Others report the whole structure, so both have to be accepted (PR #53)
+constexpr vint32 sysex_event_byte_size = vint32(sizeof(sysex_event) - 8);
 
 enum effect_flags : vint32 {
 	has_editor = 1 << 0,
@@ -182,6 +186,8 @@ static_assert(sizeof(midi_event) == 32, "VST MIDI event ABI mismatch");
 static_assert(offsetof(midi_event, midi_data) == 24, "VST MIDI data ABI mismatch");
 static_assert(sizeof(sysex_event) == (sizeof(void *) == 8 ? 48 : 32),
               "VST SysEx event ABI mismatch");
+static_assert(sysex_event_byte_size == (sizeof(void *) == 8 ? 40 : 24),
+              "VST SysEx byte-size convention mismatch");
 static_assert(offsetof(events, items) == (sizeof(void *) == 8 ? 16 : 8),
               "VST event list ABI mismatch");
 static_assert(offsetof(effect, dispatcher) == (sizeof(void *) == 8 ? 8 : 4),

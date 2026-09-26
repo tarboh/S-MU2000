@@ -223,6 +223,7 @@ private:
 			if (!ptr) return 0;
 			close_editor();
 			m_view = new smu2000::vst3::plug_view(m_engine);
+			m_rect = rect{0, 0, std::int16_t(m_view->height()), std::int16_t(m_view->width())};
 			if (m_view->attached(ptr, smu2000::vst3::plug_window_type()) != Steinberg::kResultOk) {
 				m_view->release();
 				m_view = nullptr;
@@ -282,7 +283,9 @@ private:
 				const auto *m = reinterpret_cast<const midi_event *>(base);
 				const int n = smu2000::vst3::midi_length(m->midi_data[0]);
 				q.bytes.assign(m->midi_data, m->midi_data + n);
-			} else if (base->type == sysex_type && base->byte_size >= vint32(sizeof(sysex_event))) {
+			} else if (base->type == sysex_type && base->byte_size >= sysex_event_byte_size) {
+				// byte_size の数え方はホストで 2 通り（頭の 8 バイトを含めるかどうか）。
+				// 小さいほうで見れば両方通る（PR #53、issue #54）
 				const auto *s = reinterpret_cast<const sysex_event *>(base);
 				if (s->dump && s->dump_bytes > 0 && s->dump_bytes <= 1024 * 1024)
 					q.bytes.assign(reinterpret_cast<const std::uint8_t *>(s->dump),
@@ -402,7 +405,10 @@ private:
 	std::vector<queued_event> m_events;
 	std::vector<std::uint8_t> m_chunk;
 	std::uint32_t m_sequence = 0;
-	rect m_rect{0, 0, 360, 1400};
+	// 画面の大きさ。中身は VST3 と同じ plug_view なので、同じ 1000 × (400 + 上の帯)。
+	// ホストは窓を開く前にも聞いてくるので、開いたら view の実際の値で上書きする
+	rect m_rect{0, 0, std::int16_t(smu2000::vst3::plug_view::default_height()),
+	             std::int16_t(smu2000::vst3::plug_view::default_width())};
 };
 
 } // namespace
