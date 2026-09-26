@@ -293,7 +293,13 @@ int main(int argc, const char *argv[])
 
 		AURenderBlock render = au.renderBlock;
 		AUScheduleMIDIEventBlock sched = au.scheduleMIDIEventBlock;
-		AUMIDIEventListBlock schedList = au.scheduleMIDIEventListBlock;
+		// scheduleMIDIEventListBlock is macOS 12. On anything older this stays
+		// null, and the sched() path below is what carries the notes instead.
+		// (The build targets 11.0, so the 12.0 entry point has to be asked for
+		// by hand rather than assumed.)
+		AUMIDIEventListBlock schedList = nullptr;
+		if (@available(macOS 12.0, *))
+			schedList = au.scheduleMIDIEventListBlock;
 		if (!render || !sched) {
 			std::fprintf(stderr, "描き出しの口が無い\n");
 			return 1;
@@ -427,9 +433,14 @@ int main(int argc, const char *argv[])
 						    AUEventSampleTimeImmediate + (off < BLOCK ? off : BLOCK - 1);
 						// 直した Cog と同じ: **SysEx も含めて全部 UMP 1 本**で送る。
 						// 道が 1 本なら、同じ時刻の SysEx と音色指定の前後が入れ替わらない
-						if (split && schedList)
-							send_ump(schedList, when, uint8_t(port), b.data(), b.size());
-						else
+						// schedList が入说的是 12.0 以降なので、中で聞かなくても
+						// ここに来ている時点で UMP の口は使える
+						if (split && schedList) {
+							if (@available(macOS 12.0, *))
+								send_ump(schedList, when, uint8_t(port), b.data(), b.size());
+							else
+								sched(when, uint8_t(port), NSInteger(b.size()), b.data());
+						} else
 							sched(when, uint8_t(port), NSInteger(b.size()), b.data());
 					}
 					next++;
@@ -495,36 +506,38 @@ int main(int argc, const char *argv[])
 		// ---- MIDI OUT。実機は識別要求に返事をする（GM の Identity Request）
 		const uint8_t ident[6] = { 0xF0, 0x7E, 0x7F, 0x06, 0x01, 0xF7 };
 		if (sysex_ump && schedList) {
-			// **SysEx を UMP（SysEx7）で送る。**
-			// 種別 0x3、6 バイトずつ、F0 と F7 は載せない（status が代わり）。
-			//   status 0 = 1 つで完結 / 1 = 始まり / 2 = 続き / 3 = 終わり
-			const uint8_t *body = ident + 1;               // F0 を外す
-			const size_t   n    = sizeof(ident) - 2;       // F7 も外す
-			MIDIEventList list;
-			MIDIEventPacket *pk = MIDIEventListInit(&list, kMIDIProtocol_1_0);
-			size_t at = 0;
-			while (at < n || at == 0) {
-				const size_t take = std::min<size_t>(6, n - at);
-				const bool first = (at == 0), last = (at + take >= n);
-				const uint8_t st = first && last ? 0 : first ? 1 : last ? 3 : 2;
-				uint32_t w0 = (uint32_t)0x3 << 28 | (uint32_t)0 << 24 |
-				              (uint32_t)st << 20 | (uint32_t)take << 16;
-				uint32_t w1 = 0;
-				for (size_t k = 0; k < take; k++) {
-					const uint8_t v = body[at + k];
-					if (k < 2) w0 |= (uint32_t)v << (8 * (1 - k));
-					else       w1 |= (uint32_t)v << (8 * (5 - k));
+			if (@available(macOS 12.0, *)) {
+				// **SysEx を UMP（SysEx7）で送る。**
+				// 種別 0x3、6 バイトずつ、F0 と F7 は載せない（status が代わり）。
+				//   status 0 = 1 つで完結 / 1 = 始まり / 2 = 続き / 3 = 終わり
+				const uint8_t *body = ident + 1;               // F0 を外す
+				const size_t   n    = sizeof(ident) - 2;       // F7 も外す
+				MIDIEventList list;
+				MIDIEventPacket *pk = MIDIEventListInit(&list, kMIDIProtocol_1_0);
+				size_t at = 0;
+				while (at < n || at == 0) {
+					const size_t take = std::min<size_t>(6, n - at);
+					const bool first = (at == 0), last = (at + take >= n);
+					const uint8_t st = first && last ? 0 : first ? 1 : last ? 3 : 2;
+					uint32_t w0 = (uint32_t)0x3 << 28 | (uint32_t)0 << 24 |
+					              (uint32_t)st << 20 | (uint32_t)take << 16;
+					uint32_t w1 = 0;
+					for (size_t k = 0; k < take; k++) {
+						const uint8_t v = body[at + k];
+						if (k < 2) w0 |= (uint32_t)v << (8 * (1 - k));
+						else       w1 |= (uint32_t)v << (8 * (5 - k));
+					}
+					uint32_t words[2] = { w0, w1 };
+					pk = MIDIEventListAdd(&list, sizeof(list), pk, 0, 2, words);
+					at += take;
+					if (last) break;
 				}
-				uint32_t words[2] = { w0, w1 };
-				pk = MIDIEventListAdd(&list, sizeof(list), pk, 0, 2, words);
-				at += take;
-				if (last) break;
-			}
-			schedList(AUEventSampleTimeImmediate, 0, &list);
-			std::printf("（識別要求を SysEx7 の UMP で送った）\n");
-		} else {
+				schedList(AUEventSampleTimeImmediate, 0, &list);
+				std::printf("（識別要求を SysEx7 の UMP で送った）\n");
+			} else
+				sched(AUEventSampleTimeImmediate, 0, 6, ident);
+		} else
 			sched(AUEventSampleTimeImmediate, 0, 6, ident);
-		}
 		for (int i = 0; i < 200; i++) one_block();
 
 		// ---- 結果

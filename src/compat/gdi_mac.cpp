@@ -668,9 +668,12 @@ BOOL smu_blit_premul(HDC hdc, int x, int y, int w, int h, const uint32_t *px)
 	cf_holder<CFDataRef> data(CFDataCreate(nullptr, reinterpret_cast<const UInt8 *>(px),
 	                                       CFIndex(size_t(w) * size_t(h) * 4)));
 	cf_holder<CGDataProviderRef> prov(CGDataProviderCreateWithCFData(data.get()));
+	// The alpha and the byte order are separate enum types, so the combining
+	// bitwise op is only spelled through uint32_t; see CreateCompatibleDC below.
 	cf_holder<CGImageRef> img(CGImageCreate(size_t(w), size_t(h), 8, 32, size_t(w) * 4,
 	                                        rgb_space(),
-	                                        kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little,
+	                                        CGBitmapInfo(uint32_t(kCGImageAlphaPremultipliedFirst) |
+	                                                     uint32_t(kCGBitmapByteOrder32Little)),
 	                                        prov.get(), nullptr, false,
 	                                        kCGRenderingIntentDefault));
 	if (!img.get())

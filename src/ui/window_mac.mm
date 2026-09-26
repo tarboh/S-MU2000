@@ -480,15 +480,13 @@ std::string open_midi_file_panel()
 	[panel setCanChooseDirectories:NO];
 	[panel setAllowsMultipleSelection:NO];
 	[panel setMessage:[NSString stringWithUTF8String:UI_TEXT(dlg_midi_open, "MIDI file to play")]];
-	if (@available(macOS 11.0, *)) {
-		UTType *mid  = [UTType typeWithFilenameExtension:@"mid"];
-		UTType *midi = [UTType typeWithFilenameExtension:@"midi"];
-		NSMutableArray *types = [NSMutableArray array];
-		if (mid)  [types addObject:mid];
-		if (midi) [types addObject:midi];
-		if ([types count])
-			[panel setAllowedContentTypes:types];
-	}
+	UTType *mid  = [UTType typeWithFilenameExtension:@"mid"];
+	UTType *midi = [UTType typeWithFilenameExtension:@"midi"];
+	NSMutableArray *types = [NSMutableArray array];
+	if (mid)  [types addObject:mid];
+	if (midi) [types addObject:midi];
+	if ([types count])
+		[panel setAllowedContentTypes:types];
 
 	if ([panel runModal] != NSModalResponseOK)
 		return {};
@@ -509,13 +507,9 @@ std::string open_file_panel(const char *title, const char *ext)
 	if (title && *title)
 		[panel setMessage:[NSString stringWithUTF8String:title]];
 	if (ext && *ext) {
-		// setAllowedContentTypes is macOS 11; asking for the type outside the
-		// guard would be calling it on a system that has no such selector
-		if (@available(macOS 11.0, *)) {
-			UTType *type = [UTType typeWithFilenameExtension:[NSString stringWithUTF8String:ext]];
-			if (type)
-				[panel setAllowedContentTypes:@[ type ]];
-		}
+		UTType *type = [UTType typeWithFilenameExtension:[NSString stringWithUTF8String:ext]];
+		if (type)
+			[panel setAllowedContentTypes:@[ type ]];
 	}
 	if ([panel runModal] != NSModalResponseOK)
 		return {};
@@ -534,12 +528,9 @@ std::string save_file_panel(const char *title, const char *default_name, const c
 	if (default_name && *default_name)
 		[panel setNameFieldStringValue:[NSString stringWithUTF8String:default_name]];
 	if (ext && *ext) {
-		// macOS 11, same as open_file_panel above
-		if (@available(macOS 11.0, *)) {
-			UTType *type = [UTType typeWithFilenameExtension:[NSString stringWithUTF8String:ext]];
-			if (type)
-				[panel setAllowedContentTypes:@[ type ]];
-		}
+		UTType *type = [UTType typeWithFilenameExtension:[NSString stringWithUTF8String:ext]];
+		if (type)
+			[panel setAllowedContentTypes:@[ type ]];
 	}
 	if ([panel runModal] != NSModalResponseOK)
 		return {};

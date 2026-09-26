@@ -670,6 +670,17 @@ else # macOS
 #
 # The GUI additionally needs a window, which is AppKit (Cocoa) plus CoreText
 # for the panel's labels.
+#
+# packaging/auv3-app-Info.plist and packaging/auv3-appex-Info.plist both say
+# LSMinimumSystemVersion 11.0, so that is the floor this project has always
+# claimed. Saying the same thing to the compiler keeps the binaries honest: left
+# unset, the toolchain stamps whatever SDK is installed (27.2 at the time of
+# writing) into minos, and a VST3 or AU built on a new Mac then refuses to load
+# on the very machines the plists promise to support. Exported rather than added
+# to CXXFLAGS so the driver applies it to the link steps too, and to anything
+# the recipes shell out to.
+export MACOSX_DEPLOYMENT_TARGET := 11.0
+
 MAC_FRAMEWORKS := -framework CoreAudio -framework AudioToolbox \
                   -framework CoreMIDI -framework AudioUnit \
                   -framework CoreFoundation -framework CoreGraphics \
@@ -994,7 +1005,8 @@ AUV3_ROMS ?= roms
 AUV3_FLAGS := -fobjc-arc
 AUV3_FW    := -framework Foundation -framework AudioToolbox -framework AVFoundation \
               -framework CoreAudio -framework CoreMIDI -framework Cocoa -framework CoreAudioKit \
-              -framework Metal -framework QuartzCore
+              -framework Metal -framework QuartzCore \
+              -framework UniformTypeIdentifiers
 
 $(BUILD)/auv3obj/%.o: %.cpp
 	@mkdir -p $(dir $@)

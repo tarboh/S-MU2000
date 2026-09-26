@@ -9,6 +9,7 @@
 #include "view.h"
 
 #import <Cocoa/Cocoa.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 #include "ui/fx_editor.h"
 #include "ui/keymap.h"
@@ -415,7 +416,9 @@ private:
 		NSSavePanel *panel = [NSSavePanel savePanel];
 		[panel setTitle:[NSString stringWithUTF8String:UI_TEXT(dlg_card_save, "Where to save the new SmartMedia image")]];
 		[panel setNameFieldStringValue:@"smartmedia.img"];
-		[panel setAllowedFileTypes:@[ @"img" ]];
+		UTType *img = [UTType typeWithFilenameExtension:@"img"];
+		if (img)
+			[panel setAllowedContentTypes:@[ img ]];
 		if ([panel runModal] != NSModalResponseOK)
 			return;
 		// 16 / 32 / 64 / 128 MB, in the shared ID order
