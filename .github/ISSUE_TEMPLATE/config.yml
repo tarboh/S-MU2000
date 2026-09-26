@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+    - name: "Question"
+      url: "https://github.com/tarboh/S-MU2000/discussions/new?category=q-a"
+      about: "Something is unclear? Ask a question!"
+    - name: "Documentation"
+      url: "https://github.com/tarboh/S-MU2000/compare"
+      about: "Submit a Pull Request to improve S-MU2000!"
