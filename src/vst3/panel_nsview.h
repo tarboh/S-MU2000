@@ -36,8 +36,8 @@ class engine;
 // The panel's own size, and the smallest a host may ask for before it is given
 // the panel's size rather than a squeezed one. The same numbers and the same
 // clamping the VST3 view applies in onSize() / checkSizeConstraint()
-constexpr int kPanelWidth  = 1400;
-constexpr int kPanelHeight = 360;
+constexpr int kPanelWidth  = 1000;
+constexpr int kPanelHeight = 400;
 constexpr int kPanelMinW   = 640;
 constexpr int kPanelMinH   = 180;
 

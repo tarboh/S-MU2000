@@ -152,8 +152,9 @@ struct plug_view::impl
 plug_view::plug_view(engine &eng)
 	: m_impl(new impl(eng)), m_engine(eng)
 {
-	// パネルの配置。%LOCALAPPDATA%\S-MU2000\panel.txt があれば読む
-	// （doc/panel-editing.md）。無ければ組み込みの配置のまま
+	// パネルの配置。%LOCALAPPDATA%\S-MU2000\panel.txt があれば読む。無ければ
+	// 束の中の写真調の絵（Resources/panel）、それも無ければ組み込みの配置
+	// （doc/panel-editing.md）
 	//
 	// find_default() now searches the per-user settings directory on either
 	// platform (~/Library/Application Support/S-MU2000 on macOS)
@@ -169,6 +170,8 @@ plug_view::plug_view(engine &eng)
 	m_impl->panel.xg().set_raw_listener([&eng](u32 addr, int size, int value) {
 		eng.notify_edit_raw(addr, size, value);
 	});
+	// 絵は 1000:400、その上の帯（一覧・エディタ…）は比の外に足す
+	m_h = m_w * ui::LOGICAL_H / ui::LOGICAL_W + m_impl->panel.top_inset();
 	m_impl->panel.resize(m_w, m_h);
 }
 
@@ -274,9 +277,10 @@ tresult PLUGIN_API plug_view::checkSizeConstraint(ViewRect *rect)
 {
 	if (!rect)
 		return kInvalidArgument;
-	// 横に長い機械なので、縦横比はこちらで決めてしまう
+	// 横に長い機械なので、縦横比はこちらで決めてしまう。上の帯は比の外に
+	// 足す（gui.exe の窓と同じ）。足さないと絵が高さで決まって左右が余る
 	const int w = std::max<int32>(rect->getWidth(), 640);
-	const int h = std::max<int32>(w * ui::LOGICAL_H / ui::LOGICAL_W, 180);
+	const int h = std::max<int32>(w * ui::LOGICAL_H / ui::LOGICAL_W + m_impl->panel.top_inset(), 180);
 	rect->right = rect->left + w;
 	rect->bottom = rect->top + h;
 	return kResultTrue;

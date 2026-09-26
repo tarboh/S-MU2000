@@ -44,9 +44,11 @@ build/gui.exe <rom ディレクトリ> --layout panel.txt
 2. `gui.exe` と同じところの `panel.txt`
 3. `%LOCALAPPDATA%\S-MU2000\panel.txt`
 4. 付属の写真調の絵 `art/real/panel.txt`（exe の横、その一つ上、いま居るところの順）
+5. プラグインの束の中 `S-MU2000.vst3/Contents/Resources/panel/panel.txt`
+   （`make vst3` が art/real を写しておく）
 
-どこにも無ければ組み込みの配置を使う。**VST3 は 3 番目だけを見る**ので、
-DAW でも同じ絵にしたければそこに置く。
+どこにも無ければ組み込みの配置を使う。VST3 では 1・2 がホスト（DAW）の場所に
+なるので、ふつうは 3 か 5 が使われる。DAW で自分の絵にしたければ 3 に置く。
 
 ## 書き方
 

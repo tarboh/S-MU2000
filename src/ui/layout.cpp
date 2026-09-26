@@ -645,6 +645,16 @@ std::string layout::find_default()
 			if (!q.empty() && exists(q))
 				return q;
 	}
+	// 5. プラグインの束の中（S-MU2000.vst3/Contents/Resources/panel/）。
+	//    ホストの exe ではなく、この関数が入っている DLL / .so の場所から探す
+	{
+		const std::string dir = smu2000::module_dir(reinterpret_cast<const void *>(&layout::find_default));
+		if (!dir.empty()) {
+			const std::string q = dir + "/../Resources/panel/panel.txt";
+			if (exists(q))
+				return q;
+		}
+	}
 	return {};
 }
 

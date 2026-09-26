@@ -361,7 +361,14 @@ $(BUILD)/vst3obj/%.o: %.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(VST3_INC) $(IMGUI_FLAGS) -c -o $@ $<
 
-vst3: $(VST3_BIN)
+# 写真調のパネルの絵（art/real）を束の中へ。プラグインは自分の場所から
+# ../Resources/panel/panel.txt を探す（doc/panel-editing.md）
+VST3_PANEL := $(VST3_DIR)/Contents/Resources/panel/panel.txt
+vst3: $(VST3_BIN) $(VST3_PANEL)
+
+$(VST3_PANEL): $(wildcard art/real/*.png) art/real/panel.txt
+	@mkdir -p $(dir $@)
+	@cp -f art/real/*.png art/real/panel.txt $(dir $@)
 
 # PC で触る窓（一覧・エディタ）はプラグインからも開ける。gui.exe と同じ
 # ui::pc_window なので、ImGui と PC 側の絵を一式こちらにも入れる
@@ -377,7 +384,7 @@ $(VST3_BIN): $(OBJS) $(BUILD)/src/mu2000.o $(VST3_OBJS) $(PC_OBJS)
 # 既定の置き場へ入れる。管理者権限が要ることがある
 VST3_INSTALL ?= $(PROGRAMFILES)/Common Files/VST3
 
-install-vst3: $(VST3_BIN)
+install-vst3: $(VST3_BIN) $(VST3_PANEL)
 ifdef CROSS_WINDOWS
 ifeq ($(PROGRAMFILES),)
 	$(error CROSS=windows: there is no Program Files here -- pass VST3_INSTALL=<dir> to copy the bundle somewhere you can pick it up from)
@@ -579,7 +586,14 @@ $(BUILD)/vst3obj/%.o: %.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(VST3_INC) $(IMGUI_FLAGS) $(LINUX_SDL_CFLAGS) -c -o $@ $<
 
-vst3: $(VST3_BIN)
+# 写真調のパネルの絵（art/real）を束の中へ。プラグインは自分の場所から
+# ../Resources/panel/panel.txt を探す（doc/panel-editing.md）
+VST3_PANEL := $(VST3_DIR)/Contents/Resources/panel/panel.txt
+vst3: $(VST3_BIN) $(VST3_PANEL)
+
+$(VST3_PANEL): $(wildcard art/real/*.png) art/real/panel.txt
+	@mkdir -p $(dir $@)
+	@cp -f art/real/*.png art/real/panel.txt $(dir $@)
 
 $(VST3_BIN): $(OBJS) $(BUILD)/src/mu2000.o $(VST3_OBJS) $(IMGUI_SDL_OBJS)
 	@mkdir -p $(dir $@)
@@ -591,7 +605,7 @@ $(VST3_BIN): $(OBJS) $(BUILD)/src/mu2000.o $(VST3_OBJS) $(IMGUI_SDL_OBJS)
 
 VST3_INSTALL ?= $(HOME)/.vst3
 
-install-vst3: $(VST3_BIN)
+install-vst3: $(VST3_BIN) $(VST3_PANEL)
 	rm -rf "$(VST3_INSTALL)/S-MU2000.vst3"
 	mkdir -p "$(VST3_INSTALL)"
 	cp -r $(VST3_DIR) "$(VST3_INSTALL)/"
@@ -766,7 +780,14 @@ $(BUILD)/vst3obj/%.o: %.mm
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(VST3_INC) $(IMGUI_FLAGS) -fobjc-arc -c -o $@ $<
 
-vst3: $(VST3_BIN)
+# 写真調のパネルの絵（art/real）を束の中へ。プラグインは自分の場所から
+# ../Resources/panel/panel.txt を探す（doc/panel-editing.md）
+VST3_PANEL := $(VST3_DIR)/Contents/Resources/panel/panel.txt
+vst3: $(VST3_BIN) $(VST3_PANEL)
+
+$(VST3_PANEL): $(wildcard art/real/*.png) art/real/panel.txt
+	@mkdir -p $(dir $@)
+	@cp -f art/real/*.png art/real/panel.txt $(dir $@)
 
 # -bundle, not -shared: a VST3 is read with CFBundle, not dlopen
 # The overview/editor PC windows open from the plug-in too, so the ImGui
@@ -785,7 +806,7 @@ $(VST3_BIN): $(OBJS) $(BUILD)/src/mu2000.o $(VST3_OBJS) $(MAC_PC_OBJS)
 # Install into the default location. No admin rights needed on macOS
 VST3_INSTALL ?= $(HOME)/Library/Audio/Plug-Ins/VST3
 
-install-vst3: $(VST3_BIN)
+install-vst3: $(VST3_BIN) $(VST3_PANEL)
 	rm -rf "$(VST3_INSTALL)/S-MU2000.vst3"
 	mkdir -p "$(VST3_INSTALL)"
 	cp -r $(VST3_DIR) "$(VST3_INSTALL)/"
