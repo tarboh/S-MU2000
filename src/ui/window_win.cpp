@@ -15,9 +15,12 @@
 #include "imgui.h"
 #include "backends/imgui_impl_win32.h"
 
+#include "ui/rom_locate.h"
+
 #include <cstdio>
 #include <windowsx.h>
 #include <shellapi.h>
+#include <shlobj.h>
 
 #include <algorithm>
 #include <cmath>
@@ -310,6 +313,41 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		return 0;
 	}
 	return DefWindowProcA(hwnd, msg, wp, lp);
+}
+
+// ROM の場所なしで起動したとき（ui/rom_locate.h）。窓を作る前なので、案内（MessageBox）と
+// 「フォルダーの参照」の窓（SHBrowseForFolder）を出す。文字は UTF-8 から wide に
+bool ask_roms_folder(const std::string &message, std::string &picked)
+{
+	auto wide = [](const std::string &s) {
+		std::wstring w(size_t(MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0)), L'\0');
+		if (!w.empty()) {
+			MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), int(w.size()));
+			w.pop_back();   // 終わりの 0
+		}
+		return w;
+	};
+	std::string text = message;
+	text += "\n\n";
+	text += UI_TEXT(dlg_roms_ok_cancel, "OK: choose the folder.  Cancel: quit.");
+	if (MessageBoxW(nullptr, wide(text).c_str(), L"S-MU2000", MB_OKCANCEL | MB_ICONINFORMATION) != IDOK)
+		return false;
+	const bool com = SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED));
+	const std::wstring title = wide(UI_TEXT(dlg_roms_pick, "Select ROM folder..."));
+	BROWSEINFOW bi{};
+	bi.lpszTitle = title.c_str();
+	bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+	PIDLIST_ABSOLUTE id = SHBrowseForFolderW(&bi);
+	wchar_t path[MAX_PATH * 4] = {};
+	const bool got = id && SHGetPathFromIDListW(id, path);
+	if (id)
+		CoTaskMemFree(id);
+	if (com)
+		CoUninitialize();
+	if (!got)
+		return false;
+	picked = to_utf8(path);
+	return !picked.empty();
 }
 
 } // namespace ui

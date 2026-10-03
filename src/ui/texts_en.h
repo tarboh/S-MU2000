@@ -116,6 +116,11 @@ inline const ui_texts &en_texts()
 		.dlg_card_create_fail = "Cannot create the SmartMedia image",
 		.dlg_fresh_card = "Inserted a new SmartMedia image.\n"
 		                  "It is already formatted (as UTIL → CARD → Format leaves it), so it can be saved to right away.",
+		.dlg_roms_needed = "S-MU2000 needs the ROMs dumped from your own MU2000.\nHow to dump them: https://github.com/tarboh/S-MU2000#roms\n\nOnce you have them, choose the folder that holds mu2000_flash.bin and the dump folder. It is remembered, so the GUI and the plug-ins find the ROMs from then on.",
+		.dlg_roms_bad_fmt = "%s does not hold the whole set (missing: %s).\nChoose the folder that holds mu2000_flash.bin and the dump folder.",
+		.dlg_roms_pick = "Select ROM folder...",
+		.dlg_roms_quit = "Quit",
+		.dlg_roms_ok_cancel = "OK: choose the folder.  Cancel: quit.",
 		.dlg_cancel = "Cancel",
 		.note_exported_fmt = "Exported (%zu bytes)",
 		.note_export_fail = "Cannot export",

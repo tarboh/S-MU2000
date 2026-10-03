@@ -13,6 +13,7 @@
 
 #include "window_mac.h"
 #include "app.h"
+#include "ui/rom_locate.h"
 
 #include "ui/imgui_shell.h"
 
@@ -524,6 +525,34 @@ static const unsigned short kKeyCodeF5 = 0x60;
 // ---------------------------------------------------------------------------
 
 namespace ui {
+
+// ROM の場所なしで起動したとき（ui/rom_locate.h）。窓を作る前なので、NSApplication を起こして
+// 案内（NSAlert）とフォルダを選ぶ窓（NSOpenPanel）を出す
+bool ask_roms_folder(const std::string &message, std::string &picked)
+{
+	@autoreleasepool {
+		[NSApplication sharedApplication];
+		[NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+		[NSApp activateIgnoringOtherApps:YES];
+		NSAlert *alert = [[NSAlert alloc] init];
+		[alert setMessageText:@"S-MU2000"];
+		[alert setInformativeText:[NSString stringWithUTF8String:message.c_str()]];
+		[alert addButtonWithTitle:[NSString stringWithUTF8String:UI_TEXT(dlg_roms_pick, "Select ROM folder...")]];
+		[alert addButtonWithTitle:[NSString stringWithUTF8String:UI_TEXT(dlg_roms_quit, "Quit")]];
+		if ([alert runModal] != NSAlertFirstButtonReturn)
+			return false;
+		NSOpenPanel *panel = [NSOpenPanel openPanel];
+		[panel setCanChooseFiles:NO];
+		[panel setCanChooseDirectories:YES];
+		[panel setAllowsMultipleSelection:NO];
+		if ([panel runModal] != NSModalResponseOK)
+			return false;
+		NSURL *url = [[panel URLs] firstObject];
+		const char *path = url ? [[url path] UTF8String] : nullptr;
+		picked = path ? std::string(path) : std::string();
+		return !picked.empty();
+	}
+}
 
 std::string open_midi_file_panel()
 {

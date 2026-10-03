@@ -116,6 +116,11 @@ inline const ui_texts &ja_texts()
 		.dlg_card_create_fail = "SmartMedia を作れない",
 		.dlg_fresh_card = "新しい SmartMedia を差しました。\n"
 		                  "本体の UTIL → CARD → Format と同じ書式化を済ませてあるので、すぐに保存できます。",
+		.dlg_roms_needed = "S-MU2000 を動かすには、自分の MU2000 から吸い出した ROM が要ります。\n吸い出し方: https://github.com/tarboh/S-MU2000#roms\n\n用意できたら、mu2000_flash.bin と dump フォルダが入っているフォルダを選んでください。場所は覚えるので、次からは gui もプラグインも ROM を見つけます。",
+		.dlg_roms_bad_fmt = "%s には ROM が揃っていません（足りないもの: %s）。\nmu2000_flash.bin と dump フォルダが入っているフォルダを選んでください。",
+		.dlg_roms_pick = "ROM のフォルダを選ぶ...",
+		.dlg_roms_quit = "終わる",
+		.dlg_roms_ok_cancel = "OK: フォルダを選ぶ。キャンセル: 終わる。",
 		.dlg_cancel = "キャンセル",
 		.note_exported_fmt = "書き出した（%zu バイト）",
 		.note_export_fail = "書き出せない",

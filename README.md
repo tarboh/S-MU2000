@@ -87,6 +87,12 @@ Place the following in the `rom` directory:
 | `dump/xv364a0.ic49` and 3 more | Wave ROM, 8 MB × 4                      |
 | `standin/sin-table.bin`        | 64 KB sine table used by the MEG        |
 
+The GUI and the plug-ins look for this directory in the same places (the `S_MU2000_ROMS` environment
+variable, the settings folder's `roms` or a `roms.txt` there naming the folder, next to the program, …).
+**Starting the GUI without a folder** (double-clicking it, say) searches those places, and if nothing is
+found it asks you to choose the folder and writes it to `roms.txt` in the settings folder, so from then on
+the GUI and the plug-ins both find the ROMs.
+
 * You **don't need to dump the program ROM**. It can be reconstructed from Yamaha's published
   updater (`mu2r1_uw.zip`). The contents are a MIDI file of Flash-write SysEx messages as-is,
   which reassemble to the SHA1 registered in MAME.

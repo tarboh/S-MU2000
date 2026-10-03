@@ -141,6 +141,11 @@ struct ui_texts {
 	const char *dlg_d3d_fail_fmt;    // 0x%08lx: the HRESULT
 	const char *dlg_card_create_fail;
 	const char *dlg_fresh_card;      // may contain \n
+	const char *dlg_roms_needed;
+	const char *dlg_roms_bad_fmt;
+	const char *dlg_roms_pick;
+	const char *dlg_roms_quit;
+	const char *dlg_roms_ok_cancel;
 	const char *dlg_cancel;
 	// .syx file notes, shown in the master editor (produced by the
 	// pc_window backends and master_editor.cpp).
