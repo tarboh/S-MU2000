@@ -182,7 +182,20 @@ inline std::string join(const std::string &dir, const std::string &rel)
 // An environment variable, or "" if it is not set
 inline std::string env(const char *name)
 {
+	// Read the Win32 environment variable to avoid
+	// incompatibilites with different C runtimes
+	// (MSVCRT and UCRT)
+#if defined(_WIN32)
+	char buf[PATH_MAX] = {};
+	const char *v = buf;
+	DWORD ret = GetEnvironmentVariableA(name, buf, sizeof(buf));
+	if (ret == 0) {
+		buf[0] = '\0';
+		v = nullptr;
+	}
+#else
 	const char *v = std::getenv(name);
+#endif
 	return (v && *v) ? std::string(v) : std::string();
 }
 
