@@ -40,7 +40,15 @@ struct rig {
 const char* show(const std::vector<u8>& d){
     static char buf[64];
     if (d.empty()) { std::snprintf(buf,sizeof buf,"(no answer)"); return buf; }
-    int n=0; for (u8 b : d) n += std::snprintf(buf+n, sizeof(buf)-n, "%02X ", b);
+    int n=0;
+    for (u8 b : d) {
+        if (n >= static_cast<int>(sizeof(buf)))
+            break;
+        int written = std::snprintf(buf+n, sizeof(buf)-n, "%02X ", b);
+        if (written < 0 || written >= static_cast<int>(sizeof(buf)-n))
+            break;
+        n += written;
+    }
     if (n>0) buf[n-1]=0;
     return buf;
 }
