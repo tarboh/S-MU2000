@@ -182,13 +182,26 @@ public:
 	// MAME 側にも同じものを入れてあるので、最初に食い違う命令が分かる
 	const char *regs_text() const
 	{
-		static char buf[256];
-		int n = 0;
-		for (int i = 0; i < 16; i++)
-			n += std::snprintf(buf + n, sizeof(buf) - n, " %08X", m_sh2_state->r[i]);
-		std::snprintf(buf + n, sizeof(buf) - n, " SR=%08X PR=%08X MACH=%08X MACL=%08X",
-		              m_sh2_state->sr, m_sh2_state->pr, m_sh2_state->mach, m_sh2_state->macl);
-		return buf;
+	        static char buf[256];
+	        int n = 0;
+	        for (int i = 0; i < 16; i++) {
+	                if (n >= static_cast<int>(sizeof(buf)))
+	                        break;
+	                int written = std::snprintf(buf + n, sizeof(buf) - n,
+	                                            " %08X", m_sh2_state->r[i]);
+	                if (written < 0 || written >= static_cast<int>(sizeof(buf) - n))
+	                        break;
+	                n += written;
+	        }
+	        if (n < static_cast<int>(sizeof(buf))) {
+	                int written = std::snprintf(buf + n, sizeof(buf) - n,
+	                                            " SR=%08X PR=%08X MACH=%08X MACL=%08X",
+	                                            m_sh2_state->sr, m_sh2_state->pr,
+	                                            m_sh2_state->mach, m_sh2_state->macl);
+	                if (written >= 0 && written < static_cast<int>(sizeof(buf) - n))
+	                        n += written;
+	        }
+	        return buf;
 	}
 
 	// S-MU2000: MAME は device_memory_interface でバスを持っていた。
