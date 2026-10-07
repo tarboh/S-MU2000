@@ -65,7 +65,7 @@ inline bool parse_wav(const std::vector<u8> &b, wav_data &out, std::string &err)
 	out.ch.assign(chans, std::vector<float>(n));
 	for (size_t i = 0; i < n; i++)
 		for (u32 c = 0; c < chans; c++) {
-			const size_t o = data + i * bpf + c * (bits / 8);
+			const size_t o = data + i * bpf + static_cast<size_t>(c) * (bits / 8);
 			float v;
 			if (flt) {
 				const u32 w = u32le(o);
