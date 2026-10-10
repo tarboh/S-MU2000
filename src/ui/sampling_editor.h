@@ -113,6 +113,13 @@ private:
 	int m_wm_pd = 0;                                      // 位相ひずみ: wavegen::pd_wave
 	float m_wm_pd_amount = 0.7f, m_wm_pd_ratio = 4.0f;
 	float m_wm_bell_ratio = 3.5f, m_wm_bell_index = 5.0f, m_wm_bell_decay = 1.2f;   // FM のベル
+	// 絵で描く（wavegen::paint）: 行がサイン 1 本、横がループの中の時間、値が濃さ（0〜1）
+	float m_wm_paint[smu2000::wavegen::PAINT_ROWS * smu2000::wavegen::PAINT_COLS] = {};
+	bool m_wm_paint_init = false;
+	int m_wm_paint_last_r = -1, m_wm_paint_last_c = -1;   // 描いている途中の、前の桝
+	float m_wm_paint_level = 1.0f;     // 筆の濃さ
+	int m_wm_paint_size = 1;           // 筆の太さ（桝）
+	float m_wm_paint_spacing = 1.0f;   // 行の間隔（1 = 倍音）
 	bool m_wm_vowel_morph = false;                        // 声: 2 つ目の母音へ行って戻る
 	float m_wm_vowel_to = 1.0f;
 	float m_wm_drum_tune = 0.5f, m_wm_drum_decay = 0.4f, m_wm_drum_tone = 0.5f;
