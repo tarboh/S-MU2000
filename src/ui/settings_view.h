@@ -131,7 +131,9 @@ private:
 		// Capabilities describe the opened device, not an unverified draft.
 		const bool same_device = m_draft.device == m_state.audio.device &&
 		                        m_draft.preferences.exclusive == m_state.audio.preferences.exclusive;
-		ImGui::BeginDisabled(!same_device);
+		// No format control where the platform owns the format: offering one that
+		// start() then refuses is worse than not offering it.
+		ImGui::BeginDisabled(!same_device || !m_state.stream.manual_format);
 		char rate_label[64];
 		std::snprintf(rate_label, sizeof(rate_label), "%d Hz", m_draft.preferences.stream.sample_rate);
 		if (combo(UI_TEXT(settings_rate, "Stream sample rate"),

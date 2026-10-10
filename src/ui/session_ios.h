@@ -9,12 +9,10 @@
 // notifications that say the route changed (the engine stops itself when
 // headphones appear and nothing restarts it), the ports - which are also how a
 // device is chosen, since there is no HAL on iOS - and the permission recording
-// needs. So it lives in one file that both halves share.
-//
-// The counterpart on the macOS side is the AudioHardware HAL inside
-// src/ui/audio_out_mac.cpp and src/ui/audio_in_mac.cpp: there is no AudioObject
-// on iOS, and there is no AVAudioSession on macOS (every member is
-// API_UNAVAILABLE(macos)), so each platform has exactly one such place.
+// needs. So this file is the counterpart of ui/hal_mac.h, which is where macOS
+// keeps what only it can answer: there is no AudioObject on iOS, and there is no
+// AVAudioSession on macOS (every member is API_UNAVAILABLE(macos)), so each
+// platform has exactly one such file and both halves of it share that one.
 
 #ifndef S_MU2000_IOS_SESSION_IOS_H
 #define S_MU2000_IOS_SESSION_IOS_H
@@ -75,7 +73,7 @@ bool request_mic_permission(std::string &err);
 // interruption ends and may be resumed (a call, or Siri). Nothing restarts the
 // engine by itself, so each half of the back end registers a callback and calls
 // its own restart() from it - see watch_output_session / watch_input_session in
-// ui/audio_core_ios.h for the side of the contract this answers.
+// ui/audio_apple.h for the side of the contract this answers.
 //
 // Two registers rather than one callback, because the two engines are
 // independent: output can be running while input is closed, and clearing one

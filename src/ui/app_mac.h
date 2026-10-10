@@ -13,6 +13,7 @@
 #pragma once
 
 #include <cstdio>
+#include <dispatch/dispatch.h>
 #include <string>
 
 #include "app.h"
@@ -28,6 +29,24 @@ class gui_app : public app
 public:
 	// mi is MIDI IN A-D, mu2000::MIDI_PORTS of them
 	explicit gui_app(bridge &b) : app(b) {}
+
+	// Work the frame asked for, answered once the turn that drew has finished.
+	// The base class drains its queue at the top of paint_main(), which is between
+	// the panel's NewFrame() and Render(): a nested modal there ([alert runModal]
+	// pumps the run loop) has the timer paint again inside it, and the next
+	// NewFrame() then finds the previous frame unended and asserts "Forgot to call
+	// Render() or EndFrame()". Windows posts a message for the same reason, and the
+	// main queue is its equivalent here.
+	void defer_outside_paint(std::function<void()> f) override
+	{
+		auto *work = new std::function<void()>(std::move(f));
+		dispatch_async_f(dispatch_get_main_queue(), work, [](void *p) {
+			std::function<void()> *fn = static_cast<std::function<void()> *>(p);
+			auto call = std::move(*fn);
+			delete fn;
+			call();
+		});
+	}
 
 	// ---- ui::app hooks: file dialogs, confirmations and error display are
 	// AppKit's business, everything they decide is shared
@@ -97,8 +116,14 @@ public:
 	// (start_audio, on the boot thread)
 	void make_audio() override
 	{
+		// Both devices, like app_ios.h and the other front ends: without the
+		// input object choose_ain() returned on its first line and the A/D INPUT
+		// menu did nothing at all on macOS. Static for the same reason dev_out
+		// is - the render block and the input tap hold their impl raw.
 		static audio_out dev_out;
+		static audio_in dev_in;
 		out = &dev_out;
+		ain = &dev_in;
 	}
 	void say_audio_opened(bool exclusive) override
 	{

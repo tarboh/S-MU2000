@@ -512,6 +512,27 @@ static const unsigned short kKeyCodeF5 = 0x60;
 	[NSApp terminate:nil];
 }
 
+// Closing the window asks AppKit to terminate, and AppKit ends a process it
+// terminates with exit() - which destroys the statics (gui_mac.cpp's engine and
+// app are static) without running ui::app::run()'s epilogue. So the shutdown
+// that epilogue does has to happen here or not at all: the audio device would
+// still be running while the things its callback points at were destroyed, the
+// device-lister thread would still be joinable (a joinable std::thread in a
+// destructor is std::terminate), and the card, the NVRAM and the settings would
+// be left as they were.
+//
+// At this delegate method the app is still whole, so it can stop the sound,
+// flush the card and write the settings before AppKit tears anything down.
+// NSTerminateNow, not NSTerminateLater - terminate: is what called us, and
+// refusing to end the process would leave a synth running with no window.
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender
+{
+	(void)sender;
+	if (_app)
+		_app->shutdown();
+	return NSTerminateNow;
+}
+
 - (void)windowDidResignKey:(NSNotification *)note
 {
 	(void)note;

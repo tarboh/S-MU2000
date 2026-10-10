@@ -29,6 +29,14 @@
 	<string>11.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<!--
+	  A/D INPUT はマイクから録る。macOS 14 以降、マイクの権限はアプリごとに
+	  あって、このキーの無いバンドルは denied される。build/S-MU2000.app は
+	  この plist から作られるので、ここに入れれば recording 党建つ。
+	  文言は iOS 版と同じ。
+	-->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>S-MU2000 records audio for sampling through the microphone (A/D INPUT).</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 </dict>
