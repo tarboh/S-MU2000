@@ -98,6 +98,25 @@ jobs:
       - run: python3 tools/check_texts.py
       - run: make test
 
+  windows-cmake-msvc:
+    # CMake with MSVC, on both -A profiles. Everything above compiles with
+    # MinGW only, and MinGW is forgiving about exactly the things MSVC is not:
+    # headers its windows.h pulls in where a lean one does not, __builtin_*
+    # where <bit> belongs. This job is what catches those, so it builds every
+    # target of CMakeLists.txt -- the core, the tools, gui/live and all three
+    # plug-ins. verify.exe needs no ROMs, like the other ROM-free steps.
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [x64, Win32]
+    steps:
+      - uses: actions/checkout@v7
+      # cmake and cl.exe both come with the runner image's Visual Studio.
+      - run: cmake -S . -B build-msvc-${{ matrix.platform }} -A ${{ matrix.platform }}
+      - run: cmake --build build-msvc-${{ matrix.platform }} --config Release --parallel
+      - run: .\build-msvc-${{ matrix.platform }}\bin\${{ matrix.platform }}\Release\verify.exe
+
   readme:
     # **README は英語が表**（README.md）で、日本語が README.ja.md。
     # 片方だけ直すと、もう片方が静かに古くなる。**止めはしないが知らせる**

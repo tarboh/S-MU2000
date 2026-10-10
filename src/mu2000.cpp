@@ -17,6 +17,7 @@
 #include "xg/fx_params.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -24,7 +25,6 @@
 
 #include "compat/platform.h"
 #include "compat/realtime.h"
-
 
 namespace {
 
@@ -1765,11 +1765,11 @@ void mu2000::native_learn_start(u32 rec)
 				m_ne_learn_dirty++;
 				if (std::getenv("SMU2000_NATIVE_DEBUG"))
 					std::fprintf(stderr, "写し取りが汚れた: すでに %d 個、新しい鍵 %016llx 重なり %016llx\n",
-					             __builtin_popcountll(m_learn_keyed),
+					             std::popcount(m_learn_keyed),
 					             (unsigned long long)m_learn_mask,
 					             (unsigned long long)(m_learn_mask & m_learn_keyed));
 			}
-			if (__builtin_popcountll(m_learn_keyed) < m_learn_want) {
+			if (std::popcount(m_learn_keyed) < m_learn_want) {
 				// **firmware がこちらの鳴っているスロットを取ったか**を見る。
 				// firmware は native の使用中を知らないので、声が増えると
 				// 奪い合いになり、写し取りに 2 つの音の値が混ざる
@@ -1792,7 +1792,7 @@ void mu2000::native_learn_start(u32 rec)
 			// 37ms 遅れて鳴らす音色があり、打ち切ると片方しか写し取れない。
 			// 長く占有すると、その間ほかの音色が写し取りを始められないので、
 			// そろったら 5ms で切り上げる
-			m_learn_left = __builtin_popcountll(m_learn_keyed) >= m_learn_want
+			m_learn_left = std::popcount(m_learn_keyed) >= m_learn_want
 			             ? 44100 / 200 : 44100 / 16;
 			break;
 		default: break;
@@ -1974,7 +1974,7 @@ void mu2000::native_learn_finish()
 	const int ncal = int(cals.size());
 	if (std::getenv("SMU2000_NATIVE_DEBUG")) {
 		std::fprintf(stderr, "learn rec=%06x 要素 %d 写し %d 鍵いた %d part=%d ctx=%08x\n",
-		             m_learn_rec, nel, ncal, __builtin_popcountll(m_learn_keyed),
+		             m_learn_rec, nel, ncal, std::popcount(m_learn_keyed),
 		             m_learn_part, m_ndrv.part_ctx(m_learn_part));
 		for (int k = 0; k < ncal; k++) {
 			const xg::nv::voice_cal &c = cals[size_t(k)];

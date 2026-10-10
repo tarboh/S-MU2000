@@ -18,6 +18,15 @@
 
 #include "imgui.h"
 
+// Windows SDK rpcndr.h (reached through the windows.h chains of every plugin
+// TU on MSVC; MinGW skips it) still carries the legacy `#define small char`.
+// Neutralize it before this struct names a member `small`, and the drawing
+// code can then say f.small again: rpcndr is never re-included after windows.h
+// once, and this header ships with the member declaration it must protect.
+#if defined(_MSC_VER) && defined(small)
+#undef small
+#endif
+
 namespace ui {
 namespace im {
 

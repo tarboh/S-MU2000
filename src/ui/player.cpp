@@ -12,6 +12,10 @@
 // simply not made there
 #if defined(_WIN32)
 #include <windows.h>
+// winmm's header is what declares them, and a lean windows.h leaves it out.
+// CMake defines WIN32_LEAN_AND_MEAN tree-wide; the Makefile does not, which is
+// why only the CMake build missed it. midi_in.cpp includes it either way.
+#include <mmsystem.h>
 #endif
 
 namespace ui {

@@ -201,26 +201,16 @@ static float cjk_em_scale(const unsigned char *d, size_t n, size_t off)
 	return k >= 0.5f && k <= 2.0f ? k : 1.0f;
 }
 
-// One GetFontData call; only the data call below differs between toolchains.
+// One GetFontData call. The size is the plain DWORD cjBuffer of the header's own
+// declaration -- wingdi.h spells it that way in every SDK generation and in
+// MinGW, so the call takes it by value and there is nothing to switch on here.
 static bool cjk_get_font_bytes(HDC dc, DWORD tag, std::vector<unsigned char> &data)
 {
 	const DWORD size = GetFontData(dc, tag, 0, nullptr, 0);
 	if (!size || size == DWORD(GDI_ERROR))
 		return false;
 	data.resize(size);
-	// The two toolchains disagree here and getting it wrong is a
-	// runtime memory error rather than a compile error: the SDK says
-	// LPDWORD, MinGW's wingdi.h says DWORD. Each is therefore called
-	// the way its own header declares it, and the two must not be
-	// "tidied" into one.
-#if defined(__MINGW32__)
 	const bool ok = GetFontData(dc, tag, 0, data.data(), DWORD(data.size())) != GDI_ERROR;
-#else
-	DWORD want = DWORD(data.size());
-	const bool ok = GetFontData(dc, tag, 0, data.data(), &want) != GDI_ERROR;
-	if (ok)
-		data.resize(want);
-#endif
 	if (!ok)
 		data.clear();
 	return ok;
