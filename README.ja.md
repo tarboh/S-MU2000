@@ -143,7 +143,7 @@ build/rec.exe    <番号> <wav> <秒> [--send <番号> <MIDI>]  実機の音を�
 **Domino など外のシーケンサから鳴らす手順は
 [doc/domino.md](doc/domino.md)**。要るのは仮想 MIDI ケーブル（loopMIDI）
 ひとつだけ。`gui.exe` は入口と出口を**動かしたまま画面から選べる**ので、
-パネルの `MIDI IN A` のジャックを押すか、窓のどこかを右クリックする。
+パネルの `MIDI IN A` のジャックを押すか、右クリックして「設定」の「MIDI」を開く。
 
 入口は **A〜D の 4 口**（パート 1-16・17-32・33-48・49-64）。実機の HOST SELECT を
 USB にしたときと同じ形で起動するので、実機では USB でしか使えない C・D も使える。
@@ -164,7 +164,7 @@ MIDI ファイルは窓に落とすか `--play` で流せる。
 値も残る（実機の firmware がそう作ってある）。プラグイン（VST3・CLAP・AU）はここを**読むだけ**で、
 挿したときは gui / live で作った設定から始まる（プラグインの中で変えたものは DAW の
 プロジェクトに残る）。工場出荷状態に戻すには `--factory` を付けて起動するか、
-`gui` の窓を右クリックして「工場出荷状態に戻す」。ファイルを消しても同じ。
+`gui` の POWER メニューで「工場出荷状態に戻す」。ファイルを消しても同じ。
 
 画面の中身は [doc/gui.md](doc/gui.md)。3 面ある。
 **パネルの絵は作り直さずに直せる**。位置も色も `panel.txt` という文字
@@ -247,7 +247,7 @@ make install-vsti   VSTI_INSTALL（既定は Program Files/VstPlugins）へ複�
 軽量化がある。各項目にマウスを重ねると説明が出る。
 既存の WASAPI・CoreAudio・ALSA を使い、DAC や回路のシミュレーションは追加しない。
 
-Windows は `make ASIO=1` で DirectSound とインストール済み ASIO ドライバーも使える。
+Windows は `make ASIO=1`、または CMake の `-DASIO=ON` で DirectSound とインストール済み ASIO ドライバーも使える。
 音声設定にドライバー選択と ASIO コントロールパネルのボタンを追加する。
 このビルドだけ CMake 3.18 以降が必要で、ASIO SDK を取得する。
 既定のビルドは PortAudio も SDK も使わない。

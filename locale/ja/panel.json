@@ -3,7 +3,6 @@
 	"tab_panel": "パネル",
 	"tab_editor": "エディタ",
 	"tab_effects": "エフェクト",
-	"hint_front": "大きなダイヤルはホイールで回す ／ ボタンはクリック ／ キー: A=PLAY E=EDIT U=UTIL F=EFFECT [ ]=PART",
 
 	// Front page hint (panel.cpp)
 	// Editor page (editor.cpp)

@@ -93,13 +93,15 @@ enum : int {
 	ID_PLAY_FILE = 5100, ID_STOP_FILE = 5101, ID_PORTS34_FOLD = 5102, ID_PORTS34_DROP = 5103,
 	ID_THIN_BENDS = 5104,    // the player lightens heavy MIDI (issue #82)
 	ID_FACTORY = 5200,
+	ID_SETTINGS = 5220,
 	ID_RESTART = 5201,       // power the MU off and on
 	ID_NATIVE_FX = 5215,     // lightweight mode (C++ effects)
-	ID_SETTINGS = 5220,
 	ID_NATIVE_ENGINE = 5216, // firmware を走らせない口（聞き比べ用）
 	ID_PC_EDITOR = 5203,
 	ID_OVERVIEW = 5202,
-	ID_OUTPUT_DIGITAL = 5300, ID_OUTPUT_ANALOG = 5301,
+	ID_OUTPUT_DIGITAL = 5300, ID_OUTPUT_ANALOG = 5301, ID_OUTPUT_LIMITER = 5302,
+	ID_RESET_GM = 5320, ID_RESET_GS, ID_RESET_XG, ID_MIDI_PANIC,
+	ID_RATE_AUTO = 6300, ID_RATE_BASE = 6301,
 	ID_AUDIO_DEFAULT = 5500, ID_AUDIO_BASE = 5501,
 	ID_INE_NONE = 6000, ID_INE_BASE = 6001,     // MIDI IN E (the plug-in board's port)
 };
@@ -110,7 +112,7 @@ enum : int {
 static_assert([] {
 	const int bases[] = { ID_IN_BASE, ID_IN_BASE + ID_IN_STRIDE, ID_IN_BASE + 2 * ID_IN_STRIDE,
 	                      ID_IN_BASE + 3 * ID_IN_STRIDE,
-	                      ID_OUT_BASE, ID_OUTB_BASE, ID_OUTMU_BASE, ID_AIN_BASE, ID_AUDIO_BASE, ID_INE_BASE };
+	                      ID_OUT_BASE, ID_OUTB_BASE, ID_OUTMU_BASE, ID_AIN_BASE, ID_AUDIO_BASE, ID_INE_BASE, ID_RATE_BASE };
 	const int singles[] = { ID_IN_NONE, ID_IN_NONE + ID_IN_STRIDE, ID_IN_NONE + 2 * ID_IN_STRIDE,
 	                        ID_IN_NONE + 3 * ID_IN_STRIDE,
 	                        ID_OUT_NONE, ID_OUTB_NONE, ID_OUTMU_NONE,
@@ -119,7 +121,7 @@ static_assert([] {
 	                        ID_PLAY_FILE, ID_STOP_FILE, ID_FACTORY, ID_RESTART, ID_NATIVE_FX,
 	                        ID_NATIVE_ENGINE, ID_SETTINGS,
 	                        ID_PORTS34_FOLD, ID_PORTS34_DROP, ID_THIN_BENDS, ID_PC_EDITOR, ID_OVERVIEW,
-	                        ID_OUTPUT_DIGITAL, ID_OUTPUT_ANALOG, ID_AUDIO_DEFAULT, ID_INE_NONE };
+	                        ID_OUTPUT_DIGITAL, ID_OUTPUT_ANALOG, ID_OUTPUT_LIMITER, ID_RESET_GM, ID_RESET_GS, ID_RESET_XG, ID_MIDI_PANIC, ID_RATE_AUTO, ID_AUDIO_DEFAULT, ID_INE_NONE };
 	for (size_t i = 0; i < std::size(singles); i++)
 		for (size_t j = 0; j < i; j++)
 			if (singles[i] == singles[j]) return false;
@@ -156,6 +158,9 @@ struct menu_state {
 	std::vector<std::string> midi_outs;
 	std::vector<std::string> audio_ins;
 	std::vector<std::string> audio_outs;
+	std::vector<int> audio_rates;
+	int audio_rate = 0;
+	bool limiter = false;
 	std::string audio_name;  // empty selects the system default
 	bool audio_ready = false; // startup has released the output to the UI
 	midi_routing midi;
@@ -224,8 +229,7 @@ inline std::string basename(const std::string &path)
 
 } // namespace menu_detail
 
-// One port picker: "unused", then the devices, or "(no devices)". now is the
-// open device index (-1 is unused)
+// One input/output picker for the quick MIDI menu.
 inline menu_group menu_port_group(const char *title, const std::vector<std::string> &names,
                                   const std::vector<midi_route> &routes, int column, int id_none, int id_base, bool ready)
 {
@@ -276,10 +280,18 @@ inline menu_group menu_audio_output(const menu_state &s)
 	return g;
 }
 
-// The right-click menu: the four MIDI IN ports, MIDI OUT, the two THRUs,
-// A/D INPUT, the PC editor windows, the lightweight-mode toggle, and the
-// factory reset. Same items in the same order on both platforms
+// The general right-click menu opens the editors and settings.
 inline std::vector<menu_group> menu_ports(const menu_state &s)
+{
+	using namespace menu_detail;
+	menu_group editors;
+	editors.items.push_back(text(UI_TEXT(menu_open_list, "Open the list"), ID_OVERVIEW, false, true, "F3"));
+	editors.items.push_back(text(UI_TEXT(menu_open_editor, "Open the editor"), ID_PC_EDITOR, false, true, "F2"));
+	return { editors, settings_shortcut() };
+}
+
+// MIDI IN A is the quick menu for all MIDI ports and mode resets.
+inline std::vector<menu_group> menu_midi(const menu_state &s)
 {
 	using namespace menu_detail;
 	std::vector<menu_group> groups;
@@ -289,25 +301,11 @@ inline std::vector<menu_group> menu_ports(const menu_state &s)
 	groups.push_back(menu_port_group(UI_TEXT(menu_out_mu, "MIDI OUT (what the MU2000 sends)"), s.midi_outs, s.midi.outputs, 2, ID_OUTMU_NONE, ID_OUTMU_BASE, s.ready));
 	groups.push_back(menu_port_group(UI_TEXT(menu_thru_a, "MIDI THRU A (sends out what A receives)"), s.midi_outs, s.midi.outputs, 0, ID_OUT_NONE, ID_OUT_BASE, s.ready));
 	groups.push_back(menu_port_group(UI_TEXT(menu_thru_b, "MIDI THRU B (sends out what B receives)"), s.midi_outs, s.midi.outputs, 1, ID_OUTB_NONE, ID_OUTB_BASE, s.ready));
-	groups.push_back(menu_ain_group(s.audio_ins, s.ain_name));
-	groups.push_back(menu_audio_output(s));
-
-	menu_group ed;
-	ed.items.push_back(text(UI_TEXT(menu_open_list, "Open the list"), ID_OVERVIEW, false, true, "F3"));
-	ed.items.push_back(text(UI_TEXT(menu_open_editor, "Open the editor"), ID_PC_EDITOR, false, true, "F2"));
-	ed.items.push_back(text(UI_TEXT(menu_native_fx, "Play effects in C++ (light; differs from hardware)"),
-	                        ID_NATIVE_FX, s.native_fx, true));
-	ed.items.push_back(text(UI_TEXT(menu_native_engine, "Play without the firmware (fast; still differs)"),
-	                        ID_NATIVE_ENGINE, s.native_engine, true, "F4"));
-	groups.push_back(ed);
-
-	// Throwing the settings away reboots the machine, so it is only offered
-	// once the firmware is actually up
-	menu_group g;
-	g.items.push_back(separator());
-	g.items.push_back(text(UI_TEXT(menu_restart, "Restart the MU (power off and on)"), ID_RESTART, false, s.ready));
-	g.items.push_back(text(UI_TEXT(menu_factory, "Factory reset..."), ID_FACTORY, false, s.ready));
-	groups.push_back(g);
+	menu_group reset;
+	reset.title = UI_TEXT(settings_reset, "Reset MIDI mode");
+	reset.items = {text("GM", ID_RESET_GM, false, s.ready), text("GS / TG300B", ID_RESET_GS, false, s.ready),
+	    text("XG", ID_RESET_XG, false, s.ready), text(UI_TEXT(settings_panic, "Panic"), ID_MIDI_PANIC, false, s.ready)};
+	groups.push_back(reset);
 	groups.push_back(settings_shortcut());
 	return groups;
 }
@@ -344,13 +342,11 @@ inline std::vector<menu_group> menu_card(const menu_state &s)
 	else
 		std::snprintf(stop, sizeof(stop), "%s", UI_TEXT(menu_stop, "Stop"));
 	g.items.push_back(text(stop, ID_STOP_FILE, false, s.playing));
+	g.items.push_back(text(UI_TEXT(menu_thin_bends, "Lighten heavy MIDI: thin pitch bends, drop Roland display data (unlike the real unit)"), ID_THIN_BENDS, s.thin_bends, true));
 	// What to do with a MIDI file that uses ports 3 and 4
 	g.items.push_back(separator());
 	g.items.push_back(text(UI_TEXT(menu_fold34, "Fold ports 3+4 onto A and B (DIN ports only)"), ID_PORTS34_FOLD, s.fold34, true));
 	g.items.push_back(text(UI_TEXT(menu_drop34, "Drop ports 3+4 (DIN ports only)"), ID_PORTS34_DROP, !s.fold34, true));
-	// Dense pitch bends (more than the firmware works through in real time)
-	g.items.push_back(separator());
-	g.items.push_back(text(UI_TEXT(menu_thin_bends, "Lighten heavy MIDI: thin pitch bends, drop Roland display data (unlike the real unit)"), ID_THIN_BENDS, s.thin_bends, true));
 	groups.push_back(g);
 	groups.push_back(settings_shortcut());
 	return groups;
@@ -362,13 +358,20 @@ inline std::vector<menu_group> menu_phones(const menu_state &s)
 {
 	using namespace menu_detail;
 	menu_group g;
-	g.items.push_back(text(UI_TEXT(menu_out_title, "Sound output"), 0, false, false));
-	g.items.push_back(separator());
 	g.items.push_back(text(UI_TEXT(menu_out_digital, "Digital (S/PDIF; keeps DPCM DC)"),
 	                       ID_OUTPUT_DIGITAL, !s.analog, true));
 	g.items.push_back(text(UI_TEXT(menu_out_analog, "Analog (LINE OUT/PHONES; cuts DC)"),
 	                       ID_OUTPUT_ANALOG, s.analog, true));
-	return { menu_audio_output(s), g, settings_shortcut() };
+	menu_group rates;
+	rates.title = UI_TEXT(settings_rate, "Stream sample rate");
+	rates.items.push_back(text(UI_TEXT(settings_auto, "Automatic"), ID_RATE_AUTO, !s.audio_rate, s.audio_ready));
+	for (size_t i = 0; i < s.audio_rates.size(); i++) {
+		const std::string label = std::to_string(s.audio_rates[i]) + " Hz";
+		rates.items.push_back(text(label.c_str(), ID_RATE_BASE + int(i), s.audio_rate == s.audio_rates[i], s.audio_ready));
+	}
+	g.items.push_back(separator());
+	g.items.push_back(text(UI_TEXT(settings_limiter, "Limit output peaks"), ID_OUTPUT_LIMITER, s.limiter, s.audio_ready));
+	return { menu_audio_output(s), rates, g, settings_shortcut() };
 }
 
 // The POWER switch: restart the machine
@@ -377,6 +380,7 @@ inline std::vector<menu_group> menu_power(const menu_state &s)
 	using namespace menu_detail;
 	menu_group g;
 	g.items.push_back(text(UI_TEXT(menu_restart, "Restart the MU (power off and on)"), ID_RESTART, false, s.ready));
+	g.items.push_back(text(UI_TEXT(menu_factory, "Factory reset..."), ID_FACTORY, false, s.ready));
 	return { g, settings_shortcut() };
 }
 

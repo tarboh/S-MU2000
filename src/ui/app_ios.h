@@ -39,7 +39,7 @@ public:
 	// ---- audio
 	//
 	// make_audio() is where the device is made, the way app_mac.cpp does it, and
-	// AVAudioEngine is the device (src/ui/audio_core_ios.mm). app_mac.cpp is not
+	// AVAudioEngine is the device (src/ui/audio_apple.mm). app_mac.cpp is not
 	// reusable: iOS has no AudioHardware HAL. mach_absolute_time and
 	// os/workgroup.h do both exist on iOS (verified against the iPhoneSimulator
 	// SDK).

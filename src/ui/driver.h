@@ -186,9 +186,9 @@ public:
 			watch(b, mu.midi_in(b));
 			echo(b);
 		}
-		// パラメータの層の問い合わせ。外へは流さない
+		// パラメータの問い合わせと本体のモードリセット。外へは流さない
 		while (br.take_ask(b))
-			mu.midi_in(b);
+			watch(b, mu.midi_in(b));
 		// 画面から口 B・C・D へ（一覧の鍵盤）。外へは流さない
 		for (int port = 1; port < mu2000::MIDI_PORTS; port++)
 			while (br.take_midi_port(port, b))

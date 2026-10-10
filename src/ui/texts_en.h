@@ -10,7 +10,6 @@ inline const ui_texts &en_texts()
 		.tab_panel = "Panel",
 		.tab_editor = "Editor",
 		.tab_effects = "Effects",
-		.hint_front = "Turn the big dial with the wheel / click buttons / keys: A=PLAY E=EDIT U=UTIL F=EFFECT [ ]=PART",
 		.editor_hint = "Drag knobs up/down, or use the wheel.\nSends XG parameter changes.\nValues are read back from the MU2000.",
 		.editor_xg_reset = "XG reset",
 		.editor_all_off = "All notes off",
@@ -1076,6 +1075,8 @@ inline const ui_texts &en_texts()
 		.settings_volume = "Output volume",
 		.settings_dc = "Analog output DC filtering",
 		.settings_limiter = "Limit output peaks",
+		.settings_reset = "Reset MIDI mode",
+		.settings_panic = "Panic",
 	};
 	return t;
 }

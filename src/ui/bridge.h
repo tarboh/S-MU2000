@@ -98,9 +98,8 @@ public:
 		}
 	}
 
-	// パラメータの層の問い合わせ（ダンプ要求）。send と同じく音源の口 A へ入るが、
-	// **外の MIDI THRU へは流さない**（画面が値を読みに行っているだけで、外の機器には
-	// 関係が無い）。書き手は画面の糸だけ
+	// Internal queries and mode resets enter port A without MIDI THRU.
+	// Written only by the UI thread.
 	bool ask(const std::vector<u8> &m) { return m.empty() || m_ask.put(m.data(), m.size()); }
 
 	// 音源が MIDI OUT から送り出したもの（問い合わせの返事など）。画面の糸が 1 バイトずつ

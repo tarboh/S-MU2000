@@ -2,10 +2,11 @@
 //
 // One WAV header, written once.
 //
-// What the iOS capture and the AU probe write. Both want a 44-byte RIFF/WAVE
-// header in front of s16 stereo, and both were writing it out by hand - the
-// probe's copy in host byte order, which works here and would not survive a
-// big-endian port. One function does it, explicitly little-endian.
+// This tree grew five copies of the same 44 bytes - the Apple and Linux output
+// backends, the AU probe, live --wav and render - each of them looking local to
+// whatever needed a file written. Two of them wrote the sizes in host byte
+// order, which works here and would not survive a big-endian port. They all
+// agree on the bytes, so one function does, explicitly little-endian.
 //
 // Nothing platform-specific lives here: the rate is an argument rather than a
 // constant pulled from the audio interface, because a file format does not care
@@ -13,6 +14,8 @@
 
 #ifndef S_MU2000_UI_WAV_H
 #define S_MU2000_UI_WAV_H
+
+#include "compat/cli_text.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -66,14 +69,14 @@ inline bool write_wav(const std::string &path, const std::vector<int16_t> &pcm,
 {
 	std::FILE *f = std::fopen(path.c_str(), "wb");
 	if (!f) {
-		err = "書けない: " + path;
+		err = CLI_T("Cannot write: ", "書けない: ") + path;
 		return false;
 	}
 	write_wav_header(f, uint32_t(pcm.size() / (channels ? channels : 1)), rate, channels);
 	if (!pcm.empty())
 		std::fwrite(pcm.data(), sizeof(int16_t), pcm.size(), f);
 	if (std::fclose(f) != 0) {
-		err = "書き込みが途中で終わった: " + path;
+		err = CLI_T("The writing stopped part way: ", "書き込みが途中で終わった: ") + path;
 		return false;
 	}
 	return true;
@@ -85,14 +88,14 @@ inline bool write_wav_float(const std::string &path, const std::vector<float> &p
 {
 	std::FILE *f = std::fopen(path.c_str(), "wb");
 	if (!f) {
-		err = "書けない: " + path;
+		err = CLI_T("Cannot write: ", "書けない: ") + path;
 		return false;
 	}
 	write_wav_header(f, uint32_t(pcm.size() / (channels ? channels : 1)), rate, channels, 3, 32);
 	if (!pcm.empty())
 		std::fwrite(pcm.data(), sizeof(float), pcm.size(), f);
 	if (std::fclose(f) != 0) {
-		err = "書き込みが途中で終わった: " + path;
+		err = CLI_T("The writing stopped part way: ", "書き込みが途中で終わった: ") + path;
 		return false;
 	}
 	return true;

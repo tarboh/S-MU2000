@@ -28,6 +28,10 @@ struct audio_stream_info {
 	bool control_panel = false;
 	int buffer_rate = 0; // 0: stream rate; CoreAudio periods use the hardware clock
 	bool manual_buffer = true;
+	// Whether the rate and the channel pair can be chosen at all. False where the
+	// platform owns both (iOS), so the window offers nothing it would have to
+	// refuse later.
+	bool manual_format = true;
 };
 
 inline bool custom_audio_format(const audio_stream_options &s)

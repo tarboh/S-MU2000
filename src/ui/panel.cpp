@@ -471,7 +471,6 @@ void panel::resize(int w, int h)
 	m_adgain = scale(m_lay.adgain[0] - m_lay.adgain[2], m_lay.adgain[1] - m_lay.adgain[2],
 	                 m_lay.adgain[2] * 2, m_lay.adgain[2] * 2);
 	m_status = scale(20, 372, 700, 13);
-	m_hint   = scale(20, 386, 700, 13);
 	m_wheel  = scale(m_lay.dial[0] - m_lay.dial[2], m_lay.dial[1] - m_lay.dial[2],
 	                 m_lay.dial[2] * 2, m_lay.dial[2] * 2);
 	for (int i = 0; i < 6; i++)
@@ -1572,10 +1571,6 @@ void panel::paint_front(ImDrawList *dl, const snapshot &s, u64 pressed, double v
 	if (status && status[0])
 		im::text_in(dl, im::pos_of(m_status), im::size_of(m_status), status,
 		            PANEL_INK, m_fonts.small, m_fonts.small_px, false, true, false);
-	im::text_in(dl, im::pos_of(m_hint), im::size_of(m_hint),
-	            UI_TEXT(hint_front, "Turn the big dial with the wheel / click buttons / "
-	                                "keys: A=PLAY E=EDIT U=UTIL F=EFFECT [ ]=PART"),
-	            RGB(120, 124, 130), m_fonts.small, m_fonts.small_px, false, true, false);
 
 	draw_tabs(dl);
 }

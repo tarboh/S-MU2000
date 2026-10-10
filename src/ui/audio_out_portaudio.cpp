@@ -5,6 +5,7 @@
 #include "portaudio.h"
 #include "pa_asio.h"
 #include <windows.h>
+#include <mmreg.h>
 #include <dsound.h>
 #include <algorithm>
 #include <cstdio>

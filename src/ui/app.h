@@ -57,6 +57,7 @@
 #include "ui/tool_args.h"
 #include "ui/settings.h"
 #include "ui/settings_view.h"
+#include "ui/midi_commands.h"
 #include "ui/audio_session.h"
 #include "ui/midi_session.h"
 #include "ui/shot.h"
@@ -147,6 +148,7 @@ public:
 	std::string edit_out_name;
 	std::string audio_name;          // the audio device, by name
 	std::vector<std::string> audio_menu_devices;
+	std::vector<int> audio_menu_rates;
 	std::atomic<bool> audio_ready{false};
 	audio_preferences audio_settings;
 	std::vector<audio_channel_route> audio_routes;
@@ -396,7 +398,7 @@ public:
 	// network MIDI in the menus that carry MIDI at all, and the ROM import in
 	// the card menu, since it is a storage thing - and it should not have to
 	// repeat the hit test to find out which one it is looking at.
-	enum class menu_kind { none, card, phones, power, ain, ports };
+	enum class menu_kind { none, card, phones, power, ain, ports, midi };
 	menu_kind menu_kind_at(int x, int y) const
 	{
 		if (panel.on_card_slot(x, y))
@@ -407,6 +409,8 @@ public:
 			return menu_kind::power;
 		if (panel.on_ad_input(x, y))
 			return menu_kind::ain;
+		if (panel.on_midi_jack(x, y))
+			return menu_kind::midi;
 		return menu_kind::ports;
 	}
 	virtual std::vector<menu_group> context_menu(int x, int y)
@@ -420,6 +424,8 @@ public:
 			return menu_power(menu_snapshot());
 		case menu_kind::ain:
 			return menu_ain_only(audio_in::list(), ain_name);
+		case menu_kind::midi:
+			return menu_midi(menu_snapshot());
 		default:
 			return menu_ports(menu_snapshot());
 		}
@@ -1203,6 +1209,9 @@ public:
 		s.audio_ready = audio_ready.load() && !audio_job.busy() && state && (state->load() == 1 || audio_failed);
 		if (s.audio_ready) {
 			s.audio_name = audio_name;
+			s.audio_rates = audio_menu_rates = out->stream_info().rates;
+			s.audio_rate = audio_settings.stream.sample_rate;
+			s.limiter = eng->limit_output.load();
 		}
 		if (!audio_ready.load()) return s;
 		s.midi = midi_routes;
@@ -1252,6 +1261,13 @@ public:
 		else if (id == ID_NATIVE_ENGINE)                              toggle_engine();
 		else if (id == ID_FACTORY)                                    do_factory_reset();
 		else if (id == ID_RESTART)                                    do_restart();
+		else if (id == ID_RATE_AUTO || (id >= ID_RATE_BASE && id < ID_RATE_BASE + int(audio_menu_rates.size()))) {
+			auto next = audio_settings;
+			next.stream.sample_rate = id == ID_RATE_AUTO ? 0 : audio_menu_rates[size_t(id - ID_RATE_BASE)];
+			request_audio({audio_name, next});
+		}
+		else if (id == ID_OUTPUT_LIMITER) { eng->limit_output.store(!eng->limit_output.load()); save_settings(); }
+		else if (id >= ID_RESET_GM && id <= ID_MIDI_PANIC) { if (eng && state->load() == 1) send_midi_command(id, br); }
 		else if (id == ID_SETTINGS)                                   open_window_by_kind(BAR_SETTINGS);
 		else if (id == ID_PC_EDITOR)                                  open_window_by_kind(BAR_EDITOR);
 		else if (id == ID_OVERVIEW)                                   open_window_by_kind(BAR_LIST);

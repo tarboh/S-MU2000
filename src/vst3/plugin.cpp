@@ -1409,6 +1409,13 @@ SMTG_EXPORT_SYMBOL IPluginFactory *PLUGIN_API GetPluginFactory()
 	return &g_factory;
 }
 
+// PLUGIN_API is __stdcall only on 32-bit Windows, where the dllexport comes
+// out decorated as _GetPluginFactory@0 and hosts calling GetProcAddress("GetPluginFactory")
+// find nothing (x64 spells it plain). Alias the undecorated name onto it.
+#if defined(_MSC_VER) && defined(_M_IX86)
+#pragma comment(linker, "/EXPORT:GetPluginFactory=_GetPluginFactory@0")
+#endif
+
 #if defined(_WIN32)
 
 __declspec(dllexport) bool InitDll()

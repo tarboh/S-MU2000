@@ -29,5 +29,7 @@
 	"settings_opening": "音声デバイスを開いています...",
 	"settings_volume": "出力音量",
 	"settings_dc": "アナログ出力の直流除去",
-	"settings_limiter": "出力ピークを制限"
+	"settings_limiter": "出力ピークを制限",
+	"settings_reset": "MIDI モードをリセット",
+	"settings_panic": "全音停止"
 }

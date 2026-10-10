@@ -10,7 +10,6 @@ inline const ui_texts &ja_texts()
 		.tab_panel = "パネル",
 		.tab_editor = "エディタ",
 		.tab_effects = "エフェクト",
-		.hint_front = "大きなダイヤルはホイールで回す ／ ボタンはクリック ／ キー: A=PLAY E=EDIT U=UTIL F=EFFECT [ ]=PART",
 		.editor_hint = "つまみは上下にドラッグ、またはホイール。\n送っているのは XG のパラメータチェンジ。\n値は MU2000 に問い合わせて読み返している。",
 		.editor_xg_reset = "XG リセット",
 		.editor_all_off = "オールノートオフ",
@@ -1076,6 +1075,8 @@ inline const ui_texts &ja_texts()
 		.settings_volume = "出力音量",
 		.settings_dc = "アナログ出力の直流除去",
 		.settings_limiter = "出力ピークを制限",
+		.settings_reset = "MIDI モードをリセット",
+		.settings_panic = "全音停止",
 	};
 	return t;
 }

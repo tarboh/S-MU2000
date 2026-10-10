@@ -18,6 +18,7 @@
 #include "bootcache.h"
 #include "smf.h"
 #include "ui/options.h"
+#include "ui/wav.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -37,37 +38,17 @@ const char *getenv_or(const char *name, const char *def)
 
 void write_wav(const std::string &path, const std::vector<s16> &pcm, u32 rate)
 {
-	std::FILE *f = std::fopen(path.c_str(), "wb");
-	if (!f) return;
-	const u32 bytes = u32(pcm.size() * 2);
-	auto u32w = [&](u32 v) { u8 b[4] = { u8(v), u8(v >> 8), u8(v >> 16), u8(v >> 24) };
-	                         std::fwrite(b, 1, 4, f); };
-	auto u16w = [&](u16 v) { u8 b[2] = { u8(v), u8(v >> 8) }; std::fwrite(b, 1, 2, f); };
-	std::fwrite("RIFF", 1, 4, f); u32w(36 + bytes); std::fwrite("WAVE", 1, 4, f);
-	std::fwrite("fmt ", 1, 4, f); u32w(16); u16w(1); u16w(2);
-	u32w(rate); u32w(rate * 4); u16w(4); u16w(16);
-	std::fwrite("data", 1, 4, f); u32w(bytes);
-	std::fwrite(pcm.data(), 1, bytes, f);
-	std::fclose(f);
+	std::string err;
+	if (!ui::write_wav(path, pcm, err, rate))
+		std::fprintf(stderr, "%s\n", err.c_str());
 }
 
 // 32bit 浮動小数の WAV（--float）。全振幅を 1.0 とする
 void write_wav_float(const std::string &path, const std::vector<float> &pcm, u32 rate)
 {
-	std::FILE *f = std::fopen(path.c_str(), "wb");
-	if (!f) return;
-	const unsigned bytes = unsigned(pcm.size() * 4);
-	auto u32w = [&](unsigned v) { unsigned char b[4] = { (unsigned char)v, (unsigned char)(v >> 8),
-	                                                     (unsigned char)(v >> 16), (unsigned char)(v >> 24) };
-	                              std::fwrite(b, 1, 4, f); };
-	auto u16w = [&](unsigned v) { unsigned char b[2] = { (unsigned char)v, (unsigned char)(v >> 8) };
-	                              std::fwrite(b, 1, 2, f); };
-	std::fwrite("RIFF", 1, 4, f); u32w(36 + bytes); std::fwrite("WAVE", 1, 4, f);
-	std::fwrite("fmt ", 1, 4, f); u32w(16); u16w(3); u16w(2);
-	u32w(rate); u32w(rate * 8); u16w(8); u16w(32);
-	std::fwrite("data", 1, 4, f); u32w(bytes);
-	std::fwrite(pcm.data(), 1, bytes, f);
-	std::fclose(f);
+	std::string err;
+	if (!ui::write_wav_float(path, pcm, err, rate))
+		std::fprintf(stderr, "%s\n", err.c_str());
 }
 
 // ---- 出力の形を選ぶ引数（--sample-rate・--bit-depth・--gain・--normalize。イシュー #120）

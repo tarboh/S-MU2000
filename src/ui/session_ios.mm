@@ -8,13 +8,14 @@
 // PlayAndRecord), which decides the route - and therefore whether picking the
 // microphone silences the speaker - and it is what the system arbitrates with,
 // so a call or Siri arrives as an interruption to resume from rather than as
-// silence.
+// silence. Every member is API_UNAVAILABLE(macos), so the macOS half answers
+// session_open() with "yes" and nothing else.
 
 #import "ui/session_ios.h"
 
 #import <Foundation/Foundation.h>
 
-#include "ui/audio_core_ios.h"
+#include "ui/audio_apple.h"
 #include "ui/audio_out.h"
 
 #include "compat/cli_text.h"
@@ -207,7 +208,7 @@ void watch_input(const std::function<void()> &on_change)
 // Both directions need both watchers - a route change stops whichever engine is
 // running - so they are defined once here rather than twice in the two halves.
 
-namespace ui::ios_audio {
+namespace ui::apple {
 
 void watch_output_session(const std::function<void()> &on_change)
 {
@@ -219,4 +220,4 @@ void watch_input_session(const std::function<void()> &on_change)
 	ios::watch_input(on_change);
 }
 
-} // namespace ui::ios_audio
+} // namespace ui::apple

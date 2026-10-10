@@ -60,6 +60,13 @@
 @protocol MTLCommandQueue;
 #endif
 
+// rpcndr's legacy `#define small char` is re-live in TUs that reached the
+// windows.h chain only through the includes above; fonts.h's guard can help
+// before, this one helps at every f.small below (see the comment there).
+#if defined(_MSC_VER) && defined(small)
+#undef small
+#endif
+
 namespace ui {
 namespace imshell {
 
