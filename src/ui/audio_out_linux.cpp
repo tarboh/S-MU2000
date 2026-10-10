@@ -67,7 +67,7 @@ std::string lowered(const std::string &s)
 
 // 使える再生の口。ALSA の「名前の当て」から、出力に使えるものだけを拾う。
 // 番号ではなく名前で選ぶのは、ほかの platform と同じ理由（挿し直すとずれる）
-std::vector<std::string> audio_out::list()
+std::vector<std::string> audio_out::list(audio_driver)
 {
 	hush_alsa();
 	std::vector<std::string> out;
@@ -305,7 +305,7 @@ bool audio_out::start(int latency_ms, fill_fn fill, std::string &err, bool exclu
 	return true;
 }
 
-std::string audio_out::default_device_name() { return "default"; }
+std::string audio_out::default_device_name(audio_driver) { return "default"; }
 
 bool audio_out::running() const { return m_impl && m_impl->running.load(); }
 

@@ -35,6 +35,11 @@ cp -rf art/real "$DIST/art/"
 
 cp -f LICENSE "$DIST/LICENSE.txt"
 cp -f NOTICE.txt "$DIST/NOTICE.txt"
+if [ -f "$BUILD/ASIO-GPL-3.0.txt" ]; then
+  cp -f "$BUILD/ASIO-GPL-3.0.txt" "$DIST/ASIO-GPL-3.0.txt"
+else
+  rm -f "$DIST/ASIO-GPL-3.0.txt"
+fi
 [ -f doc/vst3-readme.txt ] && cp -f doc/vst3-readme.txt "$DIST/plugins/vst3-readme.txt" || true
 
 printf '# Put the path to your ROM folder on the first line, e.g.\n# C:\\Users\\you\\roms\n' > "$DIST/roms.txt.example"

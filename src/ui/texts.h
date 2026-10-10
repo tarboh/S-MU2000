@@ -1134,6 +1134,8 @@ struct ui_texts {
 	const char *settings_resampler;
 	const char *settings_sinc;
 	const char *settings_nearest;
+	const char *settings_driver;
+	const char *settings_control_panel;
 	const char *settings_title;
 	const char *settings_audio;
 	const char *settings_midi;

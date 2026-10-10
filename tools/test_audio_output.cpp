@@ -24,6 +24,60 @@ static const ui::menu_item &menu_item(const std::vector<ui::menu_group> &groups,
 	throw std::runtime_error("Missing menu command: " + std::to_string(id));
 }
 
+#if defined(_WIN32) && defined(SMU2000_ASIO)
+static void driver_streams(const std::string &baseline)
+{
+	ui::audio_out out;
+	const ui::audio_out::fill_fn silence = [](s16 *dst, u32 n) { std::memset(dst, 0, size_t(n) * 4); };
+	const auto wait_frames = [&] {
+		for (int i = 0; i < 100 && out.running() && !out.produced(); i++)
+			std::this_thread::sleep_for(std::chrono::milliseconds(20));
+		require(out.running() && out.produced() > 0);
+	};
+	ui::audio_output_config current;
+	current.device = baseline;
+	require(ui::switch_audio_output(out, silence, current, current).selected);
+	for (auto driver : {ui::audio_driver::directsound, ui::audio_driver::asio}) {
+		const auto devices = ui::audio_out::list(driver);
+		for (const auto &name : devices) std::cout << ui::audio_driver_name(driver) << " device: " << name << std::endl;
+		ui::audio_output_config next;
+		next.preferences.stream.driver = driver;
+		if (driver == ui::audio_driver::asio) {
+			// A registered driver need not have its hardware connected. Pick an
+			// installed software driver for this opt-in Windows hardware test.
+			for (const auto &name : devices) if (name == "FL Studio ASIO" || name == "Steinberg built-in ASIO Driver") { next.device = name; break; }
+			if (next.device.empty()) continue;
+		}
+		auto opened = ui::switch_audio_output(out, silence, next, current);
+		if (!opened.selected) std::cerr << opened.error << std::endl;
+		require(opened.selected);
+		current = next;
+		std::this_thread::sleep_for(std::chrono::milliseconds(250));
+		wait_frames();
+		require(!out.stream_info().rates.empty());
+		std::cout << "Opened " << ui::audio_driver_name(driver) << ": " << out.device_name() << " / " << out.stream_info().rate << " Hz" << std::endl;
+		next.preferences.stream.left = 1; next.preferences.stream.right = 0;
+		next.preferences.stream.sample_rate = out.stream_info().rate;
+		if (driver == ui::audio_driver::asio) {
+			require(!out.stream_info().buffers.empty());
+			next.preferences.stream.buffer_frames = out.stream_info().buffers.front();
+		}
+		require(ui::switch_audio_output(out, silence, next, current).selected);
+		current = next;
+		std::this_thread::sleep_for(std::chrono::milliseconds(200));
+		wait_frames();
+		auto bad = next; bad.device = "S-MU2000 nonexistent driver 907278";
+		const auto rollback = ui::switch_audio_output(out, silence, bad, current);
+		require(!rollback.selected && rollback.restored && !rollback.error.empty());
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		wait_frames();
+	}
+	ui::audio_output_config native;
+	require(ui::switch_audio_output(out, silence, native, current).selected);
+	out.stop();
+	std::cout << "DirectSound/ASIO playback, format changes and rollback: PASS" << std::endl;
+}
+#endif
 
 int main(int argc, char **argv)
 {
@@ -57,7 +111,9 @@ int main(int argc, char **argv)
 	s.audio_outs.clear();
 	require(ui::menu_audio_output(s).items.back().label == "(No playback devices)");
 	std::cout << "Audio output menus: PASS\n";
-
+#if defined(_WIN32) && defined(SMU2000_ASIO)
+	if (argc >= 2 && !std::strcmp(argv[1], "--drivers")) { driver_streams(argc > 2 ? argv[2] : ""); return 0; }
+#endif
 	if (argc < 2 || std::strcmp(argv[1], "--devices"))
 		return 0;
 

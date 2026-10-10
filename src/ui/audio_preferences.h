@@ -28,12 +28,14 @@ struct audio_preferences {
 struct audio_output_config {
 	std::string device; // empty: follow the system output
 	audio_preferences preferences;
+	bool control_panel = false; // one-time request, never persisted
 	bool operator==(const audio_output_config &) const = default;
 };
 
 struct audio_channel_route {
 	std::string device;
 	int left = 0, right = 1;
+	audio_driver driver = audio_driver::native;
 };
 
 // Save only fields the user changed, keeping unrelated one-run CLI overrides out.
@@ -46,13 +48,14 @@ inline void remember_audio_change(audio_output_config &saved, const audio_output
 	if (a.latency_ms != b.latency_ms) s.latency_ms = b.latency_ms;
 	if (a.exclusive != b.exclusive) s.exclusive = b.exclusive;
 	// Rate, buffer and channels describe one validated format.
-	if (before.device != after.device || a.stream.sample_rate != b.stream.sample_rate ||
+	if (before.device != after.device || a.stream.driver != b.stream.driver || a.stream.sample_rate != b.stream.sample_rate ||
 	    a.stream.buffer_frames != b.stream.buffer_frames || a.stream.left != b.stream.left || a.stream.right != b.stream.right) {
 		s.stream.sample_rate = b.stream.sample_rate;
 		s.stream.buffer_frames = b.stream.buffer_frames;
 		s.stream.left = b.stream.left;
 		s.stream.right = b.stream.right;
 	}
+	if (a.stream.driver != b.stream.driver) { s.stream.driver = b.stream.driver; saved.device = after.device; }
 	if (a.stream.quality != b.stream.quality) s.stream.quality = b.stream.quality;
 }
 } // namespace ui

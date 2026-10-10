@@ -1049,6 +1049,8 @@ inline const ui_texts &en_texts()
 		.settings_resampler = "Resampler",
 		.settings_sinc = "Sinc (high quality)",
 		.settings_nearest = "Nearest (lo-fi)",
+		.settings_driver = "Driver",
+		.settings_control_panel = "Driver Control Panel...",
 		.settings_title = "Settings...",
 		.settings_audio = "Audio",
 		.settings_midi = "MIDI",

@@ -19,6 +19,7 @@ struct settings_state {
 	settings_page page = settings_page::audio;
 	audio_output_config audio;
 	audio_stream_info stream;
+	std::array<std::vector<std::string>, 3> driver_outputs;
 	std::vector<std::string> outputs, inputs, midi_inputs, midi_outputs;
 	midi_routing midi;
 	std::string midi_error;
@@ -30,6 +31,7 @@ struct settings_state {
 
 struct settings_actions {
 	std::function<void(audio_output_config)> audio;
+	std::function<void()> control_panel;
 	std::function<void(std::string)> input;
 	std::function<void(midi_routing)> midi;
 	std::function<void(int)> command, language;
@@ -122,15 +124,27 @@ private:
 		// Labels sit above their controls, so translations fit narrow windows too.
 		ImGui::PushItemWidth(-1);
 		ImGui::BeginDisabled(!m_state.ready || m_state.busy);
-		device_combo(UI_TEXT(menu_audio_title, "Audio output device"), m_state.outputs, m_draft.device,
+		if ((supported_audio_driver(audio_driver::directsound) || supported_audio_driver(audio_driver::asio)) &&
+		    combo(UI_TEXT(settings_driver, "Driver"), audio_driver_name(m_draft.preferences.stream.driver))) {
+			for (int d = 0; d < 3; d++) if (supported_audio_driver(audio_driver(d))) {
+				if (ImGui::Selectable(audio_driver_name(audio_driver(d)), m_draft.preferences.stream.driver == audio_driver(d))) {
+					m_draft.preferences.stream.driver = audio_driver(d);
+					m_draft.device.clear(); m_draft.preferences.exclusive = false;
+					m_draft.preferences.stream.sample_rate = 0; m_draft.preferences.stream.buffer_frames = 0;
+				}
+			}
+			ImGui::EndCombo();
+		}
+		device_combo(UI_TEXT(menu_audio_title, "Audio output device"), (m_draft.preferences.stream.driver == m_state.audio.preferences.stream.driver ? m_state.outputs : m_state.driver_outputs[size_t(m_draft.preferences.stream.driver)]), m_draft.device,
 		             UI_TEXT(menu_audio_default, "System default"));
 #if !defined(__linux__) && (!defined(__APPLE__) || TARGET_OS_OSX)
-		if (ImGui::Checkbox(UI_TEXT(settings_exclusive, "Exclusive access"), &m_draft.preferences.exclusive))
+		if (m_draft.preferences.stream.driver == audio_driver::native && ImGui::Checkbox(UI_TEXT(settings_exclusive, "Exclusive access"), &m_draft.preferences.exclusive))
 			m_draft.preferences.stream.sample_rate = 0;
 #endif
 		// Capabilities describe the opened device, not an unverified draft.
 		const bool same_device = m_draft.device == m_state.audio.device &&
-		                        m_draft.preferences.exclusive == m_state.audio.preferences.exclusive;
+		                        m_draft.preferences.exclusive == m_state.audio.preferences.exclusive &&
+		                        m_draft.preferences.stream.driver == m_state.audio.preferences.stream.driver;
 		// No format control where the platform owns the format: offering one that
 		// start() then refuses is worse than not offering it.
 		ImGui::BeginDisabled(!same_device || !m_state.stream.manual_format);
@@ -180,7 +194,7 @@ private:
 			ImGui::EndCombo();
 		}
 		ImGui::EndDisabled();
-		ImGui::BeginDisabled(m_draft.preferences.stream.buffer_frames != 0);
+		ImGui::BeginDisabled(m_draft.preferences.stream.buffer_frames != 0 || m_draft.preferences.stream.driver == audio_driver::asio);
 		ImGui::TextUnformatted(UI_TEXT(settings_latency, "Automatic buffer target (ms)"));
 		ImGui::SliderInt("##latency", &m_draft.preferences.latency_ms, 5, 200);
 		const bool latency_active = ImGui::IsItemActive();
@@ -201,6 +215,9 @@ private:
 #endif
 		ImGui::EndDisabled();
 		if ((m_draft != before && !latency_active) || latency_done) m_actions.audio(m_draft);
+		if (m_state.stream.control_panel && same_device && !m_state.busy) {
+			if (ImGui::Button(UI_TEXT(settings_control_panel, "Driver Control Panel..."))) m_actions.control_panel();
+		}
 		if (m_state.busy) ImGui::TextUnformatted(UI_TEXT(settings_opening, "Opening audio device..."));
 		if (!m_state.error.empty()) ImGui::TextWrapped("%s", m_state.error.c_str());
 		ImGui::Separator();

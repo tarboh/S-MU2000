@@ -116,6 +116,15 @@ static void persistence()
 	runtime = edited; edited.preferences.latency_ms = 40;
 	ui::remember_audio_change(saved, runtime, edited);
 	require(saved.preferences.latency_ms == 40, "Explicit latency edit was not saved");
+	runtime = edited; edited.preferences.stream.driver = ui::audio_driver::asio;
+	ui::remember_audio_change(saved, runtime, edited);
+	require(saved.preferences.stream.driver == ui::audio_driver::asio, "Driver choice was not saved");
+	ui::remembered unsupported;
+	ui::apply_settings({{"audio_driver", "2"}, {"audio_out", "ASIO synth"}, {"audio_rate", "96000"}, {"audio_left", "6"}, {"audio_right", "7"}}, unsupported);
+	if (!ui::supported_audio_driver(ui::audio_driver::asio))
+		require(unsupported.audio_out.empty() && unsupported.audio.stream.driver == ui::audio_driver::native &&
+		        unsupported.audio.stream.sample_rate == 0 && unsupported.audio.stream.left == 0 && unsupported.audio.stream.right == 1,
+		        "Unavailable driver kept its incompatible device or format");
 	saved.preferences.stream = {96000, 1024, 6, 7};
 	runtime.preferences.stream = {};
 	edited = runtime; edited.device = "New stereo output";
@@ -169,11 +178,14 @@ struct fake_output {
 	ui::audio_stream_options stream;
 	int opens = 0;
 	bool shared = false, fail = false;
+	bool control_panel = false;
+	int panels = 0;
+	void set_control_panel(bool on) { control_panel = on; }
 	void stop() {}
 	void set_stream_options(ui::audio_stream_options s) { stream = s; }
 	template <typename Fill> bool start(int, Fill, std::string &error, bool exclusive, const std::string &, bool, bool)
 	{
-		opens++;
+		opens++; if (control_panel) panels++;
 		if (fail || ui::custom_audio_format(stream) || stream.buffer_frames || (exclusive && stream.strict)) {
 			error = "Unsupported format or access mode"; return false;
 		}
@@ -184,6 +196,14 @@ struct fake_output {
 static void startup_and_recovery()
 {
 	const auto fill = [](s16 *, u32) {};
+	{
+		fake_output panel; ui::audio_output_config request; std::string error;
+		request.control_panel = true; request.preferences.stream.sample_rate = 96000;
+		require(ui::start_audio_stream(panel, fill, request, error) && panel.panels == 1 && !request.control_panel,
+		        "Driver control panel request repeated during fallback");
+		require(ui::start_audio_stream(panel, fill, request, error) && panel.panels == 1,
+		        "Driver control panel request leaked into the next change");
+	}
 	std::string error;
 	fake_output out;
 	ui::audio_output_config config;
@@ -280,6 +300,7 @@ static void interface()
 		require(ImGui::GetDrawData()->TotalVtxCount > 0, "Settings window produced no drawing");
 	};
 	frame(); frame();
+	require(items.contains("Driver") == (ui::supported_audio_driver(ui::audio_driver::directsound) || ui::supported_audio_driver(ui::audio_driver::asio)), "Driver selector visibility does not match supported backends");
 	const auto click = [&](const std::string &label) {
 		require(items.contains(label), ("Missing widget: " + label).c_str());
 		auto target = items.at(label);

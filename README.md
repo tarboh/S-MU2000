@@ -248,6 +248,12 @@ Emulation contains C++ effects, firmware bypass, and MIDI-file lightening.
 Hover over each option for details. The existing WASAPI, CoreAudio, and ALSA
 backends are used; this adds no DAC or circuit simulation.
 
+Windows builds can also enable DirectSound and installed ASIO drivers with
+`make ASIO=1`, or CMake with `-DASIO=ON`. This adds a Driver selector and an
+ASIO control-panel button to Audio settings. Only this opt-in build needs CMake 3.18+ and downloads the ASIO
+SDK. The default build uses neither PortAudio nor the SDK. See
+[build notes](third_party/portaudio/S-MU2000.md) for details.
+
 ## Latency
 
 **Measured 117 ms → 16 ms end to end** (MIDI in to sound out, measured from waveforms

@@ -94,8 +94,15 @@ std::string endpoint_name(IMMDevice *d)
 } // namespace
 
 
-std::vector<std::string> audio_out::list()
+std::vector<std::string> audio_out::list(audio_driver driver)
 {
+	if (driver != audio_driver::native) {
+#if defined(SMU2000_ASIO)
+		return portaudio_output_list(driver);
+#else
+		return {};
+#endif
+	}
 	std::vector<std::string> out;
 	const bool com = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
 	IMMDeviceEnumerator *en = nullptr;
@@ -122,8 +129,12 @@ std::vector<std::string> audio_out::list()
 }
 
 
-std::string audio_out::default_device_name()
+std::string audio_out::default_device_name(audio_driver driver)
 {
+	if (driver == audio_driver::asio) {
+		const auto devices = list(driver);
+		return devices.empty() ? std::string() : devices.front();
+	}
 	const bool com = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
 	IMMDeviceEnumerator *en = nullptr;
 	IMMDevice *dev = nullptr;
@@ -171,12 +182,15 @@ bool audio_out::start(int latency_ms, fill_fn fill, std::string &err, bool exclu
 	m_want_dev = device;
 	m_start_state.store(0);
 	m_thread = std::thread([this, latency_ms, exclusive] {
-		run(latency_ms, exclusive);
+		if (m_stream.driver == audio_driver::native) run(latency_ms, exclusive);
+#if defined(SMU2000_ASIO)
+		else run_portaudio(latency_ms);
+#endif
 		m_start_state.store(m_running.load() ? 1 : 2);
 	});
 
 	// 開始に失敗したかどうかだけ待つ。だめなら理由を返す
-	for (int i = 0; i < 400 && m_start_state.load() == 0 && !m_running.load(); i++)
+	for (int i = 0; (m_control_panel || i < (m_stream.driver == audio_driver::asio ? 2000 : 400)) && m_start_state.load() == 0 && !m_running.load(); i++)
 		Sleep(5);
 	if (!m_running.load()) {
 		stop();
@@ -261,6 +275,10 @@ double audio_out::inflight_worst_ms() const
 std::string audio_out::format_line() const
 {
 	char buf[200];
+	if (m_stream.driver != audio_driver::native) {
+		std::snprintf(buf, sizeof(buf), "%s / %u Hz %u ch float / period %.1f ms", audio_driver_name(m_stream.driver), device_rate(), device_channels(), period_ms());
+		return buf;
+	}
 	std::snprintf(buf, sizeof(buf),
 	              CLI_T("%s / %u Hz %u ch %s / period %.1f ms / resampling %s", "%s / %u Hz %u ch %s / 周期 %.1f ms / 変換 %s"),
 	              m_exclusive.load() ? CLI_T("exclusive", "独り占め") : CLI_T("shared", "共有"),

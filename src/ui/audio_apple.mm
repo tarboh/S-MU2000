@@ -1379,12 +1379,12 @@ audio_out::~audio_out()
 	stop();
 }
 
-std::vector<std::string> audio_out::list()
+std::vector<std::string> audio_out::list(audio_driver)
 {
 	return apple::output_list();
 }
 
-std::string audio_out::default_device_name()
+std::string audio_out::default_device_name(audio_driver)
 {
 	return apple::default_output_name();
 }

@@ -4,6 +4,8 @@
 	"settings_resampler": "リサンプラー",
 	"settings_sinc": "Sinc（高品質）",
 	"settings_nearest": "最近傍（低品質）",
+	"settings_driver": "ドライバー",
+	"settings_control_panel": "ドライバーの設定...",
 	"settings_title": "設定...",
 	"settings_audio": "音声",
 	"settings_midi": "MIDI",

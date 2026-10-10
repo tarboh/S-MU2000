@@ -161,6 +161,7 @@ inline settings_map collect_settings(const remembered &r)
 	kv.emplace_back("audio_latency", std::to_string(r.audio.latency_ms));
 	kv.emplace_back("audio_exclusive", r.audio.exclusive ? "1" : "0");
 	kv.emplace_back("audio_resampler", std::to_string(int(r.audio.stream.quality)));
+	kv.emplace_back("audio_driver", std::to_string(int(r.audio.stream.driver)));
 	kv.emplace_back("audio_rate", std::to_string(r.audio.stream.sample_rate));
 	kv.emplace_back("audio_buffer", std::to_string(r.audio.stream.buffer_frames));
 	kv.emplace_back("audio_left", std::to_string(r.audio.stream.left));
@@ -172,6 +173,7 @@ inline settings_map collect_settings(const remembered &r)
 		const auto &route = r.audio_routes[i];
 		const std::string prefix = "audio_route_" + std::to_string(i);
 		kv.emplace_back(prefix + "_device", route.device);
+		kv.emplace_back(prefix + "_driver", std::to_string(int(route.driver)));
 		kv.emplace_back(prefix + "_channels", std::to_string(route.left) + "," + std::to_string(route.right));
 	}
 	kv.emplace_back(SET_CARD, r.card);
@@ -237,12 +239,21 @@ inline void apply_settings(const settings_map &kv, remembered &r)
 	r.audio.latency_ms = integer("audio_latency", r.audio.latency_ms, 0, 200);
 	r.audio.exclusive = integer("audio_exclusive", 0, 0, 1) != 0;
 	r.audio.stream.quality = resampler_quality(integer("audio_resampler", 0, 0, 2));
+	r.audio.stream.driver = audio_driver(integer("audio_driver", 0, 0, 2));
+	const bool unsupported_driver = !supported_audio_driver(r.audio.stream.driver);
+	if (unsupported_driver) r.audio.stream.driver = audio_driver::native;
 	r.audio.stream.sample_rate = integer("audio_rate", 0, 0, 192000);
 	if (r.audio.stream.sample_rate && r.audio.stream.sample_rate < 8000) r.audio.stream.sample_rate = 0;
 	r.audio.stream.buffer_frames = integer("audio_buffer", 0, 0, 8192);
 	r.audio.stream.left = integer("audio_left", 0, 0, 63);
 	r.audio.stream.right = integer("audio_right", 1, 0, 63);
 	if (r.audio.stream.left == r.audio.stream.right) { r.audio.stream.left = 0; r.audio.stream.right = 1; }
+	if (unsupported_driver) {
+		r.audio_out.clear();
+		r.audio.stream.sample_rate = r.audio.stream.buffer_frames = 0;
+		r.audio.stream.left = 0; r.audio.stream.right = 1;
+		r.audio.exclusive = false;
+	}
 	r.limiter = integer("output_limiter", 0, 0, 1) != 0;
 	r.native_fx = integer("native_fx", 0, 0, 2);
 	r.native_engine = integer("native_engine", 0, 0, 1);
@@ -254,7 +265,7 @@ inline void apply_settings(const settings_map &kv, remembered &r)
 		int left = 0, right = 1;
 		if (v && std::sscanf(v->c_str(), "%d,%d", &left, &right) == 2 &&
 		    left >= 0 && right >= 0 && left < 64 && right < 64 && left != right)
-			r.audio_routes.push_back({device, left, right});
+			r.audio_routes.push_back({device, left, right, audio_driver(integer((key.substr(0, key.size() - 7) + "_driver").c_str(), 0, 0, 2))});
 	}
 	if (const std::string *v = find_setting(kv, SET_CARD))    r.card    = *v;
 	if (const std::string *v = find_setting(kv, SET_PORTS34)) r.fold34  = *v != "drop";

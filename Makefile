@@ -161,12 +161,41 @@ else ifdef ARCH
 BUILD := build-$(ARCH)
 endif
 endif
+ASIO ?= 0
+ifeq ($(ASIO),1)
+ifeq ($(PLATFORM),windows)
+ifeq ($(origin BUILD),undefined)
+BUILD := build-asio
+else ifeq ($(origin BUILD),file)
+BUILD := $(BUILD)-asio
+endif
+else
+$(error ASIO=1 is supported only by Windows builds)
+endif
+endif
 BUILD ?= build
+
+ifeq ($(PLATFORM),windows)
+ifeq ($(ASIO),1)
+CMAKE ?= cmake
+PORTAUDIO_LIB := $(BUILD)/portaudio/libportaudio.a
+CXXFLAGS += -DSMU2000_ASIO=1 -I third_party/portaudio/include
+PORTAUDIO_SRC := src/ui/audio_out_portaudio.cpp
+PORTAUDIO_LIBS := -ldsound -luuid -lwinmm -lole32
+$(PORTAUDIO_LIB): third_party/portaudio/CMakeLists.txt third_party/portaudio/cmake/modules/FindASIO.cmake
+	$(CMAKE) -S third_party/portaudio -B $(BUILD)/portaudio -G "$(if $(CROSS_WINDOWS),Unix Makefiles,MinGW Makefiles)" -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_C_COMPILER="$(subst g++,gcc,$(CXX))" -DCMAKE_CXX_COMPILER="$(CXX)" -DCMAKE_BUILD_TYPE=Release -DPA_BUILD_SHARED_LIBS=OFF -DPA_USE_ASIO=ON -DPA_USE_DS=ON
+	$(CMAKE) --build $(BUILD)/portaudio --parallel 4
+$(BUILD)/ASIO-GPL-3.0.txt: third_party/portaudio/ASIO-GPL-3.0.txt
+	@mkdir -p $(dir $@)
+	cp $< $@
+all: $(BUILD)/ASIO-GPL-3.0.txt
+endif
+endif
 
 # Menu tests need no ROMs or playback hardware. Opt in to opening real
 # outputs with silence: make check-audio-output AUDIO_DEVICES=1.
 ifeq ($(PLATFORM),windows)
-AUDIO_OUTPUT_TEST_SRC := src/ui/audio_out.cpp
+AUDIO_OUTPUT_TEST_SRC := src/ui/audio_out.cpp $(PORTAUDIO_SRC)
 AUDIO_OUTPUT_TEST_LIBS := -lole32 -lavrt -lwinmm -ldsound -luuid
 else ifeq ($(PLATFORM),macos)
 # The macOS backend is the shared render path plus the HAL questions it asks, so
@@ -185,12 +214,11 @@ AUDIO_OUTPUT_TEST_SRC := src/ui/audio_out_linux.cpp
 AUDIO_OUTPUT_TEST_LIBS := -lasound
 endif
 
-$(BUILD)/audio_output_test$(EXE): tools/test_audio_output.cpp $(AUDIO_OUTPUT_TEST_SRC) \
+$(BUILD)/audio_output_test$(EXE): tools/test_audio_output.cpp $(AUDIO_OUTPUT_TEST_SRC) $(PORTAUDIO_LIB) \
                                src/ui/audio_output_switch.h src/ui/audio_out.h \
                                src/ui/menu.h src/ui/texts.h src/ui/texts_en.h src/ui/texts_ja.h
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(AUDIO_OUTPUT_TEST_FLAGS) -o $@ tools/test_audio_output.cpp \
-	    $(AUDIO_OUTPUT_TEST_SRC) $(LDFLAGS) $(AUDIO_OUTPUT_TEST_LIBS)
+	$(CXX) $(CXXFLAGS) $(AUDIO_OUTPUT_TEST_FLAGS) -o $@ tools/test_audio_output.cpp $(AUDIO_OUTPUT_TEST_SRC) $(PORTAUDIO_LIB) $(LDFLAGS) $(AUDIO_OUTPUT_TEST_LIBS)
 
 .PHONY: check-audio-output
 check-audio-output: $(BUILD)/audio_output_test$(EXE)
@@ -433,7 +461,7 @@ PC_OBJS    := $(IMGUI_SRCS:%.cpp=$(BUILD)/imgui/%.o) $(PC_SRCS:%.cpp=$(BUILD)/im
 
 # gui は実機のフロントパネル風の画面を出す
 UI_SRCS := src/ui/panel.cpp src/ui/editor.cpp src/ui/effects.cpp src/ui/png.cpp \
-           src/ui/audio_out.cpp src/ui/audio_in.cpp src/ui/midi_in.cpp src/ui/midi_out.cpp \
+           src/ui/audio_out.cpp $(PORTAUDIO_SRC) src/ui/audio_in.cpp src/ui/midi_in.cpp src/ui/midi_out.cpp \
            src/ui/layout.cpp src/ui/svg.cpp src/ui/player.cpp src/xg/model.cpp
 UI_OBJS := $(UI_SRCS:%.cpp=$(BUILD)/%.o)
 
@@ -452,9 +480,9 @@ $(BUILD)/src/ui/%.o: src/ui/%.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(IMGUI_FLAGS) -c -o $@ $<
 
-$(BUILD)/gui$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/smf.o $(UI_OBJS) $(PC_OBJS) $(BUILD)/src/gui.o $(BUILD)/src/ui/app_win.o $(BUILD)/src/ui/window_win.o
+$(BUILD)/gui$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/smf.o $(UI_OBJS) $(PC_OBJS) $(BUILD)/src/gui.o $(BUILD)/src/ui/app_win.o $(BUILD)/src/ui/window_win.o $(PORTAUDIO_LIB)
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) -lwinmm -lole32 -lgdi32 -luser32 -lavrt -lcomdlg32 -lshell32 	       -ld3d11 -ldxgi -ld3dcompiler -ldwmapi -limm32
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) -lwinmm -lole32 -lgdi32 -luser32 -lavrt -lcomdlg32 -lshell32 	       -ld3d11 -ldxgi -ld3dcompiler -ldwmapi -limm32 $(PORTAUDIO_LIBS)
 
 # midisend は MIDI ファイルを実時間で MIDI 出力へ流す（live の試験用）
 $(BUILD)/midisend$(EXE): $(BUILD)/src/smf.o $(BUILD)/src/midisend.o $(BUILD)/src/compat/compat.o
@@ -467,8 +495,17 @@ $(BUILD)/rec$(EXE): $(BUILD)/src/smf.o $(BUILD)/src/rec.o $(BUILD)/src/compat/co
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) -lwinmm -lole32 -luuid
 
-# live は Windows の MIDI 入力と音声出力を使う
-$(BUILD)/live$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/ui/midi_in.o $(BUILD)/src/ui/audio_out.o $(BUILD)/src/live.o
+# live uses only WASAPI, including in an ASIO=1 build.
+LIVE_AUDIO_OBJ := $(BUILD)/src/ui/audio_out.o
+LIVE_MAIN_OBJ := $(BUILD)/src/live.o
+ifeq ($(ASIO),1)
+LIVE_AUDIO_OBJ := $(BUILD)/native/src/ui/audio_out.o
+LIVE_MAIN_OBJ := $(BUILD)/native/src/live.o
+$(BUILD)/native/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(filter-out -DSMU2000_ASIO=1,$(CXXFLAGS)) -c -o $@ $<
+endif
+$(BUILD)/live$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/ui/midi_in.o $(LIVE_AUDIO_OBJ) $(LIVE_MAIN_OBJ)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) -lwinmm -lole32 -luuid -lavrt
 

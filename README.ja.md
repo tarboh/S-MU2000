@@ -247,6 +247,12 @@ make install-vsti   VSTI_INSTALL（既定は Program Files/VstPlugins）へ複�
 軽量化がある。各項目にマウスを重ねると説明が出る。
 既存の WASAPI・CoreAudio・ALSA を使い、DAC や回路のシミュレーションは追加しない。
 
+Windows は `make ASIO=1`、または CMake の `-DASIO=ON` で DirectSound とインストール済み ASIO ドライバーも使える。
+音声設定にドライバー選択と ASIO コントロールパネルのボタンを追加する。
+このビルドだけ CMake 3.18 以降が必要で、ASIO SDK を取得する。
+既定のビルドは PortAudio も SDK も使わない。
+詳しくは [ビルド手順](third_party/portaudio/S-MU2000.md) を参照。
+
 ## 待ち時間
 
 **実測で 117ms → 16ms まで詰めた**（MIDI を受けてから音が出るまで。実機と

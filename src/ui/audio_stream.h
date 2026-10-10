@@ -2,6 +2,7 @@
 #pragma once
 
 #include "resampler.h"
+#include "audio_driver.h"
 #include <array>
 #include <functional>
 #include <string>
@@ -13,6 +14,7 @@ struct audio_stream_options {
 	int sample_rate = 0; // 0: device/default rate
 	int buffer_frames = 0; // 0: use the latency target
 	int left = 0, right = 1;
+	audio_driver driver = audio_driver::native;
 	resampler_quality quality = resampler_quality::sinc;
 	bool strict = false; // settings changes must not silently change access mode
 	bool operator==(const audio_stream_options &) const = default;
@@ -23,6 +25,7 @@ struct audio_stream_info {
 	std::vector<std::string> channels;
 	int rate = 44100;
 	std::vector<int> buffers;
+	bool control_panel = false;
 	int buffer_rate = 0; // 0: stream rate; CoreAudio periods use the hardware clock
 	bool manual_buffer = true;
 	// Whether the rate and the channel pair can be chosen at all. False where the
@@ -38,7 +41,7 @@ inline bool custom_audio_format(const audio_stream_options &s)
 
 inline bool valid_audio_request(const audio_stream_options &s)
 {
-	return int(s.quality) >= 0 && int(s.quality) <= 2 && (s.sample_rate == 0 || (s.sample_rate >= 8000 && s.sample_rate <= 192000)) &&
+	return supported_audio_driver(s.driver) && int(s.quality) >= 0 && int(s.quality) <= 2 && (s.sample_rate == 0 || (s.sample_rate >= 8000 && s.sample_rate <= 192000)) &&
 	       s.buffer_frames >= 0 && s.buffer_frames <= 8192 && s.left >= 0 && s.right >= 0 &&
 	       s.left < 64 && s.right < 64 && s.left != s.right;
 }

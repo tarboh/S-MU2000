@@ -25,6 +25,11 @@ if(POLICY CMP0091)
 endif()
 project(S-MU2000 LANGUAGES CXX)
 
+option(ASIO "Enable Windows standalone DirectSound and ASIO output" OFF)
+if(ASIO AND NOT WIN32)
+  message(FATAL_ERROR "ASIO=ON is supported only by Windows builds")
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Triangulation for SVG fills with holes (same include the Makefile adds on
@@ -102,7 +107,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
   set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/${SMU_WIN_ARCH}")
   # console.h/paths.h already insist on these locally; do it tree-wide so the
   # windows.h min/max macros cannot poison std::numeric_limits<> in tool TUs.
-  add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
+  add_compile_definitions(NOMINMAX)
+  # The ASIO SDK needs the full Windows/COM declarations. Keep lean headers
+  # on our targets instead of passing that restriction into dependencies.
+  target_compile_definitions(smu2000_core PUBLIC WIN32_LEAN_AND_MEAN)
 endif()
 
 # ---- Offline tools (run anywhere; need no ROMs except via argv) -------------
@@ -361,4 +369,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     ${IMGUI_CORE} ${IMGUI_WIN_BACKENDS} src/ui/app_win.cpp src/ui/window_win.cpp)
   target_include_directories(gui PRIVATE src src/compat third_party/imgui)
   target_link_libraries(gui PRIVATE smu2000_core ${PLUGIN_WIN_LIBS})
+  if(ASIO)
+    include(cmake/OptionalAudio.cmake)
+  endif()
 endif()
