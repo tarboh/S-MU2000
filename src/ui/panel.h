@@ -253,7 +253,7 @@ private:
 	page m_page = page::front;
 	std::vector<spot> m_spots;
 	RECT m_adgain{};
-	RECT m_lcd{}, m_wheel{}, m_volume{}, m_status{}, m_hint{}, m_leds[6]{};
+	RECT m_lcd{}, m_wheel{}, m_volume{}, m_status{}, m_leds[6]{};
 
 	// 掴んでいるもの
 	const spot *m_held = nullptr;

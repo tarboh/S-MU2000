@@ -138,12 +138,14 @@ The plugins (VST3 and so on) do not have this window; there the DAW plays the so
 
 ## Choosing MIDI ports
 
-**They can be chosen from the display while running.** Left-click the
-`MIDI IN A` jack drawn on the panel, or right-click anywhere in the window,
-for the menu.
+**Choose ports while running** from the panel's `MIDI IN A` menu or Settings → MIDI.
+The MIDI IN menu also has GM, GS / TG300B and XG resets for the emulator, plus Panic.
 
-At the bottom of the same menu is **"Restore factory settings..."**. After
-confirmation it discards the remembered settings (work RAM, `src/nvram.h`)
+Right-click anywhere to open the list (F3), the editor (F2), or Settings.
+Settings → Emulation contains Play effects in C++ and Play without the firmware.
+
+The **POWER menu** has Restart and **Factory reset...**. After confirmation,
+factory reset discards the remembered settings (work RAM, `src/nvram.h`)
 and powers up again. The start-up argument `--factory` does the same.
 
 ### Fast start-up (a snapshot after boot)
@@ -178,8 +180,8 @@ received data on).
 
 ### A/D INPUT (audio for sampling)
 
-Left-click the `A/D INPUT` jack on the panel, or use "A/D INPUT" in the
-right-click menu, to choose the **recording device** (WASAPI shared mode).
+Open the panel's `A/D INPUT` menu or Settings → Audio to choose the
+**recording device** (WASAPI shared mode).
 Left is AD1, right is AD2. Anything other than 44,100 Hz is converted
 internally. The chosen name is remembered as `audio_in` in `gui.ini` and
 opened at the next start. The default is "not used". It feeds sampling
@@ -203,8 +205,9 @@ not lose the port you chose. Choosing again from the menu replaces it.
 ### Audio output (the PHONES jack)
 
 Left- or right-click the `PHONES` jack on the panel for the audio output
-menu. The choice is remembered as `output` (`digital` / `analog`) in
-`gui.ini`. The default is digital.
+menu, with playback device, stream sample rate and Limit output peaks controls.
+These are also in Settings → Audio. The digital/analog choice is remembered
+as `output` (`digital` / `analog`) in `gui.ini`. The default is digital.
 
 | Output | Contents |
 |---|---|

@@ -3,7 +3,6 @@
 	"tab_panel": "Panel",
 	"tab_editor": "Editor",
 	"tab_effects": "Effects",
-	"hint_front": "Turn the big dial with the wheel / click buttons / keys: A=PLAY E=EDIT U=UTIL F=EFFECT [ ]=PART",
 
 	// Front page hint (panel.cpp)
 	// Editor page (editor.cpp)

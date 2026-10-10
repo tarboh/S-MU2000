@@ -153,7 +153,7 @@ build/rec.exe    <number> <wav> <sec> [--send <number> <MIDI>]  Record the real 
 **To play it from an external sequencer such as Domino, see
 [doc/domino.md](doc/domino.md).** All you need is one virtual MIDI cable (loopMIDI).
 `gui.exe` lets you pick inputs and outputs **while running, from the screen** —
-press the panel's `MIDI IN A` jack or right-click anywhere in the window.
+press the panel's `MIDI IN A` jack, or right-click and choose Settings → MIDI.
 
 Inputs are **4 ports, A–D** (parts 1–16, 17–32, 33–48, 49–64). It starts in the same shape as
 the real hardware with HOST SELECT set to USB, so C and D — USB-only on the hardware — work too.
@@ -174,8 +174,8 @@ saved by `gui` and `live` on exit under `%LOCALAPPDATA%\S-MU2000\nvram\` and reu
 launch. Utility settings as well as values like the XG master volume persist
 (because the genuine firmware is written that way). Plug-ins (VST3 / CLAP / AU) only **read**
 this area: when inserted, they start from settings made in gui / live (changes made inside the
-plug-in stay in the DAW project). To restore factory state, start with `--factory`, right-click
-the `gui` window and choose factory reset, or just delete the files.
+plug-in stay in the DAW project). To restore factory state, start with `--factory`, open
+the panel's POWER menu and choose Factory reset, or just delete the files.
 
 Screen contents are described in [doc/gui.en.md](doc/gui.en.md). There are 3 faces.
 **The panel artwork can be fixed without redrawing** — positions and colors are factored out

@@ -27,5 +27,7 @@
 	"settings_opening": "Opening audio device...",
 	"settings_volume": "Output volume",
 	"settings_dc": "Analog output DC filtering",
-	"settings_limiter": "Limit output peaks"
+	"settings_limiter": "Limit output peaks",
+	"settings_reset": "Reset MIDI mode",
+	"settings_panic": "Panic"
 }

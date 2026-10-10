@@ -288,6 +288,7 @@
 		append_rom_import_group(groups);
 		break;
 	case ui::app::menu_kind::phones:
+	case ui::app::menu_kind::midi:
 	case ui::app::menu_kind::ports:
 		ui::append_midi_setup_group(groups);
 		break;
