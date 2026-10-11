@@ -1050,6 +1050,18 @@ struct ui_texts {
 	const char *smp_make_bell_ratio;
 	const char *smp_make_bell_decay;
 	const char *smp_make_bell_note;
+	const char *smp_make_paint;
+	const char *smp_make_paint_clear;
+	const char *smp_make_paint_sweep;
+	const char *smp_make_paint_blink;
+	const char *smp_make_paint_dots;
+	const char *smp_make_paint_level;
+	const char *smp_make_paint_size;
+	const char *smp_make_paint_spacing;
+	const char *smp_make_paint_spacing_tip;
+	const char *smp_make_paint_tip;
+	const char *smp_make_paint_note;
+	const char *smp_make_view_loop_fmt;
 	const char *smp_make_vowel_morph;
 	const char *smp_make_vowel_to;
 	const char *smp_make_sine;

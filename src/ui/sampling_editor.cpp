@@ -2268,14 +2268,14 @@ void sampling_editor::make_pane(bridge &br)
 	heading(UI_TEXT(smp_make, "Make a wave"));
 
 	// ---- 作り方（幅に入るだけ横に並べ、入らなければ折り返す）
-	enum { M_BASIC, M_BARS, M_DRAW, M_NOISE, M_FC, M_FM, M_ORGAN, M_UNISON, M_VOWEL, M_SYNC, M_FOLD, M_PWM, M_PLUCK, M_DRUM, M_PD, M_BELL, M_COUNT };
+	enum { M_BASIC, M_BARS, M_DRAW, M_NOISE, M_FC, M_FM, M_ORGAN, M_UNISON, M_VOWEL, M_SYNC, M_FOLD, M_PWM, M_PLUCK, M_DRUM, M_PD, M_BELL, M_PAINT, M_COUNT };
 	const char *mode_names[M_COUNT] = {
 		UI_TEXT(smp_make_basic, "Basic shape"), UI_TEXT(smp_make_bars, "Harmonics"), UI_TEXT(smp_make_draw, "Draw"),
 		UI_TEXT(smp_make_noise, "Noise"), UI_TEXT(smp_make_fc, "Famicom"), UI_TEXT(smp_make_fm, "FM"),
 		UI_TEXT(smp_make_organ, "Organ"), UI_TEXT(smp_make_unison, "Unison"), UI_TEXT(smp_make_vowel, "Voice"),
 		UI_TEXT(smp_make_sync, "Sync"), UI_TEXT(smp_make_fold, "Fold"), UI_TEXT(smp_make_pwm, "PWM"),
 		UI_TEXT(smp_make_pluck, "Pluck"), UI_TEXT(smp_make_drum, "Drum"), UI_TEXT(smp_make_pd, "PD"),
-		UI_TEXT(smp_make_bell, "Bell"),
+		UI_TEXT(smp_make_bell, "Bell"), UI_TEXT(smp_make_paint, "Paint"),
 	};
 	const int was_mode = m_wm_mode;
 	{
@@ -2586,6 +2586,117 @@ void sampling_editor::make_pane(bridge &br)
 		if (m_wm_pd == 2)
 			slider_f(UI_TEXT(smp_make_pd_ratio, "Resonance pitch"), m_wm_pd_ratio, 1.0f, 16.0f, "%.1f");
 		ImGui::TextWrapped("%s", UI_TEXT(smp_make_pd_note, "Phase distortion, the Casio CZ way: a cosine is read at an uneven speed, so more distortion bends it from a sine towards a sawtooth or a square. Resonance is a faster cosine under a window, like a filter ringing at that pitch."));
+	} else if (m_wm_mode == M_PAINT) {
+		// 絵で描く: 行がサイン 1 本（下が低い）、横がループの中の時間。左で描き、右（か Shift）で消す
+		constexpr int R = wg::PAINT_ROWS, C = wg::PAINT_COLS;
+		auto clear = [&]() { std::fill(std::begin(m_wm_paint), std::end(m_wm_paint), 0.0f); };
+		auto sweep = [&]() {
+			// 基音を弱く鳴らしっぱなしにして、その上を倍音が 1 つずつ上がっていく
+			clear();
+			for (int c = 0; c < C; c++) {
+				m_wm_paint[c] = 0.5f;
+				const int r = 1 + c * (R / 2 - 2) / (C - 1);
+				m_wm_paint[r * C + c] = 1.0f;
+				m_wm_paint[(r + 1) * C + c] = 0.5f;
+			}
+		};
+		if (!m_wm_paint_init) {
+			sweep();
+			m_wm_paint_init = true;
+		}
+		if (ImGui::SmallButton(UI_TEXT(smp_make_paint_clear, "Clear"))) {
+			clear();
+			m_wm_stale = true;
+		}
+		ImGui::SameLine();
+		ImGui::AlignTextToFramePadding();
+		ImGui::TextDisabled("%s", UI_TEXT(smp_make_presets, "Presets"));
+		ImGui::SameLine();
+		if (ImGui::SmallButton(UI_TEXT(smp_make_paint_sweep, "Rising sweep"))) {
+			sweep();
+			m_wm_stale = true;
+		}
+		ImGui::SameLine();
+		if (ImGui::SmallButton(UI_TEXT(smp_make_paint_blink, "Blink"))) {
+			// 和音のような倍音の組を、ループの中で 4 回つけたり消したりする
+			clear();
+			static const int rows[] = { 0, 1, 2, 4, 5, 7, 9 };
+			for (int c = 0; c < C; c++)
+				if ((c / (C / 8)) % 2 == 0)
+					for (int r : rows)
+						m_wm_paint[r * C + c] = 1.0f / float(1 + r / 3);
+			m_wm_stale = true;
+		}
+		ImGui::SameLine();
+		if (ImGui::SmallButton(UI_TEXT(smp_make_paint_dots, "Sparkle"))) {
+			// 短い点をでたらめに散らす（押すたびに並びが変わる）
+			clear();
+			u32 x = (++m_wm_seed) * 2654435761u + 12345u;
+			auto next = [&]() { x ^= x << 13; x ^= x >> 17; x ^= x << 5; return x; };
+			for (int n = 0; n < 40; n++) {
+				const int r = int(next() % u32(R * 2 / 3)), c = int(next() % u32(C));
+				for (int k = 0; k < 3; k++)
+					m_wm_paint[r * C + (c + k) % C] = k == 0 ? 1.0f : k == 1 ? 0.6f : 0.3f;
+			}
+			m_wm_stale = true;
+		}
+		ImGui::SetNextItemWidth(fs * 8);
+		ImGui::SliderFloat(UI_TEXT(smp_make_paint_level, "Brush level"), &m_wm_paint_level, 0.1f, 1.0f, "%.2f");
+		ImGui::SameLine();
+		ImGui::SetNextItemWidth(fs * 6);
+		ImGui::SliderInt(UI_TEXT(smp_make_paint_size, "Brush size"), &m_wm_paint_size, 1, 4);
+		ImGui::SameLine();
+		ImGui::SetNextItemWidth(fs * 8);
+		if (ImGui::SliderFloat(UI_TEXT(smp_make_paint_spacing, "Row spacing"), &m_wm_paint_spacing, 0.25f, 2.0f, "%.2f"))
+			m_wm_stale = true;
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("%s", UI_TEXT(smp_make_paint_spacing_tip, "1.00 puts the rows on harmonics 1 to 48 of the note. Other values spread or squeeze them so they are no longer harmonics, which gives bell and metal tones."));
+
+		const ImVec2 p = ImGui::GetCursorScreenPos(), sz(w, fs * 15);
+		ImGui::InvisibleButton("##paint", sz, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+		frame(p, sz);
+		const float cw = sz.x / float(C), ch = sz.y / float(R);
+		if (ImGui::IsItemActive()) {
+			const ImVec2 m = ImGui::GetIO().MousePos;
+			const int c = std::clamp(int((m.x - p.x) / cw), 0, C - 1);
+			const int r = std::clamp(R - 1 - int((m.y - p.y) / ch), 0, R - 1);
+			const bool erase = ImGui::IsMouseDown(ImGuiMouseButton_Right) || ImGui::GetIO().KeyShift;
+			const float v = erase ? 0.0f : m_wm_paint_level;
+			// 前の桝からここまでを埋める（速く動かしても線が切れない）
+			const int r0 = m_wm_paint_last_r < 0 ? r : m_wm_paint_last_r, c0 = m_wm_paint_last_c < 0 ? c : m_wm_paint_last_c;
+			const int steps = std::max({ std::abs(r - r0), std::abs(c - c0), 1 });
+			for (int k = 0; k <= steps; k++) {
+				const int rr = r0 + (r - r0) * k / steps, cc = c0 + (c - c0) * k / steps;
+				for (int dr = 0; dr < m_wm_paint_size; dr++)
+					for (int dc = 0; dc < m_wm_paint_size; dc++) {
+						const int pr = rr + dr - (m_wm_paint_size - 1) / 2, pc = cc + dc - (m_wm_paint_size - 1) / 2;
+						if (pr >= 0 && pr < R && pc >= 0 && pc < C)
+							m_wm_paint[pr * C + pc] = v;
+					}
+			}
+			m_wm_paint_last_r = r;
+			m_wm_paint_last_c = c;
+			m_wm_stale = true;
+		} else {
+			m_wm_paint_last_r = m_wm_paint_last_c = -1;
+		}
+		// 目盛り: 8 列ごと（ループの 1/8）と、倍音 2・4・8・16・32 の行
+		for (int c = 8; c < C; c += 8)
+			dl->AddLine(ImVec2(p.x + cw * float(c), p.y), ImVec2(p.x + cw * float(c), p.y + sz.y), IM_COL32(44, 52, 66, 255));
+		for (int h = 2; h <= R; h *= 2)
+			dl->AddLine(ImVec2(p.x, p.y + sz.y - ch * float(h - 1)), ImVec2(p.x + sz.x, p.y + sz.y - ch * float(h - 1)), IM_COL32(44, 52, 66, 255));
+		for (int r = 0; r < R; r++)
+			for (int c = 0; c < C; c++) {
+				const float v = m_wm_paint[r * C + c];
+				if (v <= 0.0f)
+					continue;
+				const ImVec2 a(p.x + cw * float(c), p.y + sz.y - ch * float(r + 1));
+				dl->AddRectFilled(a, ImVec2(a.x + cw, a.y + ch),
+				                  IM_COL32(int(30 + 80 * v), int(60 + 140 * v), int(90 + 165 * v), 255));
+			}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("%s", UI_TEXT(smp_make_paint_tip, "Drag with the left button to paint and with the right button (or Shift) to erase. Up is higher, across is one pass through the loop."));
+		ImGui::TextWrapped("%s", UI_TEXT(smp_make_paint_note, "A painted loop, after the ANS synthesizer: each row is one sine, across is time, and brightness is level. The picture becomes a 0.76 s loop that closes without a click. Higher keys play it faster, as with any sample."));
 	} else if (m_wm_mode == M_BELL) {
 		struct preset { const char *name; float ratio, index, decay; };
 		const preset presets[] = {
@@ -2620,10 +2731,10 @@ void sampling_editor::make_pane(bridge &br)
 
 	// ---- 共通: 足す倍音の上限と大きさ（高さの無いノイズは、倍音にせずそのままサンプルにする）
 	const bool unpitched = m_wm_mode == M_NOISE || (m_wm_mode == M_FC && m_wm_fc >= 5);
-	const bool multi = m_wm_mode == M_ORGAN || m_wm_mode == M_UNISON || m_wm_mode == M_PWM || (m_wm_mode == M_VOWEL && m_wm_vowel_morph);   // 倍音にならない成分を含む（長いループ）
+	const bool multi = m_wm_mode == M_ORGAN || m_wm_mode == M_UNISON || m_wm_mode == M_PWM || m_wm_mode == M_PAINT || (m_wm_mode == M_VOWEL && m_wm_vowel_morph);   // 倍音にならない成分を含む（長いループ）
 	const bool oneshot = m_wm_mode == M_PLUCK || m_wm_mode == M_DRUM || m_wm_mode == M_BELL;       // 1 度だけ鳴って消える（ループを入れない）
 	ImGui::Separator();
-	if (!unpitched && !oneshot && m_wm_mode != M_ORGAN) {
+	if (!unpitched && !oneshot && m_wm_mode != M_ORGAN && m_wm_mode != M_PAINT) {
 		slider_i(UI_TEXT(smp_make_max_h, "Highest harmonic"), m_wm_max_h, 1, wg::HARMONICS);
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip("%s", UI_TEXT(smp_make_max_h_tip, "Harmonics above this are left out. Fewer gives a rounder sound and less aliasing on high keys"));
@@ -2684,13 +2795,24 @@ void sampling_editor::make_pane(bridge &br)
 				m_wm_pcm = wg::render_partials(wg::organ(m_wm_organ), wg::ORGAN_MULT, level);
 			else if (m_wm_mode == M_VOWEL && m_wm_vowel_morph)
 				m_wm_pcm = wg::vowel_morph(m_wm_vowel, m_wm_vowel_to, m_wm_max_h, level);
+			else if (m_wm_mode == M_PAINT)
+				m_wm_pcm = wg::paint(m_wm_paint, m_wm_paint_spacing, level);
 			else if (m_wm_mode == M_PWM)
 				m_wm_pcm = wg::pwm(m_wm_pwm_center, m_wm_pwm_depth, m_wm_pwm_sweeps, m_wm_max_h, level);
 			else if (m_wm_mode == M_UNISON)
 				m_wm_pcm = wg::render_partials(wg::unison(m_wm_spec, m_wm_uni_voices, m_wm_uni_step, m_wm_max_h), wg::UNISON_MULT, level);
 			else
 				m_wm_pcm = wg::render(m_wm_spec, m_wm_max_h, level);
-			if (multi) {
+			if (m_wm_mode == M_PAINT) {
+				// 絵は時間で変わるので、見せるのはループの全体（600 の桝ごとに、いちばん大きく振れた値）
+				m_wm_cycle.assign(600, 0.0f);
+				for (size_t i = 0; i < m_wm_pcm.size(); i++) {
+					float &c = m_wm_cycle[i * 600 / m_wm_pcm.size()];
+					const float v = float(m_wm_pcm[i]) / 32768.0f;
+					if (std::fabs(v) > std::fabs(c))
+						c = v;
+				}
+			} else if (multi) {
 				// 見せるのはループの頭の 4 周期ぶん（8' の高さで）
 				const size_t n = std::min<size_t>(m_wm_pcm.size(), size_t(wg::LOOP_FRAMES) * 4 / wg::CYCLES);
 				m_wm_cycle.assign(n, 0.0f);
@@ -2719,6 +2841,8 @@ void sampling_editor::make_pane(bridge &br)
 			            IM_COL32(110, 200, 255, 255), 1.5f);
 		if (oneshot) {
 			ImGui::TextDisabled(UI_TEXT(smp_make_view_once_fmt, "The whole sound (%.2f s). It plays once, without a loop."), double(m_wm_pcm.size()) / sp::SAMPLE_RATE);
+		} else if (m_wm_mode == M_PAINT) {
+			ImGui::TextDisabled(UI_TEXT(smp_make_view_loop_fmt, "The whole loop (%.2f s)."), double(m_wm_pcm.size()) / sp::SAMPLE_RATE);
 		} else if (multi) {
 			ImGui::TextDisabled(UI_TEXT(smp_make_view_multi_fmt, "The first 4 cycles of the loop (%.2f s in all)."), double(m_wm_pcm.size()) / sp::SAMPLE_RATE);
 		} else {

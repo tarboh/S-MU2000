@@ -1544,6 +1544,41 @@ static smu2000::voicelib::item g_lib_item;      // ライブラリの確かめ�
 				      std::to_string(tone(vm_m, 784.9) / tone(vm_m, 261.63)) + "、ベルの終わり/頭 " + std::to_string(tone(bl_z, 261.63) / tone(bl_a, 261.63)));
 			}
 
+			// 絵で描くループ（wavegen::paint）。行 0 を塗りつぶすと C3 のサイン、行 2 をループの前半だけ塗ると 3 倍音が前半だけ鳴る。
+			// 行の間隔を 1.5 にすると行 0 は G3（392Hz）へ動く。つなぎ目は合い、何も描かなければ無音
+			{
+				constexpr int R = wg::PAINT_ROWS, C = wg::PAINT_COLS;
+				std::vector<float> cells(size_t(R * C), 0.0f);
+				for (int c = 0; c < C; c++)
+					cells[size_t(c)] = 1.0f;
+				const std::vector<s16> p1 = wg::paint(cells.data());
+				const std::vector<s16> p15 = wg::paint(cells.data(), 1.5);
+				for (int c = 0; c < C / 2; c++)
+					cells[size_t(2 * C + c)] = 1.0f;
+				const std::vector<s16> p2 = wg::paint(cells.data());
+				const std::vector<float> none(size_t(R * C), 0.0f);
+				const std::vector<s16> p0 = wg::paint(none.data());
+				const auto d1 = as_double(p1), d15 = as_double(p15), d2 = as_double(p2);
+				const size_t q = p2.size() / 4;
+				const std::vector<double> a1(d1.begin(), d1.begin() + 6000), a15(d15.begin(), d15.begin() + 6000),
+				                          front(d2.begin() + long(q - 3000), d2.begin() + long(q + 3000)),
+				                          back(d2.begin() + long(3 * q - 3000), d2.begin() + long(3 * q + 3000));
+				const auto s1 = seam(p1), s2 = seam(p2);
+				const bool silent = std::all_of(p0.begin(), p0.end(), [](s16 v) { return v == 0; });
+				int peak = 0;
+				for (s16 v : p2)
+					peak = std::max(peak, std::abs(int(v)));
+				check(p1.size() == wg::LOOP_FRAMES * 8 && p2.size() == p1.size() && s1.first <= s1.second && s2.first <= s2.second &&
+				      tone(a1, 261.63) > 20 * tone(a1, 392.44) && tone(a15, 392.44) > 20 * tone(a15, 261.63) &&
+				      tone(front, 784.9) > 0.5 * tone(front, 261.63) && tone(back, 784.9) < 0.05 * tone(back, 261.63) &&
+				      silent && peak > 29000 && wg::paint_cycles(0, 1.0) == 200 && wg::paint_cycles(0, 0.001) == 1,
+				      "作った波形: 絵で描くループ",
+				      "行 0 の 392Hz/261Hz " + std::to_string(tone(a1, 392.44) / tone(a1, 261.63)) + "・間隔 1.5 で 261Hz/392Hz " +
+				      std::to_string(tone(a15, 261.63) / tone(a15, 392.44)) + "、3 倍音/基音 前半 " +
+				      std::to_string(tone(front, 784.9) / tone(front, 261.63)) + "・後半 " + std::to_string(tone(back, 784.9) / tone(back, 261.63)) +
+				      "、無音 " + std::to_string(int(silent)) + "、いちばん大きい所 " + std::to_string(peak));
+			}
+
 			// 音色のエディット（LFO・フィルター・ピッチ EG・フィルター EG）。PGM015 にノコギリを入れて欄を変え、鍵 60 を 1.5 秒鳴らす。
 			// 50ms ごとの大きさと、頭と終わりの高さで効き目を見る
 			{

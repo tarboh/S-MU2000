@@ -523,6 +523,57 @@ inline std::vector<s16> vowel_morph(double v0, double v1, int max_h = HARMONICS,
 	return out;
 }
 
+// 描いたループ（ディスカッション #106。ANS シンセサイザーのように、絵を音にする）。
+// 絵は PAINT_ROWS 行 × PAINT_COLS 列で、行が 1 本のサイン、横がループの中の時間、濃さ（0〜1）が大きさ。
+// cells[行 × PAINT_COLS + 列]、行 0 がいちばん低い。行 r の高さは鍵 60 の C3 の (r + 1) × spacing 倍で、
+// spacing が 1 なら倍音 1〜PAINT_ROWS、ほかの値なら倍音でない並び（鐘や金属の響き）になる。
+// どの行もループの中でちょうど整数回まわるように丸め、濃さは列のあいだをなめらかにつなぎ、右の端は左の端へ
+// つながるので、つなぎ目は出ない。ループは PWM・母音のうねりと同じ 0.76 秒。何も描いていなければ無音を返す
+constexpr int PAINT_ROWS = 48, PAINT_COLS = 64;
+inline int paint_cycles(int row, double spacing)
+{
+	return std::max(1, int(std::lround(double(row + 1) * spacing * CYCLES * UNISON_MULT)));
+}
+inline std::vector<s16> paint(const float *cells, double spacing = 1.0, double level = 0.9)
+{
+	const u32 frames = LOOP_FRAMES * UNISON_MULT;
+	std::vector<double> x(frames, 0.0);
+	for (int r = 0; r < PAINT_ROWS; r++) {
+		const float *row = cells + r * PAINT_COLS;
+		bool any = false;
+		for (int c = 0; c < PAINT_COLS && !any; c++)
+			any = row[c] > 0.0f;
+		const int k = paint_cycles(r, spacing);
+		if (!any || 44100.0 * k / frames >= 20000.0)
+			continue;
+		// 行ごとに始まりの位相をずらす（そろえると頭に山が重なって、ほかの所が小さくなる）
+		const double ph = 2 * PI * std::fmod(double(r) * 0.6180339887, 1.0);
+		const double w = 2 * PI * double(k) / frames, cw = std::cos(w), sw = std::sin(w);
+		double c = std::cos(ph), s = std::sin(ph);
+		for (u32 i = 0; i < frames; i++) {
+			// 列のまん中どうしを、なめらかな段でつなぐ
+			const double u = double(i) / frames * PAINT_COLS - 0.5;
+			const double fl = std::floor(u);
+			const int c0 = (int(fl) + PAINT_COLS) % PAINT_COLS, c1 = (c0 + 1) % PAINT_COLS;
+			double f = u - fl;
+			f = f * f * (3.0 - 2.0 * f);
+			x[i] += (double(row[c0]) + (double(row[c1]) - double(row[c0])) * f) * s;
+			const double nc = c * cw - s * sw;
+			s = s * cw + c * sw;
+			c = nc;
+		}
+	}
+	double peak = 0.0;
+	for (double v : x)
+		peak = std::max(peak, std::fabs(v));
+	std::vector<s16> out(frames, 0);
+	if (peak < 1e-9)
+		return out;
+	for (u32 i = 0; i < frames; i++)
+		out[i] = s16(std::lround(x[i] / peak * std::clamp(level, 0.0, 1.0) * 32767.0));
+	return out;
+}
+
 // FM のベル（1 度鳴って消える）。キャリアは鍵 60 の C3、モジュレーターはその ratio 倍（半端な比で金属の響き）。
 // 変調の深さ index は時間とともに減り（明るさが先に消える）、音量は decay 秒で 1/e になる
 inline std::vector<s16> fm_bell(double seconds, double ratio, double index, double decay, double level = 0.9)
