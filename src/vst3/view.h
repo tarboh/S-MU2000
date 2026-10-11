@@ -123,6 +123,9 @@ private:
 	uint64_t m_last_flush = 0;
 	// gui.exe と同じ既定の幅。高さはコンストラクタで 1000:400 ＋ 上の帯
 	int m_w = 1000, m_h = 400;
+	// The host resized the editor while it was open: the width is written
+	// to the settings folder when the window goes (view.cpp, last_width)
+	bool m_resized = false;
 	Steinberg::int32 m_refs = 1;
 	Steinberg::IPlugFrame *m_frame = nullptr;
 };

@@ -230,6 +230,13 @@ public:
 	void notify_edit_raw(u32 addr, int size, int value);
 	void notify_idle(bool closing);
 
+	// The editor's width as the user last dragged it (0 = never). The view is
+	// made and thrown away with the host's window; this stays with the
+	// instance, so reopening the editor gives the size it was closed at.
+	// The height follows from the width (view.cpp keeps the panel's ratio)
+	int view_width() const { return m_view_w.load(std::memory_order_relaxed); }
+	void set_view_width(int w) { m_view_w.store(w, std::memory_order_relaxed); }
+
 	// ---- SmartMedia（前面のカードの差し込み口）
 	//
 	// カードの中身は PC のファイル（gui.exe と同じ .img）。firmware が書いたブロックは card_flush() で書き戻す。
@@ -264,6 +271,7 @@ private:
 
 	std::atomic<status> m_state{status::loading};
 	std::atomic<bool> m_processing{false};
+	std::atomic<int> m_view_w{0};          // see view_width()
 	std::vector<uint8_t> m_deferred_state;  // 起動が終わる前に来た状態（m_machine で守る）
 	std::vector<uint8_t> m_deferred_setup;  // 同じく、XG の値の控え
 	bool                 m_deferred = false;

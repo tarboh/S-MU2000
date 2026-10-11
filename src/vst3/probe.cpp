@@ -681,6 +681,50 @@ int run_fl(IPluginFactory *fac, const TUID cid, double rate, int block, bool (*e
 			bad++;
 	}
 
+	// 0b. 画面を広げて閉じ、開き直す。ホストは開くたびに画面を作り直すので、広げた幅は本体が覚えている
+	//     （engine::view_width。ディスカッション #187）。閉じるときに幅が設定の置き場の plugin_view.txt にも
+	//     書かれるので、最後に元の幅へ戻してから閉じる（試験が使う人の覚えを書き換えないように）
+	{
+		instance in;
+		if (!make_instance(fac, cid, in)) { std::printf("NG: 作れない\n"); return 1; }
+		start_instance(in, rate, block);
+		bool ok = false;
+		int first_w = 0, asked_w = 0, again_w = 0, again_h = 0, asked_h = 0;
+		if (IPlugView *view = in.ctrl->createView(ViewType::kEditor)) {
+			ViewRect vr{};
+			view->getSize(&vr);
+			first_w = vr.getWidth();
+			ViewRect want(0, 0, first_w + 240, vr.getHeight());
+			view->checkSizeConstraint(&want);     // 高さは比で決まる
+			asked_w = want.getWidth();
+			asked_h = want.getHeight();
+			view->onSize(&want);
+			view->release();
+		}
+		if (IPlugView *view = in.ctrl->createView(ViewType::kEditor)) {
+			ViewRect vr{};
+			view->getSize(&vr);
+			again_w = vr.getWidth();
+			again_h = vr.getHeight();
+			ViewRect back(0, 0, first_w, vr.getHeight());
+			view->checkSizeConstraint(&back);
+			view->onSize(&back);
+			view->release();
+		}
+		ok = asked_w == first_w + 240 && again_w == asked_w && again_h == asked_h;
+		in.proc->setProcessing(false);
+		in.comp->setActive(false);
+		in.comp->terminate();
+		in.ctrl->terminate();
+		in.proc->release();
+		in.ctrl->release();
+		in.comp->release();
+		std::printf("%s: 広げた画面を開き直すと同じ大きさ（%d → %d、開き直して %d x %d）\n",
+		            ok ? "OK" : "NG", first_w, asked_w, again_w, again_h);
+		if (!ok)
+			bad++;
+	}
+
 	// 1. 挿して画面を出し、外す。親の窓を先に壊し、terminate の後で受け口を片付けてから手放す
 	{
 		instance in;

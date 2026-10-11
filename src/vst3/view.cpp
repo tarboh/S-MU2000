@@ -10,6 +10,7 @@
 #include "view.h"
 #include "plug_window.h"
 
+#include "compat/paths.h"
 #include "compat/platform.h"
 #include "engine.h"
 #include "smartmedia.h"
@@ -29,6 +30,48 @@ namespace smu2000 {
 namespace vst3 {
 
 namespace {
+
+// ---- The editor's size, remembered
+//
+// A host makes a new view every time it shows the editor, so a size the user
+// dragged it to has to live somewhere else. Two places: the engine keeps it
+// for this instance (engine::view_width), and the last one used is written
+// to <settings>/plugin_view.txt so that a new instance, or the next session,
+// opens at that size too. Only the width is kept; the height follows from
+// the panel's ratio. The file is one number and is shared by every format.
+constexpr int VIEW_W_MIN = 640, VIEW_W_MAX = 4096;
+
+std::string last_width_path()
+{
+	const std::string dir = smu2000::ensure_config_dir();
+	return dir.empty() ? std::string() : smu2000::join(dir, "plugin_view.txt");
+}
+
+int load_last_width()
+{
+	const std::string path = last_width_path();
+	if (path.empty())
+		return 0;
+	std::FILE *f = std::fopen(path.c_str(), "rb");
+	if (!f)
+		return 0;
+	int w = 0;
+	if (std::fscanf(f, "%d", &w) != 1)
+		w = 0;
+	std::fclose(f);
+	return (w >= VIEW_W_MIN && w <= VIEW_W_MAX) ? w : 0;
+}
+
+void save_last_width(int w)
+{
+	const std::string path = last_width_path();
+	if (path.empty())
+		return;
+	if (std::FILE *f = std::fopen(path.c_str(), "wb")) {
+		std::fprintf(f, "%d\n", w);
+		std::fclose(f);
+	}
+}
 
 // plug_key -> mu2000::button: the one place that decides. Each platform maps
 // its own key codes onto plug_key, so this stays the single answer to "what
@@ -151,6 +194,13 @@ plug_view::plug_view(engine &eng, FUnknown *owner)
 	m_impl->panel.xg().set_raw_listener([&eng](u32 addr, int size, int value) {
 		eng.notify_edit_raw(addr, size, value);
 	});
+	// The size it was last dragged to: this instance's own first, then the
+	// last one any instance was closed at. Neither means the default width
+	int remembered = eng.view_width();
+	if (!remembered)
+		remembered = load_last_width();
+	if (remembered)
+		m_w = std::clamp(remembered, VIEW_W_MIN, VIEW_W_MAX);
 	// 絵は 1000:400、その上の帯（一覧・エディタ…）は比の外に足す
 	m_h = m_w * ui::LOGICAL_H / ui::LOGICAL_W + m_impl->panel.top_inset();
 	m_impl->panel.resize(m_w, m_h);
@@ -222,6 +272,11 @@ tresult PLUGIN_API plug_view::removed()
 	// before the window goes: a host that closes the editor and never saves
 	// still keeps what the machine wrote
 	m_engine.card_flush();
+	// Once per close, not on every step of a drag
+	if (m_resized) {
+		m_resized = false;
+		save_last_width(m_w);
+	}
 	if (m_window) {
 		m_window->detach();
 		delete m_window;
@@ -251,8 +306,15 @@ tresult PLUGIN_API plug_view::onSize(ViewRect *r)
 {
 	if (!r)
 		return kInvalidArgument;
+	const int was = m_w;
 	m_w = std::max<int32>(r->getWidth(), 640);
 	m_h = std::max<int32>(r->getHeight(), 180);
+	// Hosts also call this with the size they were just given, which is not
+	// the user resizing anything
+	if (m_w != was) {
+		m_resized = true;
+		m_engine.set_view_width(m_w);
+	}
 	if (m_window)
 		m_window->set_size(m_w, m_h);
 	m_impl->panel.resize(m_w, m_h);
