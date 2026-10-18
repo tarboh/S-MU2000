@@ -5,6 +5,7 @@
 //   g++ -std=c++17 -O1 -o swp50test src/motif/swp50test.cpp && ./swp50test
 
 #include "swp50.h"
+#include "swp50_cutoff.h"
 
 #include <cmath>
 #include <cstdio>
@@ -42,6 +43,13 @@ int main()
 	CHECK(swp50_device::fold_pitch(1624) == 600);
 	CHECK(swp50_device::fold_pitch(1624 + 2048) == 600);
 	CHECK(swp50_device::pitch_to_step(1623) < 3.0 && swp50_device::pitch_to_step(1624) < 1.51);
+
+	// カットオフの目盛りの表（実機の測定）: 60〜222 で増え続け、154 で 585Hz、205 で 2238Hz、223 から上は範囲の外
+	for (int c = 60; c < 222; c++)
+		CHECK(swp50_cutoff::lpf24d_6db_hz[c + 1] >= swp50_cutoff::lpf24d_6db_hz[c]);
+	CHECK(std::fabs(swp50_cutoff::lpf24d_6db_hz[154] - 585.1f) < 0.1f);
+	CHECK(std::fabs(swp50_cutoff::lpf24d_6db_hz[205] - 2238.2f) < 0.1f);
+	CHECK(swp50_cutoff::lpf24d_6db_hz[223] == 0.0f);
 
 	// 送りの 4 本: r = 0x22 に送り先、r = 0x23 に種類と量
 	s.write(5 << 9 | 0x22, 0x1205);
