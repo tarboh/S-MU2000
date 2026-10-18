@@ -3,8 +3,10 @@
 
 隣り合う鍵 n と n+1 を比べて、次のどれかに分ける。
   S  同じサンプルを半音ぶん速く読んでいる（片方を 2^(85/1024) か 2^(86/1024) 倍に縮めると重なる）
+  ~  S と見るが、音程のある音で相関が 0.9〜0.95（よく似た隣のサンプルとの境目かもしれない）
   =  同じサンプルを同じ速さで読んでいる（そのまま重なる。音程が頭打ちになった所や、音程を追わない波形）
   s  S と同じだが、出だしの位置が 5 サンプル以上ずれていた（雑音の波形や、前の音の余韻が残っていた鍵。出だしの見つけ方がぶれる）
+  l  S と同じだが、低い帯域だけで重なった（元の鍵より上の雑音の波形。高域は折り返しで鍵ごとに変わる）
   ?  見分けられない（雑音の波形で、波形は重ならないが音量の形は重なる。高い鍵の折り返しで波形が崩れる所）
   |  別のサンプル（どちらでも重ならない）= 境目
   .  どちらかが無音
@@ -76,6 +78,12 @@ def periodicity(v):
     return float(ac[16:].max() / ac[0]) if ac[0] > 0 else 0.0
 
 
+def lowpass(x, fc):
+    X = np.fft.rfft(x)
+    X[np.fft.rfftfreq(len(x), 1 / 44100) > fc] = 0
+    return np.fft.irfft(X, len(x))
+
+
 def env(x, h=32):
     n = len(x) // h
     return np.log(np.sqrt((x[:n * h].reshape(n, h) ** 2).mean(1)) + 1e-5)
@@ -88,8 +96,10 @@ def classify(a, b, n, tail=False):
     # 隣の鍵との差は 85 か 86 目盛りになる。雑音の波形は、この 0.02〜0.05% の違いで重ならなくなる
     cs, ratio = max((corr(np.interp(np.arange(m) * r, np.arange(len(a)), a), b, m), r) for r in RATIOS)
     ce = corr(a[:m], b, m)
+    # 音程のある音は、同じサンプルならふつう 0.99 を超える。ただ、よく似た隣のサンプル（ピアノ 9 の鍵 77/78）が 0.925、
+    # 同じサンプルのはずの所（ピアノ 7 の鍵 29-31）が 0.91 と、0.9〜0.95 では見分けられない。境目には数えず、~ の印を付ける
     if cs >= 0.9 and cs >= ce:
-        return "S"
+        return "S" if cs >= 0.95 or periodicity(b[:m]) < 0.6 else "~"
     if ce >= 0.9:
         return "="
     # 音程のある音は、ここまでで重ならなければ境目。ずれを広く探すと、隣のサンプルの似た周期に乗ってしまう。
@@ -99,6 +109,15 @@ def classify(a, b, n, tail=False):
     ar = np.concatenate([np.zeros(W), np.interp(np.arange(m + 2 * W) * ratio, np.arange(len(a)), a)])
     if xc(ar, b[:m], W) >= 0.9:
         return "s"
+    # 元の鍵より上（読む速さ r > 1）では、高域が折り返されて鍵ごとに違う音になる。折り返しは 22050 × (2 − r) Hz より下へは落ちないので、
+    # 低いほうの帯域だけで比べる。r は分からないので切る所を 4 つ試す。音程のある音には使わない（似た周期の隣のサンプルに乗る）
+    if periodicity(b[:m]) < 0.6:
+        for fc in (8000, 4000, 2000, 1000):
+            al, bl = lowpass(a, fc), lowpass(b[:m + 2 * W], fc)
+            for r in RATIOS:
+                ar = np.concatenate([np.zeros(W), np.interp(np.arange(m + 2 * W) * r, np.arange(len(al)), al)])
+                if xc(ar, bl[:m], W) >= 0.9:
+                    return "l"
     ea = env(np.interp(np.arange(len(b)) * ratio, np.arange(len(a)), a))
     eb = env(b)
     k = min(len(ea), len(eb))

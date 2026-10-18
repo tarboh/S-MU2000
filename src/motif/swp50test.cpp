@@ -36,6 +36,13 @@ int main()
 	CHECK(s.read(swp50_device::READBACK_CMD) & 0x8000);
 	CHECK(s.read(swp50_device::READBACK_DATA) == 0x3c00);
 
+	// 読む速さの天井: 3 倍に届くと 1 オクターブ下へ戻り、何度でもくり返す
+	CHECK(swp50_device::fold_pitch(-1024) == -1024);
+	CHECK(swp50_device::fold_pitch(1623) == 1623);
+	CHECK(swp50_device::fold_pitch(1624) == 600);
+	CHECK(swp50_device::fold_pitch(1624 + 2048) == 600);
+	CHECK(swp50_device::pitch_to_step(1623) < 3.0 && swp50_device::pitch_to_step(1624) < 1.51);
+
 	// 送りの 4 本: r = 0x22 に送り先、r = 0x23 に種類と量
 	s.write(5 << 9 | 0x22, 0x1205);
 	s.write(5 << 9 | 0x23, 0x0110);

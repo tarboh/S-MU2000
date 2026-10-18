@@ -220,6 +220,12 @@ public:
 		const int v = reg(n, 0x0a) & 0x3fff;
 		return v & 0x2000 ? v - 0x4000 : v;
 	}
+	// 読む速さが 3 倍（サンプル 3 つ / 出力 1 つ）に届くと、1 オクターブ下へ戻る。何オクターブ上でもくり返す。
+	// 実機の下録りで、折り返しのある 1 区間の波形 289 本中 288 本と合う（2026-10-18、doc/motif-rack-es-capture.md）。
+	// 境目は 1622〜1631 目盛りの間までしか決まっていないので、「3 倍以上」= 1624 と置く
+	static constexpr int PITCH_FOLD = 1624;
+	static int fold_pitch(int p) { while (p >= PITCH_FOLD) p -= 1024; return p; }
+	static double pitch_to_step(int p) { return std::exp2(fold_pitch(p) / 1024.0); }
 	uint32_t wave_address(uint32_t n, int k) const  // k = 0-2。r = 0x16/17・0x18/19・0x1A/1B（上位語の上 8bit は別の旗）
 	{
 		const uint32_t r = 0x16 + k * 2;
