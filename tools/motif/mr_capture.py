@@ -2,6 +2,9 @@
   python mr_capture.py --dir 置き場 --capture 取ったものの置き場 [--waves 一覧.txt] [--hold 6] [--hours 8] [--min-free-gb 25]
 
 鍵 48 より下の区間は、低いほどループが長くなるので、押さえる長さを 1 オクターブ下がるごとに 2 倍にする（24 秒まで）。
+12 鍵より広い区間は 12 鍵ずつに分けて録る（読む速さが 3 倍で音程が折り返すので、真ん中の 1 本から区間の全部は作れない。いちばん下の区間は除く）。
+層は velzones.csv の相関が 0.98 を下回る所と、velkeys.csv（6 つの鍵）の境目を合わせたもの。
+前の分け方で録ったものは残り、mr_patch.py は鍵とベロシティの幅が狭い区間を先に使う。
 
 区間は zones_all.csv の境目（折り返しより上は除く）、層は velzones.csv の境目（鍵 60 で見たもの）。
 区間の真ん中の鍵、層の真ん中のベロシティで、雛形の音色（フィルター THRU・キーフォロー 0）を hold 秒鳴らして録る（C_w????_k???_v???.wav）。
@@ -18,16 +21,35 @@ import mr_ref
 import mr_sweep
 
 
+MAX_ZONE = 12          # これより広い区間は 12 鍵ずつに分けて録る（3 倍で折り返すので、1 本から広くは作れない）
+LAYER_CORR = 0.98      # 隣のベロシティとの相関がこれを下回る所を層の境目とする（velzones.csv の 0.97 より厳しく）
+VELSCAN = (1, 16, 32, 48, 64, 80, 96, 104, 112, 120, 127)   # mr_velscan.py のベロシティ
+
+
 def zones_of(row):
     b = [int(v) for v in row["boundaries"].split()] if row["boundaries"] else []
     top = int(row["wrap_from"]) - 1 if row.get("wrap_from") else 128
     edges = [0] + [v for v in b if v < top] + [top]
-    return [(edges[i], edges[i + 1]) for i in range(len(edges) - 1) if edges[i + 1] > edges[i]]
+    out = []
+    for i in range(len(edges) - 1):
+        lo, hi = edges[i], edges[i + 1]
+        if hi <= lo:
+            continue
+        if hi - lo <= MAX_ZONE or lo == 0:
+            out.append((lo, hi))                  # いちばん下の区間は下へ読むだけなので分けない
+            continue
+        for a in range(lo, hi, MAX_ZONE):
+            out.append((a, min(hi, a + MAX_ZONE)))
+    return out
 
 
-def layers_of(row):
-    b = [int(v) for v in row["bounds"].split()] if row and row["bounds"] else []
-    edges = [1] + b + [128]
+def layers_of(row, extra=()):
+    b = set(int(v) for v in row["bounds"].split()) if row and row["bounds"] else set()
+    if row and row.get("adjacent_corr"):
+        cs = [float(v) for v in row["adjacent_corr"].split()]
+        b |= {VELSCAN[i + 1] for i, c in enumerate(cs) if c < LAYER_CORR and i + 1 < len(VELSCAN)}
+    b |= set(extra)
+    edges = [1] + sorted(v for v in b if 1 < v < 128) + [128]
     return [(edges[i], edges[i + 1]) for i in range(len(edges) - 1) if edges[i + 1] > edges[i]]
 
 
@@ -41,6 +63,10 @@ def main():
     min_free = float(mr_ref.opt(a, "--min-free-gb", "25"))
     zones = {int(r["wave"]): r for r in csv.DictReader(open(os.path.join(cap, "zones_all.csv")))}
     vz = {int(r["wave"]): r for r in csv.DictReader(open(os.path.join(cap, "velzones.csv")))}
+    vk = {}                                         # 6 つの鍵で見た層の境目（mr_velscan.py --key、velkeys.csv）も合わせる
+    if os.path.exists(os.path.join(cap, "velkeys.csv")):
+        for r in csv.DictReader(open(os.path.join(cap, "velkeys.csv"))):
+            vk[int(r["wave"])] = {int(v) for k, x in r.items() if k.endswith("_bounds") and x for v in x.split()}
     waves = [int(l.split(",")[0]) for l in open(wl) if l.strip() and l.split(",")[0].strip().isdigit()]
     ap = os.path.join(cap, "wave_alias.csv")        # 同じサンプルを共有する波形は録らない（mr_alias.py）
     if os.path.exists(ap):
@@ -72,7 +98,7 @@ def main():
                     continue
                 for klo, khi in zones_of(zones[w]):
                     key = (klo + khi - 1) // 2
-                    for vlo, vhi in layers_of(vz.get(w)):
+                    for vlo, vhi in layers_of(vz.get(w), vk.get(w, ())):
                         vel = max(1, min(127, (vlo + vhi - 1) // 2))
                         name = "C_w%04d_k%03d_v%03d" % (w, key, vel)
                         path = os.path.join(d, name + ".wav")

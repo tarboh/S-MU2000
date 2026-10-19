@@ -10,6 +10,7 @@
 //   音量    : swp50_aeg::level_db（測った表）。レベルスケーリングを足してからキーフォローを掛ける
 //   音量の EG: swp50_aeg.h（高さ・段の長さ・時間のベロシティ感度とキーフォロー、音量のベロシティ感度とカーブ、音量のキーフォロー）
 //   LFO     : swp50_lfo.h（音程・音量・フィルター）
+//   音程    : PEG（FEG と同じ形の swp50_filter::filter_eg を swp50_peg.h の目盛りで）、音程のキーフォロー・ベロシティ感度
 #pragma once
 
 #include <cmath>
@@ -21,6 +22,7 @@
 #include "swp50_eq.h"
 #include "swp50_filter.h"
 #include "swp50_lfo.h"
+#include "swp50_peg.h"
 
 namespace motif_sampler {
 
@@ -41,6 +43,8 @@ struct element_params {
 	int level_bp[4] = { 0, 0, 0, 0 }, level_off[4] = { 128, 128, 128, 128 };   // 音量のレベルスケーリング
 	swp50_aeg::amp_eg aeg;        // 時間・高さ・時間の感度（鍵とベロシティは start で入れる）
 	swp50_lfo::element_lfo lfo;
+	swp50_filter::filter_eg peg;  // PEG（depth が深さ、level_factor が高さのベロシティ感度）
+	int pitch_kf = 96, pitch_kf_center = 60, pitch_vel_sens = 64;
 	swp50_filter::filter_params filter;
 	swp50_filter::filter_eg feg;
 	int eq_type = swp50_eq::THRU, eq_res = 16, eq_f1 = 100, eq_g1 = 0x40, eq_f2 = 200, eq_g2 = 0x40;
@@ -66,6 +70,7 @@ struct voice {
 	double pos = 0, step = 1;
 	bool on = false, released = false, done = false;
 	double level = 127, vel_gain = 1;     // キーフォローを掛けた音量の値と、ベロシティ感度の倍率
+	double static_cents = 0;              // 音程のキーフォロー・ベロシティ感度のずれ
 	swp50_filter::element_filter flt, flt_r;
 	swp50_eq::element_eq eq, eq_r;
 	double gl = 1, gr = 1;
@@ -79,6 +84,11 @@ struct voice {
 		p.aeg.velocity = v;
 		p.aeg.key_on();
 		p.lfo.key_on();
+		p.peg.key = n;
+		p.peg.velocity = v;
+		p.peg.key_on();
+		static_cents = (swp50_peg::key_follow_ratio(p.pitch_kf) - 1.0) * 100.0 * (n - p.pitch_kf_center)
+			+ swp50_peg::velocity_cents(p.pitch_vel_sens, v);
 		level = std::fmin(127.0, std::fmax(0.0, p.level + swp50_aeg::level_scaling(p.level_bp, p.level_off, n)));
 		level *= swp50_aeg::key_follow_factor(p.level_kf, n);
 		const double vd = swp50_aeg::velocity_db(p.level_vel_sens, p.level_vel_curve, v);
@@ -106,6 +116,7 @@ struct voice {
 		released = true;
 		p.feg.key_off();
 		p.aeg.key_off();
+		p.peg.key_off();
 	}
 
 	float at(const std::vector<float> &x, long i) const
@@ -136,7 +147,13 @@ struct voice {
 		};
 		double l = herm(s.L), r = herm(s.R);
 		p.lfo.step(44100.0);
-		pos += p.lfo.pmod ? step * std::exp2(p.lfo.pitch_cents_now() / 1200.0) : step;
+		p.peg.step();
+		double cents = static_cents;
+		if (p.peg.depth != 64)
+			cents += swp50_peg::cents(p.peg.value * p.peg.level_factor, p.peg.depth);
+		if (p.lfo.pmod)
+			cents += p.lfo.pitch_cents_now();
+		pos += cents != 0.0 ? step * std::exp2(cents / 1200.0) : step;
 		if (s.loop_start < 0 && pos >= double(s.L.size()))
 			done = true;
 		// FEG を目盛りに足してフィルターの g を決め直すのは重いので、FEG の深さが 0 でなければ毎サンプル（芯の試しなので素直に書く）

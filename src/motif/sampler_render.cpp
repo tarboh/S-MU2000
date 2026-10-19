@@ -217,9 +217,24 @@ int main(int argc, char **argv)
 			p.feg.level[i] = fl[i];
 		p.feg.depth = geti(e.f, "fegd", 64);
 		p.feg.time_vel_sens = geti(e.f, "fegtv", 64);
+		p.feg.time_vel_segment = geti(e.f, "fegtvs", 4);
 		p.feg.level_factor = swp50_filter::feg_level_velocity_factor(geti(e.f, "feglv", 64), geti(e.f, "feglc"), vel);
 		p.feg.time_kf = geti(e.f, "fegkf", 64);
 		p.feg.time_kf_center = geti(e.f, "fegkc", 60);
+		const auto pt = list(e.f, "pegt"), pl = list(e.f, "pegl");
+		for (int i = 0; i < 5 && i < int(pt.size()); i++)
+			p.peg.time[i] = pt[i];
+		for (int i = 0; i < 5 && i < int(pl.size()); i++)
+			p.peg.level[i] = pl[i];
+		p.peg.depth = geti(e.f, "pegd", 64);
+		p.peg.time_vel_sens = geti(e.f, "pegtv", 64);
+		p.peg.time_vel_segment = geti(e.f, "pegtvs", 4);
+		p.peg.level_factor = swp50_filter::feg_level_velocity_factor(geti(e.f, "peglv", 64), geti(e.f, "peglc"), vel);
+		p.peg.time_kf = geti(e.f, "pegkf", 64);
+		p.peg.time_kf_center = geti(e.f, "pegkc", 60);
+		p.pitch_kf = geti(e.f, "pkf", 96);
+		p.pitch_kf_center = geti(e.f, "pkc", 60);
+		p.pitch_vel_sens = geti(e.f, "pvel", 64);
 		p.eq_type = geti(e.f, "eqtype", swp50_eq::THRU);
 		p.eq_res = geti(e.f, "eqres");
 		p.eq_f1 = geti(e.f, "eqf1", 100);

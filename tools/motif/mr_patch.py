@@ -66,9 +66,15 @@ def main():
             "off": "%d,%d,%d,%d" % tuple(flt["filter_cutoff_scaling_offset%d" % i] for i in range(1, 5)),
             "fegt": "%d,%d,%d,%d,%d" % tuple(flt["feg_%s_time" % n] for n in ("hold", "attack", "decay1", "decay2", "release")),
             "fegl": "%d,%d,%d,%d,%d" % tuple(flt["feg_%s_level" % n] - 128 for n in ("hold", "attack", "decay1", "decay2", "release")),
-            "fegd": flt["feg_depth"], "fegtv": flt["feg_time_velocity_sensitivity"], "feglv": flt["feg_level_velocity_sensitivity"],
+            "fegd": flt["feg_depth"], "fegtv": flt["feg_time_velocity_sensitivity"], "fegtvs": flt["feg_time_velocity_segment"], "feglv": flt["feg_level_velocity_sensitivity"],
             "feglc": flt["feg_level_velocity_curve"], "fegkf": flt["feg_time_key_follow_sensitivity"],
             "fegkc": flt["feg_time_key_follow_center_note"],
+            "pegt": "%d,%d,%d,%d,%d" % tuple(pit["peg_%s_time" % n] for n in ("hold", "attack", "decay1", "decay2", "release")),
+            "pegl": "%d,%d,%d,%d,%d" % tuple(pit["peg_%s_level" % n] - 128 for n in ("hold", "attack", "decay1", "decay2", "release")),
+            "pegd": pit["peg_depth"], "pegtv": pit["peg_time_velocity_sensitivity"], "pegtvs": pit["peg_time_velocity_segment"],
+            "peglv": pit["peg_level_velocity_sensitivity"], "peglc": pit["peg_level_velocity_curve"],
+            "pegkf": pit["peg_time_key_follow_sensitivity"], "pegkc": pit["peg_time_key_follow_center_note"],
+            "pkf": pit["pitch_key_follow_sensitivity"], "pkc": pit["pitch_key_follow_center_note"], "pvel": pit["pitch_velocity_sensitivity"],
             "eqtype": eq["eq_type"], "eqres": eq["eq_resonance"], "eqf1": eq["eq1_frequency"], "eqg1": eq["eq1_gain"],
             "eqf2": eq["eq2_frequency"], "eqg2": eq["eq2_gain"],
         }
@@ -76,6 +82,8 @@ def main():
         zs = by_wave.get(w, []) or by_wave.get(alias.get(w, -1), [])
         if not zs:
             missing.append(w)
+        # 鍵とベロシティの幅が狭い区間を先に（後から細かく録り足したものを、前の広い区間より先に使う。芯は最初に合った区間を使う）
+        zs = sorted(zs, key=lambda s: (int(s["key_hi"]) - int(s["key_lo"]), int(s["vel_hi"]) - int(s["vel_lo"])))
         for s in zs:
             name = s["file"].replace(".npz", ".smpx")
             if not os.path.exists(os.path.join(odir, name)):

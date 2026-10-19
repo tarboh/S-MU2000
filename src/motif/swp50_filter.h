@@ -430,6 +430,7 @@ struct filter_eg {
 	int time_kf = 64, time_kf_center = 60, key = 60;      // 時間のキーフォロー（0x30・0x31）と鳴らした鍵
 	double level_factor = 1.0;                           // 高さのベロシティ感度の倍率（feg_level_velocity_factor）
 	int time_vel_sens = 64, velocity = 100;              // 時間のベロシティ感度（0x1F）と鳴らしたベロシティ
+	int time_vel_segment = 4;                            // 効く段（0x1E）: 0 ホールドとアタック、1 それとディケイ、2 ディケイ、3 ホールド・アタックとリリース、4 全部
 
 	static double seg_samples_at(double t)
 	{
@@ -440,11 +441,24 @@ struct filter_eg {
 		const double a = swp50_eg::time_down(uint32_t(i < 1 ? 1 : i)), b = swp50_eg::time_down(uint32_t(i + 1 > 127 ? 127 : i + 1));
 		return std::exp(std::log(a) + (r - i) * (std::log(b) - std::log(a)));
 	}
-	double shifted(int t) const
+	// 段 s（0 ホールド、1 アタック、2 ディケイ 1、3 ディケイ 2、4 リリース）に時間のベロシティ感度が効くか（AEG と同じ決まりとした。FEG では確かめていない）
+	bool vel_applies(int s) const
 	{
-		return t + TIME_KF_STEPS * (time_kf - 64) * (key - time_kf_center) - TIME_VEL_STEPS * (time_vel_sens - 64) * (velocity - 1) / 126.0;
+		const bool atk = s <= 1, dcy = s == 2 || s == 3, rls = s == 4;
+		switch (time_vel_segment) {
+		case 0: return atk;
+		case 1: return atk || dcy;
+		case 2: return dcy;
+		case 3: return atk || rls;
+		default: return true;
+		}
 	}
-	double seg_samples(int t) const { return t <= 0 ? 0.0 : seg_samples_at(shifted(t)); }
+	double shifted(int t, int s = 2) const
+	{
+		return t + TIME_KF_STEPS * (time_kf - 64) * (key - time_kf_center)
+			- (vel_applies(s) ? TIME_VEL_STEPS * (time_vel_sens - 64) * (velocity - 1) / 126.0 : 0.0);
+	}
+	double seg_samples(int t, int s = 2) const { return t <= 0 ? 0.0 : seg_samples_at(shifted(t, s)); }
 
 	static double hold_seconds(double t)
 	{
@@ -455,14 +469,14 @@ struct filter_eg {
 		const double u = (t - p[i]) / (p[i + 1] - p[i]);
 		return std::exp(std::log(sec[i]) + u * (std::log(sec[i + 1]) - std::log(sec[i])));
 	}
-	double hold_samples() const { return time[0] <= 0 ? 0.0 : hold_seconds(shifted(time[0])) * 44100.0; }
+	double hold_samples() const { return time[0] <= 0 ? 0.0 : hold_seconds(shifted(time[0], 0)) * 44100.0; }
 
 	void begin(int s, double start, double samples)
 	{
 		seg = s; from = start; value = start; len = samples; left = samples;
 	}
 	void key_on()  { begin(0, level[0], hold_samples()); }
-	void key_off() { begin(4, value, seg_samples(time[4])); }
+	void key_off() { begin(4, value, seg_samples(time[4], 4)); }
 
 	double target() const { return seg == 0 ? level[0] : seg <= 3 ? level[seg] : level[4]; }
 
@@ -470,7 +484,7 @@ struct filter_eg {
 	double step()
 	{
 		for (int guard = 0; guard < 6 && left <= 0 && seg < 3; guard++)
-			begin(seg + 1, seg == 0 ? level[0] : level[seg], seg_samples(time[seg + 1]));
+			begin(seg + 1, seg == 0 ? level[0] : level[seg], seg_samples(time[seg + 1], seg + 1));
 		if (left > 0) {
 			left -= 1;
 			const double tg = target();
