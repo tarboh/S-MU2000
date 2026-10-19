@@ -92,9 +92,33 @@ static inline double cutoff_with_keyfollow(int cutoff, int keyfollow, int key)
 	return c < 0 ? 0 : c > 255 ? 255 : c;
 }
 
-// 小数の目盛りの g（隣の目盛りの間を対数で補間）
+// ---- カットオフのベロシティ感度（0x03、64 が 0）（2026-10-19。tools/motif/mr_fparams.py の録音、BEF12 の谷で測った） ----
+// 目盛りの動き = 0.0285 × |感度 − 64| ×（v − 115）。v は感度が正ならベロシティ、負なら 128 − ベロシティ（裏返し）。
+// 動かないのはベロシティ 115（感度が負なら 13）。測った 30 点との差は RMS 1 目盛り、最大 1.7 目盛り
+static constexpr double VELSENS_STEPS = 0.0285;
+static constexpr double VELSENS_CENTER = 115.0;
+
+static inline double velocity_steps(int sens, int velocity)
+{
+	const int s = sens - 64;
+	const double v = s >= 0 ? velocity : 128 - velocity;
+	return VELSENS_STEPS * (s < 0 ? -s : s) * (v - VELSENS_CENTER);
+}
+
+// ---- Filter Gain（0x0C、0-255）（同じ録音） ----
+// 大きさは dB でまっすぐ、1 あたり 0.375dB（チップの減衰の単位と同じ。0x10 = 6dB）。255 を 0dB とした値を返す。32 以下は無音（-1e9）
+static inline double filter_gain_db(int gain)
+{
+	return gain <= 32 ? -1e9 : 0.375 * (gain - 255);
+}
+
+// 小数の目盛りの g（隣の目盛りの間を対数で補間）。0 より下は 25.6 目盛りで 1 オクターブとして外へ延ばす（Dual 系の 2 つめが使う）
 static inline float g_at(double c)
 {
+	if (c < 0)
+		return float(g_table[0] * std::exp2(c / 25.6));
+	if (c > 255)
+		c = 255;
 	const int i = c >= 255 ? 254 : int(c);
 	const double t = c - i;
 	return float(std::exp(std::log(double(g_table[i])) + t * (std::log(double(g_table[i + 1])) - std::log(double(g_table[i])))));
@@ -130,6 +154,12 @@ static inline float stable_q(float g, float q)
 	return q < m ? q : m;
 }
 
+// ---- Dual 系の Distance（2026-10-19。tools/motif/mr_fparams.py の録音） ----
+// Dual 系の型は 2 つのフィルターを持つ。2 つめの目盛り = 1 つめ + 1.6 ×（Distance − 128）。Distance 16 で 1 オクターブ（25.6 目盛り）、128 で重なる。
+// DualLPF・DualHPF・DualBPF は 2 つの和（重なると +6dB）、DualBEF は直列（谷が 2 つ）。どれも q = 2 の SVF。
+// 誤差は Distance 48〜176 で 0.1〜0.4dB（DualBEF は 0.5〜1.9dB）。192 から上は 2 つめが上限に貼りつき、1.3〜3.3dB ずれる
+static constexpr double DISTANCE_STEPS = 1.6;
+
 // ---- HPF（2026-10-19。tools/motif/mr_kf.py の録音） ----
 // エレメントの HPF は、型が LPF12 と LPF6 のときだけ効く（ほかの型では値は入るが音は変わらない。THRU でも効かない）。
 // 形は SVF の高域通過で q = 1.05（目盛り 16〜208 で誤差 0.25〜0.5dB。実機は f0 の少し上に +1.4dB の山がある）。
@@ -152,21 +182,34 @@ struct element_filter {
 	float g = 0.999f;
 	float q = 2.0f;
 	float hg = 0;                                        // HPF の g（0 = 切）
+	float g2 = 0.999f;                                   // Dual 系の 2 つめの g
 	svf   s1, s2, s3, sh;
 	float p1 = 0, p2 = 0;
 
 	// reso はエレメントのレゾナンス（0-127）。LPF6 と LPF18s には効かない（LPF18s は実機では効くが、まだ模型にしていない）
 	// keyfollow はカットオフのキーフォロー（0-127、64 が 0%）、key は鳴らした鍵。
 	// hpf は HPF のカットオフ（0-255、0 = 切）、hpf_keyfollow はそのキーフォロー。HPF が効くのは型が LPF12 と LPF6 のときだけ
-	void set(int t, int cutoff, int reso = 0, int keyfollow = 64, int key = 60, int hpf = 0, int hpf_keyfollow = 64)
+	// distance は Dual 系の 2 つのフィルターの間隔（0-255、128 で重なる。雛形の音色では 0）
+	// vel_sens はカットオフのベロシティ感度（0-127、64 が 0）、velocity は鳴らしたベロシティ
+	void set(int t, int cutoff, int reso = 0, int keyfollow = 64, int key = 60, int hpf = 0, int hpf_keyfollow = 64, int distance = 0,
+	         int vel_sens = 64, int velocity = 100)
 	{
+		double c = keyfollow == 64 ? double(cutoff < 0 ? 0 : cutoff > 255 ? 255 : cutoff) : cutoff_with_keyfollow(cutoff, keyfollow, key);
+		if (vel_sens != 64) {
+			c += velocity_steps(vel_sens, velocity);
+			c = c < 0 ? 0 : c > 255 ? 255 : c;
+		}
+		{
+			const float x = g_at(c + DISTANCE_STEPS * (distance - 128));
+			g2 = x < 0.82f ? x : 0.82f;
+		}
 		hg = 0;
 		if (hpf > 0 && (canonical_type(t) == LPF12 || canonical_type(t) == LPF6)) {
 			const float x = g_at(cutoff_with_keyfollow(hpf, hpf_keyfollow, key));
 			hg = x < 0.82f ? x : 0.82f;
 		}
 		type = canonical_type(t);
-		g = keyfollow == 64 ? g_table[cutoff < 0 ? 0 : cutoff > 255 ? 255 : cutoff] : g_at(cutoff_with_keyfollow(cutoff, keyfollow, key));
+		g = (keyfollow == 64 && vel_sens == 64) ? g_table[cutoff < 0 ? 0 : cutoff > 255 ? 255 : cutoff] : g_at(c);
 		const float gs = g < 0.82f ? g : 0.82f;
 		q = stable_q(gs, type_q(type, reso));
 	}
@@ -185,7 +228,8 @@ struct element_filter {
 		case LPF24D: case LPF24A: s1.step(x, gs, q, l, b, h); s2.step(l, gs, q, l2, b2, h2); return l2;
 		case LPF18:  s1.step(x, gs, q, l, b, h); p1 += g * (l - p1); return p1;
 		case LPF18S: { p1 += g * (x - p1); const float g2 = g * 5.657f < 0.999f ? g * 5.657f : 0.999f; p2 += g2 * (p1 - p2); return p2; }
-		case LPF12: case DUAL_LPF: case LPF12_BPF6: s1.step(x, gs, q, l, b, h); return l;
+		case LPF12: case LPF12_BPF6: s1.step(x, gs, q, l, b, h); return l;
+		case DUAL_LPF: s1.step(x, gs, q, l, b, h); s2.step(x, g2, q, l2, b2, h2); return l + l2;
 		case LPF6:   p1 += g * (x - p1); return p1;
 		case HPF24D: s1.step(x, gs, q, l, b, h); s2.step(h, gs, q, l2, b2, h2); return h2;
 		case HPF12:  s1.step(x, gs, q, l, b, h); return h;
@@ -193,16 +237,17 @@ struct element_filter {
 		case BPFW:   s1.step(x, gs, q, l, b, h); s2.step(q * b, gs, q, l2, b2, h2); return q * b2;   // 山の高さを保つ
 		case BPF6:   s1.step(x, gs, q, l, b, h); return b;
 		case BEF12:  s1.step(x, gs, q, l, b, h); s2.step(l + h, gs, q, l2, b2, h2); return l2 + h2;
-		case BEF6: case DUAL_BEF: s1.step(x, gs, q, l, b, h); return l + h;
-		case DUAL_HPF: s1.step(x, gs, q, l, b, h); return x + h;
-		case DUAL_BPF: { s1.step(x, gs, q, l, b, h); s3.step(x, g * 0.0131390f, 1.414f, l2, b2, h2); return b + 0.707f * b2; }   // 2^-7.5
+		case BEF6:   s1.step(x, gs, q, l, b, h); return l + h;
+		case DUAL_BEF: s1.step(x, gs, q, l, b, h); s2.step(l + h, g2, q, l2, b2, h2); return l2 + h2;
+		case DUAL_HPF: s1.step(x, gs, q, l, b, h); s2.step(x, g2, q, l2, b2, h2); return h + h2;
+		case DUAL_BPF: s1.step(x, gs, q, l, b, h); s2.step(x, g2, q, l2, b2, h2); return b + b2;
 		default:     return x;
 		}
 	}
 };
 
 // 同じ模型の周波数特性（f Hz、サンプリング 44,100Hz）。試験と、録音との突き合わせに使う
-static inline double response_db(int t, int cutoff, double f, int reso = 0, int hpf = 0)
+static inline double response_db(int t, int cutoff, double f, int reso = 0, int hpf = 0, int distance = 0)
 {
 	using cd = std::complex<double>;
 	t = canonical_type(t);
@@ -217,12 +262,14 @@ static inline double response_db(int t, int cutoff, double f, int reso = 0, int 
 		return i == 0 ? lp : i == 1 ? bp : i == 2 ? hp : lp + hp;
 	};
 	const double q = stable_q(float(gs), type_q(t, reso));
+	const double g2a = g_at(cutoff + DISTANCE_STEPS * (distance - 128)), g2 = g2a < 0.82 ? g2a : 0.82;
 	cd h = 1.0;
 	switch (t) {
 	case LPF24D: case LPF24A: h = sv(gs, q, 0) * sv(gs, q, 0); break;
 	case LPF18:  h = sv(gs, q, 0) * lp1(g0); break;
 	case LPF18S: h = lp1(g0) * lp1(g0 * 5.657 < 0.999 ? g0 * 5.657 : 0.999); break;
-	case LPF12: case DUAL_LPF: case LPF12_BPF6: h = sv(gs, q, 0); break;
+	case LPF12: case LPF12_BPF6: h = sv(gs, q, 0); break;
+	case DUAL_LPF: h = sv(gs, q, 0) + sv(g2, q, 0); break;
 	case LPF6:   h = lp1(g0); break;
 	case HPF24D: h = sv(gs, q, 2) * sv(gs, q, 2); break;
 	case HPF12:  h = sv(gs, q, 2); break;
@@ -230,9 +277,10 @@ static inline double response_db(int t, int cutoff, double f, int reso = 0, int 
 	case BPFW:   h = q * sv(gs, q, 1) * q * sv(gs, q, 1); break;
 	case BPF6:   h = sv(gs, q, 1); break;
 	case BEF12:  h = sv(gs, q, 3) * sv(gs, q, 3); break;
-	case BEF6: case DUAL_BEF: h = sv(gs, q, 3); break;
-	case DUAL_HPF: h = 1.0 + sv(gs, q, 2); break;
-	case DUAL_BPF: h = sv(gs, q, 1) + 0.707 * sv(g0 * 0.0131390, 1.414, 1); break;
+	case BEF6:   h = sv(gs, q, 3); break;
+	case DUAL_BEF: h = sv(gs, q, 3) * sv(g2, q, 3); break;
+	case DUAL_HPF: h = sv(gs, q, 2) + sv(g2, q, 2); break;
+	case DUAL_BPF: h = sv(gs, q, 1) + sv(g2, q, 1); break;
 	default: break;
 	}
 	if (hpf > 0 && (t == LPF12 || t == LPF6)) {

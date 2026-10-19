@@ -108,6 +108,38 @@ int main()
 		CHECK(std::fabs(10 * std::log10(re * re + im * im) - response_db(LPF12, 200, 150.0, 0, 100)) < 0.05);
 	}
 
+	// ベロシティ感度（実機: 感度 80 でベロシティ 127 が +4.9 目盛り、1 が -51.1。感度 48 は裏返しで同じ値）
+	CHECK(std::fabs(velocity_steps(80, 127) - 4.9) < 1.0);
+	CHECK(std::fabs(velocity_steps(80, 1) - (-51.1)) < 1.5);
+	CHECK(std::fabs(velocity_steps(48, 1) - velocity_steps(80, 127)) < 1e-9);
+	CHECK(velocity_steps(64, 1) == 0 && velocity_steps(64, 127) == 0);
+
+	// Filter Gain（実機: 255 を 0dB として、64 で -71.7dB、32 以下は無音）
+	CHECK(std::fabs(filter_gain_db(64) - (-71.7)) < 0.5);
+	CHECK(filter_gain_db(32) < -1e6 && filter_gain_db(255) == 0);
+
+	// Distance（実機、目盛り 128: 128 で DualBPF の山は 0dB、DualLPF の低域は +6dB。96 で DualBEF の 2 つめの谷が 120Hz 付近）
+	CHECK(std::fabs(response_db(DUAL_BPF, 128, 458.4, 0, 0, 128) - 0.0) < 0.5);
+	CHECK(std::fabs(response_db(DUAL_LPF, 128, 30.0, 0, 0, 128) - 6.0) < 0.5);
+	CHECK(response_db(DUAL_BEF, 128, 115.0, 0, 0, 96) < -20);
+	for (int t : { DUAL_LPF, DUAL_HPF, DUAL_BPF, DUAL_BEF })
+		for (double f : { 60.0, 458.4, 2000.0 }) {
+			swp50_filter::element_filter flt;
+			flt.set(t, 128, 0, 64, 60, 0, 64, 96);
+			flt.reset();
+			double re = 0, im = 0;
+			for (int i = 0; i < (1 << 18); i++) {
+				const double y = flt.process(i == 0 ? 1.0f : 0.0f);
+				re += y * std::cos(2 * PI * f * i / 44100.0);
+				im -= y * std::sin(2 * PI * f * i / 44100.0);
+			}
+			const double a = 10 * std::log10(re * re + im * im + 1e-30), b = response_db(t, 128, f, 0, 0, 96);
+			if (b > -80 && std::fabs(a - b) > 0.05) {
+				std::printf("dual type %d f %.0f: process %.2f dB, response %.2f dB\n", t, f, a, b);
+				g_fail++;
+			}
+		}
+
 	// 欠番は次の値になる
 	CHECK(canonical_type(9) == BPFW && canonical_type(18) == LPF12_BPF6 && canonical_type(20) == THRU);
 
