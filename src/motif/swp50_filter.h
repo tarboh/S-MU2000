@@ -17,6 +17,8 @@
 #include <cmath>
 #include <complex>
 
+#include "swp50_eg.h"
+
 namespace swp50_filter {
 
 static constexpr double PI = 3.14159265358979323846;
@@ -349,6 +351,61 @@ static inline double response_db(int t, int cutoff, double f, int reso = 0, int 
 		h *= sv(hg0 < 0.82 ? hg0 : 0.82, HPF_Q, 2);
 	}
 	return 20 * std::log10(std::abs(h) + 1e-30);
+}
+
+// ---- フィルター EG（FEG）（2026-10-20。tools/motif/mr_feg.py の録音、BEF12・目盛り 128 の谷を短い区切りで追った） ----
+// * 動き（オクターブ）= 高さ ×（深さ − 64）/ 1024。深さ +64 なら高さ 1 = 75 セント（±128 で ±9600 セント。Data List と合う）。
+//   高さ +32・深さ +32 で +1 オクターブ（測定 +1,199 セント）、高さ +64・深さ +32 で +2 オクターブ（+2,412 セント）
+// * 上は 7,389Hz で頭打ち。目盛りが 0 より下に出ると 0 で折り返す（高さ +127・深さ 0 = −202 目盛りで、谷は目盛り 74 の 107Hz に来た）
+// * 各段は高さの単位でまっすぐ動き（50% / 90% の時刻 = 0.55〜0.56）、かかる時間は高さの差によらない。時間の値 p の段の長さは
+//   音量の EG の下がる側と同じ: swp50_eg::time_down(127 − p) サンプル（p = 64 で 0.79 秒、80 で 3.17 秒。測定 0.79〜0.80 / 3.1〜3.2 秒）
+// * ホールドの時間も同じとみているが、確かめていない。ベロシティ感度・時間のキーフォローもまだ入れていない
+struct filter_eg {
+	// 高さ（-128..+127）: hold, attack, decay1, decay2, release。時間（0..127）: hold, attack, decay1, decay2, release
+	int level[5] = { 0, 0, 0, 0, 0 };
+	int time[5] = { 0, 0, 0, 0, 0 };
+	int depth = 64;
+
+	int    seg = 0;            // 0 ホールド、1 アタック、2 ディケイ 1、3 ディケイ 2（そのまま止まる）、4 リリース、5 終わり
+	double value = 0;          // 今の高さ
+	double from = 0, left = 0, len = 0;
+
+	static double seg_samples(int t) { return t <= 0 ? 0.0 : swp50_eg::time_down(uint32_t(127 - (t > 127 ? 127 : t))); }
+
+	void begin(int s, double start, double samples)
+	{
+		seg = s; from = start; value = start; len = samples; left = samples;
+	}
+	void key_on()  { begin(0, level[0], seg_samples(time[0])); }
+	void key_off() { begin(4, value, seg_samples(time[4])); }
+
+	double target() const { return seg == 0 ? level[0] : seg <= 3 ? level[seg] : level[4]; }
+
+	// 1 サンプル進めて、カットオフの目盛りに足す量を返す
+	double step()
+	{
+		for (int guard = 0; guard < 6 && left <= 0 && seg < 3; guard++)
+			begin(seg + 1, seg == 0 ? level[0] : level[seg], seg_samples(time[seg + 1]));
+		if (left > 0) {
+			left -= 1;
+			const double tg = target();
+			value = from + (tg - from) * (1.0 - left / len);
+		} else {
+			value = target();
+		}
+		return steps();
+	}
+	double octaves() const { return value * (depth - 64) / 1024.0; }
+	double steps() const { return octaves() * 25.6; }
+};
+
+// FEG を足した目盛り（0 より下は 0 で折り返す、上は 255 で止める）
+static inline double cutoff_with_feg(double cutoff, double feg_steps)
+{
+	double c = cutoff + feg_steps;
+	if (c < 0)
+		c = -c;
+	return c > 255 ? 255 : c;
 }
 
 } // namespace swp50_filter

@@ -168,6 +168,37 @@ int main()
 		CHECK(a.g == b.g && a.q == b.q && a.hg == b.hg);
 	}
 
+	// FEG: 高さ +32・深さ +32（96）で +1 オクターブ = +25.6 目盛り（実機 +25.7）
+	{
+		swp50_filter::filter_eg e;
+		for (int i = 0; i < 5; i++)
+			e.level[i] = 32;
+		e.depth = 96;
+		e.key_on();
+		e.step();
+		CHECK(std::fabs(e.steps() - 25.6) < 1e-9);
+	}
+	// FEG のアタック（-64 → +64、深さ +63）: 90% に届く時刻は実機で 0.708 秒（時間 64）・2.821 秒（時間 80）
+	for (int T : { 64, 80 }) {
+		swp50_filter::filter_eg e;
+		const int lv[5] = { -64, 64, 64, 64, 64 };
+		for (int i = 0; i < 5; i++)
+			e.level[i] = lv[i];
+		e.time[1] = T;
+		e.depth = 127;
+		e.key_on();
+		int n = 0;
+		while (n < 44100 * 10) {
+			e.step();
+			n++;
+			if (e.value >= -64 + 0.9 * 128)
+				break;
+		}
+		const double t = n / 44100.0, want = T == 64 ? 0.708 : 2.821;
+		CHECK(std::fabs(t - want) / want < 0.05);
+	}
+	CHECK(std::fabs(cutoff_with_feg(128, -202) - 74) < 1e-9 && cutoff_with_feg(250, 30) == 255);
+
 	// 欠番は次の値になる
 	CHECK(canonical_type(9) == BPFW && canonical_type(18) == LPF12_BPF6 && canonical_type(20) == THRU);
 
