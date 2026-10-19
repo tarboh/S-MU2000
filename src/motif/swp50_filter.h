@@ -359,7 +359,64 @@ static inline double response_db(int t, int cutoff, double f, int reso = 0, int 
 // * 上は 7,389Hz で頭打ち。目盛りが 0 より下に出ると 0 で折り返す（高さ +127・深さ 0 = −202 目盛りで、谷は目盛り 74 の 107Hz に来た）
 // * 各段は高さの単位でまっすぐ動き（50% / 90% の時刻 = 0.55〜0.56）、かかる時間は高さの差によらない。時間の値 p の段の長さは
 //   音量の EG の下がる側と同じ: swp50_eg::time_down(127 − p) サンプル（p = 64 で 0.79 秒、80 で 3.17 秒。測定 0.79〜0.80 / 3.1〜3.2 秒）
-// * ホールドの時間も同じとみているが、確かめていない。ベロシティ感度・時間のキーフォローもまだ入れていない
+// * ホールドの時間は別の表: 谷が跳ぶまでの時間はホールドの値 32・48・64・72・80 で 0.104・0.221・0.453・0.685・1.033 秒（約 14 目盛りで 2 倍）。
+//   その 5 点を対数で補間し、外は端の傾きで延ばす（hold_seconds）
+// * 時間のキーフォロー（0x30、64 が 0、中心の鍵 0x31）: 感度 +32 で鍵 ±24 半音のとき、時間の値が約 ∓13 目盛りぶん動く（鍵が高いほど速い）。
+//   時間の値のずれ = −0.0168 ×（感度 − 64）×（鍵 − 中心）とした（感度 +63・鍵 84 は区切りが粗くて確かめられていない）
+// * 時間のベロシティ感度（0x1F、64 が 0）: ベロシティ 1 で時間はそのまま、強く弾くほど速い側へずれる。
+//   ずれ（時間の値）≒ 0.9 ×（感度 − 64）×（ベロシティ − 1）/ 126（感度 +8・+16・+32 で測り、30% ほどの誤差）。
+//   どの段に効くか（0x1E）は ALL でしか確かめていないので、全部の段に掛ける
+// * 高さのベロシティ感度は feg_level_velocity_factor（level_factor に入れる）
+// FEG の高さのベロシティ感度（0x20、64 が 0）とカーブ（0x21）（2026-10-20。mr_feg2.py の lvel2、高さ +32・深さ +32 で測った）。
+// FEG の効く量に掛かる倍率。ベロシティ 1, 8, 16, …, 120, 127 の 17 点。感度が負なら、ベロシティを 128 − v に裏返す。
+// 中間の感度は比例しない（ベロシティ 64 で感度 0・+16・+32・+63 が 1.0・0.78・0.69・0.62）ので、カーブ 0 は感度ごとの表、
+// ほかのカーブは「カーブ 0 の表 +（そのカーブ − カーブ 0）×（|感度 − 64| / 63）」とした。ベロシティ 127・感度 +63 で 1.166 になる
+static constexpr float FEG_VEL_POINTS[17] = { 1, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 127 };
+static constexpr float FEG_VEL_C0_S16[17] = { 0.677f, 0.687f, 0.697f, 0.708f, 0.729f, 0.739f, 0.749f, 0.760f, 0.781f, 0.802f, 0.812f, 0.833f, 0.843f, 0.874f, 0.885f, 0.916f, 0.937f };
+static constexpr float FEG_VEL_C0_S32[17] = { 0.614f, 0.624f, 0.624f, 0.624f, 0.635f, 0.645f, 0.656f, 0.666f, 0.687f, 0.718f, 0.749f, 0.781f, 0.812f, 0.843f, 0.885f, 0.937f, 1.010f };
+static constexpr float FEG_VEL_S63[5][17] = {
+	{ -0.000f, 0.156f, 0.291f, 0.395f, 0.489f, 0.541f, 0.593f, 0.604f, 0.624f, 0.624f, 0.656f, 0.687f, 0.739f, 0.802f, 0.874f, 0.989f, 1.166f },
+	{ -0.000f, 0.010f, 0.031f, 0.052f, 0.083f, 0.145f, 0.197f, 0.260f, 0.343f, 0.416f, 0.489f, 0.583f, 0.666f, 0.760f, 0.854f, 0.979f, 1.166f },
+	{ -0.000f, 0.093f, 0.177f, 0.260f, 0.343f, 0.416f, 0.489f, 0.552f, 0.604f, 0.677f, 0.739f, 0.791f, 0.843f, 0.895f, 0.968f, 1.072f, 1.166f },
+	{ -0.000f, 0.156f, 0.312f, 0.437f, 0.541f, 0.645f, 0.729f, 0.791f, 0.843f, 0.895f, 0.947f, 1.020f, 1.072f, 1.114f, 1.145f, 1.156f, 1.166f },
+	{ -0.000f, 0.020f, 0.041f, 0.104f, 0.166f, 0.260f, 0.364f, 0.489f, 0.604f, 0.729f, 0.822f, 0.895f, 0.968f, 1.052f, 1.114f, 1.156f, 1.166f },
+};
+
+static inline float feg_vel_interp(const float *tab, double v)
+{
+	if (v <= FEG_VEL_POINTS[0])
+		return tab[0];
+	int i = 0;
+	while (i < 15 && v > FEG_VEL_POINTS[i + 1])
+		i++;
+	const double t = (v - FEG_VEL_POINTS[i]) / (FEG_VEL_POINTS[i + 1] - FEG_VEL_POINTS[i]);
+	return float(tab[i] + t * (tab[i + 1] - tab[i]));
+}
+
+// 感度（0-127）・カーブ（0-4）・ベロシティから、FEG の効く量の倍率
+static inline double feg_level_velocity_factor(int sens, int curve, int velocity)
+{
+	const int s = sens - 64;
+	if (s == 0)
+		return 1.0;
+	const int a = s < 0 ? -s : s;
+	const double v = s > 0 ? velocity : 128 - velocity;
+	curve = curve < 0 ? 0 : curve > 4 ? 4 : curve;
+	// カーブ 0 の感度ごとの表（0 は全部 1.0）を、感度で補間する
+	const double f16 = feg_vel_interp(FEG_VEL_C0_S16, v), f32 = feg_vel_interp(FEG_VEL_C0_S32, v), f63 = feg_vel_interp(FEG_VEL_S63[0], v);
+	double c0;
+	if (a <= 16)
+		c0 = 1.0 + (f16 - 1.0) * a / 16.0;
+	else if (a <= 32)
+		c0 = f16 + (f32 - f16) * (a - 16) / 16.0;
+	else
+		c0 = f32 + (f63 - f32) * (a - 32) / 31.0;
+	return c0 + (feg_vel_interp(FEG_VEL_S63[curve], v) - f63) * a / 63.0;
+}
+
+static constexpr double TIME_KF_STEPS = -0.0168;
+static constexpr double TIME_VEL_STEPS = 0.9;
+
 struct filter_eg {
 	// 高さ（-128..+127）: hold, attack, decay1, decay2, release。時間（0..127）: hold, attack, decay1, decay2, release
 	int level[5] = { 0, 0, 0, 0, 0 };
@@ -370,13 +427,41 @@ struct filter_eg {
 	double value = 0;          // 今の高さ
 	double from = 0, left = 0, len = 0;
 
-	static double seg_samples(int t) { return t <= 0 ? 0.0 : swp50_eg::time_down(uint32_t(127 - (t > 127 ? 127 : t))); }
+	int time_kf = 64, time_kf_center = 60, key = 60;      // 時間のキーフォロー（0x30・0x31）と鳴らした鍵
+	double level_factor = 1.0;                           // 高さのベロシティ感度の倍率（feg_level_velocity_factor）
+	int time_vel_sens = 64, velocity = 100;              // 時間のベロシティ感度（0x1F）と鳴らしたベロシティ
+
+	static double seg_samples_at(double t)
+	{
+		if (t <= 0)
+			return 0.0;
+		const double r = 127 - (t > 127 ? 127 : t);
+		const int i = int(r);
+		const double a = swp50_eg::time_down(uint32_t(i < 1 ? 1 : i)), b = swp50_eg::time_down(uint32_t(i + 1 > 127 ? 127 : i + 1));
+		return std::exp(std::log(a) + (r - i) * (std::log(b) - std::log(a)));
+	}
+	double shifted(int t) const
+	{
+		return t + TIME_KF_STEPS * (time_kf - 64) * (key - time_kf_center) - TIME_VEL_STEPS * (time_vel_sens - 64) * (velocity - 1) / 126.0;
+	}
+	double seg_samples(int t) const { return t <= 0 ? 0.0 : seg_samples_at(shifted(t)); }
+
+	static double hold_seconds(double t)
+	{
+		static const double p[5] = { 32, 48, 64, 72, 80 }, sec[5] = { 0.104, 0.221, 0.453, 0.685, 1.033 };
+		if (t <= 0)
+			return 0.0;
+		int i = t < p[1] ? 0 : t < p[2] ? 1 : t < p[3] ? 2 : 3;
+		const double u = (t - p[i]) / (p[i + 1] - p[i]);
+		return std::exp(std::log(sec[i]) + u * (std::log(sec[i + 1]) - std::log(sec[i])));
+	}
+	double hold_samples() const { return time[0] <= 0 ? 0.0 : hold_seconds(shifted(time[0])) * 44100.0; }
 
 	void begin(int s, double start, double samples)
 	{
 		seg = s; from = start; value = start; len = samples; left = samples;
 	}
-	void key_on()  { begin(0, level[0], seg_samples(time[0])); }
+	void key_on()  { begin(0, level[0], hold_samples()); }
 	void key_off() { begin(4, value, seg_samples(time[4])); }
 
 	double target() const { return seg == 0 ? level[0] : seg <= 3 ? level[seg] : level[4]; }
@@ -395,7 +480,7 @@ struct filter_eg {
 		}
 		return steps();
 	}
-	double octaves() const { return value * (depth - 64) / 1024.0; }
+	double octaves() const { return value * (depth - 64) / 1024.0 * level_factor; }
 	double steps() const { return octaves() * 25.6; }
 };
 

@@ -198,6 +198,37 @@ int main()
 		CHECK(std::fabs(t - want) / want < 0.05);
 	}
 	CHECK(std::fabs(cutoff_with_feg(128, -202) - 74) < 1e-9 && cutoff_with_feg(250, 30) == 255);
+	// FEG の高さのベロシティ感度（実機: 感度 +63 でベロシティ 127 は 1.166 倍、1 は 0。感度 −63 は裏返し。感度 +32・ベロシティ 64 は 0.687）
+	CHECK(std::fabs(feg_level_velocity_factor(127, 0, 127) - 1.166) < 0.01);
+	CHECK(std::fabs(feg_level_velocity_factor(127, 0, 1)) < 0.01);
+	CHECK(std::fabs(feg_level_velocity_factor(0, 0, 1) - 1.166) < 0.01);
+	CHECK(std::fabs(feg_level_velocity_factor(96, 0, 64) - 0.687) < 0.01);
+	CHECK(std::fabs(feg_level_velocity_factor(127, 3, 64) - 0.843) < 0.01);
+	CHECK(feg_level_velocity_factor(64, 2, 30) == 1.0);
+	// FEG の時間のベロシティ感度（実機: 感度 +16 で、ベロシティ 64 の長さはベロシティ 1 の 0.51 倍）
+	{
+		swp50_filter::filter_eg e;
+		e.time_vel_sens = 80;
+		e.velocity = 1;
+		const double a = e.seg_samples(64);
+		e.velocity = 64;
+		const double b = e.seg_samples(64);
+		CHECK(std::fabs(b / a - 0.51) < 0.08);
+	}
+	// FEG のホールド（実機: 値 64 で 0.453 秒）と時間のキーフォロー（実機: 感度 +32 で鍵 36 は鍵 60 の 2.74 倍、鍵 84 は 0.29 倍）
+	CHECK(std::fabs(swp50_filter::filter_eg::hold_seconds(64) - 0.453) < 1e-9);
+	{
+		swp50_filter::filter_eg e;
+		e.time_kf = 96;
+		e.key = 60;
+		const double c = e.seg_samples(64);
+		e.key = 36;
+		const double lo = e.seg_samples(64);
+		e.key = 84;
+		const double hi = e.seg_samples(64);
+		CHECK(std::fabs(lo / c - 2.74) < 0.4);
+		CHECK(std::fabs(hi / c - 0.29) < 0.08);
+	}
 
 	// 欠番は次の値になる
 	CHECK(canonical_type(9) == BPFW && canonical_type(18) == LPF12_BPF6 && canonical_type(20) == THRU);
