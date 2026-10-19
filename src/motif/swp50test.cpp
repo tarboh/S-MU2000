@@ -50,6 +50,11 @@ int main()
 	CHECK(std::fabs(swp50_cutoff::lpf24d_6db_hz[154] - 585.1f) < 0.1f);
 	CHECK(std::fabs(swp50_cutoff::lpf24d_6db_hz[205] - 2238.2f) < 0.1f);
 	CHECK(swp50_cutoff::lpf24d_6db_hz[223] == 0.0f);
+	// 共通のカットオフ周波数: 50〜230 で増え続け、128 で 458Hz、230 から上は 7,380Hz で頭打ち
+	for (int c = 50; c < 230; c++)
+		CHECK(swp50_cutoff::natural_hz[c + 1] >= swp50_cutoff::natural_hz[c]);
+	CHECK(std::fabs(swp50_cutoff::natural_hz[128] - 458.4f) < 0.1f);
+	CHECK(std::fabs(swp50_cutoff::natural_hz[255] - swp50_cutoff::natural_hz[230]) < 5.0f);
 
 	// 送りの 4 本: r = 0x22 に送り先、r = 0x23 に種類と量
 	s.write(5 << 9 | 0x22, 0x1205);

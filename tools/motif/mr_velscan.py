@@ -1,7 +1,8 @@
 """全部の波形について、ベロシティでサンプルが切り替わるかをざっと調べる録音（mr_vel.py の広く浅い版）。
-  python mr_velscan.py --dir 置き場 [--from 1] [--to 1859] [--key 60] [--hours 8]
+  python mr_velscan.py --dir 置き場 [--from 1] [--to 1859] [--waves 972,1184,…] [--key 60] [--hours 8]
 
 波形ごとに、決まった鍵を VELS のベロシティで 0.4 秒ずつ鳴らして 1 つの WAV に録る（.txt の 1 列めはベロシティ）。
+鍵が 60 でないときは、ファイルの名前に _k036 のように鍵を付ける。
 もうあるものは飛ばすので、途中で止めて続きから回せる。置き場に STOP という名前のファイルを置くと、今の波形を録り終えた所で止まる。
 送るのはパラメーターチェンジとノートだけ。ボイスモードの今の音色を作り変える（保存しない）。終わったらマルチへ戻す。"""
 import os
@@ -20,6 +21,7 @@ def main():
     d = mr_ref.opt(a, "--dir", ".")
     lo, hi = int(mr_ref.opt(a, "--from", "1")), int(mr_ref.opt(a, "--to", "1859"))
     key = int(mr_ref.opt(a, "--key", "60"))
+    wl = mr_ref.opt(a, "--waves", None)
     hours = float(mr_ref.opt(a, "--hours", "8"))
     r = mr_ref.Ref(mr_ref.opt(a, "--midi", "MOTIF-RACK ES-1"), mr_ref.opt(a, "--rec", "../../build/rec.exe"),
                    mr_ref.opt(a, "--dev", "0"), d)
@@ -29,9 +31,9 @@ def main():
         r.all_off()
         r.mode(0)
         r.program(63, 0, 0)
-        r.template(lo)
-        for wave in range(lo, hi + 1):
-            base = os.path.join(d, "v%04d" % wave)
+        r.template(int(wl.split(",")[0]) if wl else lo)
+        for wave in ([int(v) for v in wl.split(",")] if wl else range(lo, hi + 1)):
+            base = os.path.join(d, "v%04d" % wave + ("" if key == 60 else "_k%03d" % key))
             if os.path.exists(base + ".wav"):
                 continue
             if time.time() > t_end or os.path.exists(os.path.join(d, "STOP")):
