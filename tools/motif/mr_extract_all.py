@@ -19,11 +19,11 @@ FS = 44100
 HOLD = 6.0
 
 
-def process(path):
+def process(path, hold=HOLD):
     L, R = Z.read24(path)
     x = L + R
     on = int(np.argmax(np.abs(x) > 2e-4))
-    off = on + int(HOLD * FS) - int(0.05 * FS)
+    off = on + int(hold * FS) - int(0.05 * FS)
     peak = float(np.max(np.abs(x[on:off]))) + 1e-12
     endrms = float(np.sqrt(np.mean(x[off - int(0.3 * FS):off] ** 2))) + 1e-12
     if 20 * np.log10(endrms / peak) < -70:
@@ -59,7 +59,9 @@ def main():
             name = r["file"].replace(".wav", ".npz")
             if name in have or not os.path.exists(os.path.join(src, r["file"])):
                 continue
-            s = process(os.path.join(src, r["file"]))
+            extra = r.get(None) or []                       # 古い見出し（hold の欄が無い）のあとに足された行
+            hold = r.get("hold") or (extra[0] if extra else None)
+            s = process(os.path.join(src, r["file"]), float(hold or HOLD))
             np.savez_compressed(os.path.join(dst, name), L=s["L"].astype(np.float32), R=s["R"].astype(np.float32),
                                 loop_start=s["loop_start"], loop_length=s["loop_length"], stretch=s["stretch"])
             w.writerow([r["wave"], r["key_lo"], r["key_hi"], r["key"], r["vel_lo"], r["vel_hi"], r["vel"], name, s["kind"],

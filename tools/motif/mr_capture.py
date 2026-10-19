@@ -1,6 +1,8 @@
 """MOTIF-RACK ES の波形を、区間ごと・ベロシティの層ごとに 1 音ずつ長く録る（サンプリング方式のソフトシンセの素材）。
   python mr_capture.py --dir 置き場 --capture 取ったものの置き場 [--waves 一覧.txt] [--hold 6] [--hours 8] [--min-free-gb 25]
 
+鍵 48 より下の区間は、低いほどループが長くなるので、押さえる長さを 1 オクターブ下がるごとに 2 倍にする（24 秒まで）。
+
 区間は zones_all.csv の境目（折り返しより上は除く）、層は velzones.csv の境目（鍵 60 で見たもの）。
 区間の真ん中の鍵、層の真ん中のベロシティで、雛形の音色（フィルター THRU・キーフォロー 0）を hold 秒鳴らして録る（C_w????_k???_v???.wav）。
 録ったものの一覧は capture.csv に足していく。もうあるものは飛ばすので、途中で止めて続きから回せる。
@@ -51,7 +53,7 @@ def main():
         with open(log, "a", newline="") as lf:
             w_csv = csv.writer(lf, lineterminator="\n")
             if new_log:
-                w_csv.writerow(["wave", "key_lo", "key_hi", "key", "vel_lo", "vel_hi", "vel", "file"])
+                w_csv.writerow(["wave", "key_lo", "key_hi", "key", "vel_lo", "vel_hi", "vel", "file", "hold"])
             r.all_off()
             r.mode(0)
             r.program(63, 0, 0)
@@ -81,11 +83,12 @@ def main():
                             r.el(0, 0x41, 0x03, w >> 7, w & 0x7F)
                             time.sleep(0.15)
                             cur = w
-                        L, R = r.record("_tmp", 0.3 + hold + 0.3,
-                                        [(0.3, lambda k=key, v=vel: r.note_on(k, v)), (0.3 + hold, lambda k=key: r.note_off(k))])
+                        h = hold if key >= 48 else min(24.0, hold * 2 ** ((48 - key) / 12.0))
+                        L, R = r.record("_tmp", 0.3 + h + 0.3,
+                                        [(0.3, lambda k=key, v=vel: r.note_on(k, v)), (0.3 + h, lambda k=key: r.note_off(k))])
                         mr_sweep.write_wav24(path, L, R)
                         os.remove(os.path.join(d, "_tmp.wav"))
-                        w_csv.writerow([w, klo, khi - 1, key, vlo, vhi - 1, vel, name + ".wav"])
+                        w_csv.writerow([w, klo, khi - 1, key, vlo, vhi - 1, vel, name + ".wav", "%.2f" % h])
                         lf.flush()
                         done += 1
                 print("wave %d done (%d takes so far)" % (w, done), flush=True)
