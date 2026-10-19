@@ -58,14 +58,20 @@ int main()
 				}
 			}
 
-	// 2b. レゾナンスの実機の値（目盛り 128、f0 = 458Hz での高さ。mr_reso.py の録音）
-	CHECK(std::fabs(response_db(LPF12, 128, 458.4, 48) - 8.98) < 0.8);
-	CHECK(std::fabs(response_db(LPF12, 128, 458.4, 64) - 14.94) < 0.8);
-	CHECK(std::fabs(response_db(BPF6, 128, 458.4, 64) - 14.87) < 0.8);
-	CHECK(std::fabs(response_db(LPF24A, 128, 458.4, 64) - 14.97) < 3.0);  // LPF24A は山の頂上が 2.7dB 低く出る（全体の RMS は 0.8dB）
-	CHECK(std::fabs(response_db(LPF18, 128, 458.4, 64) - 12.07) < 1.0);
-	CHECK(std::fabs(response_db(LPF24D, 128, 458.4, 32) - 5.85) < 1.0);
-	CHECK(std::fabs(type_q(LPF12, 0) - 2.0f) < 1e-6 && std::fabs(type_q(LPF12, 40) - 0.4844f) < 0.001f);   // 16 ごとに半分
+	// 2b. レゾナンスの実機の値（目盛り 128、f0 = 458Hz での高さ。mr_reso.py の録音）。
+	//     録音では雛形のベロシティ感度（+35）がベロシティ 100 で効いていたので、本当のレゾナンスは書いた値 48・64・32 より 7.4 低い 41・57・25
+	CHECK(std::fabs(response_db(LPF12, 128, 458.4, 41) - 8.98) < 0.8);
+	CHECK(std::fabs(response_db(LPF12, 128, 458.4, 57) - 14.94) < 0.8);
+	CHECK(std::fabs(response_db(BPF6, 128, 458.4, 57) - 14.87) < 0.8);
+	CHECK(std::fabs(response_db(LPF24A, 128, 458.4, 57) - 14.97) < 3.0);  // LPF24A は山の頂上が 2.7dB 低く出る（全体の RMS は 0.8dB）
+	CHECK(std::fabs(response_db(LPF18, 128, 458.4, 57) - 12.07) < 1.0);
+	CHECK(std::fabs(response_db(LPF24D, 128, 458.4, 25) - 5.85) < 1.0);
+	CHECK(std::fabs(type_q(LPF12, 0) - 2.0f) < 1e-6 && std::fabs(type_q(LPF12, 32) - 0.5f) < 1e-6);         // 16 ごとに半分
+	CHECK(std::fabs(type_q(BPF6, 32) - 0.511f) < 0.02);                     // mr_fscale.py の録音（感度 0）で 0.511
+	// レゾナンスのベロシティ感度（実機: 感度 96 = +32 でベロシティ 64 は 32 → 15.6（q 1.02）、127 は 32 のまま。感度 32 = −32 は裏返し）
+	CHECK(resonance_with_velocity(32, 96, 127) == 32 && resonance_with_velocity(32, 32, 1) == 32);
+	CHECK(std::abs(resonance_with_velocity(32, 96, 64) - 16) <= 1);
+	CHECK(resonance_with_velocity(32, 0, 127) == 0 && resonance_with_velocity(32, 64, 1) == 32);
 	CHECK(type_q(BPFW, 127) > type_q(BPFW, 0));                            // BPFw は広がる
 
 	// 2. 実機の録音の代表の点（目盛り 128 = 共通のカットオフ周波数 458Hz）
@@ -139,6 +145,28 @@ int main()
 				g_fail++;
 			}
 		}
+
+	// カットオフのスケーリング（実機: ブレークポイント 36・48・72・84）
+	{
+		const int bp[4] = { 36, 48, 72, 84 };
+		const int a[4] = { 168, 88, 168, 88 };     // +40, -40, +40, -40
+		const int b[4] = { 192, 192, 192, 192 };   // 全部 +64
+		CHECK(std::fabs(scaling_steps(60, bp, a)) < 1e-9);                   // 測定 +0.0
+		CHECK(std::fabs(scaling_steps(24, bp, a) - 30.6) < 2.0);             // 測定 +30.6（式は +32）
+		CHECK(std::fabs(scaling_steps(45, bp, a) - (-17.8)) < 2.5);          // 測定 -17.8（式は -16）
+		CHECK(std::fabs(scaling_steps(96, bp, a) - (-32.9)) < 2.0);          // 測定 -32.9（式は -32）
+		for (int k = 24; k <= 96; k += 3)
+			CHECK(std::fabs(scaling_steps(k, bp, b) - 51.2) < 1e-9);         // 測定はどの鍵も +51.1〜51.3
+	}
+	{
+		// パラメーターの構造体の既定値は、何も効かせない set と同じ
+		swp50_filter::filter_params p;
+		p.type = LPF12; p.cutoff = 150;
+		swp50_filter::element_filter a, b;
+		a.set(p, 72, 90);
+		b.set(LPF12, 150);
+		CHECK(a.g == b.g && a.q == b.q && a.hg == b.hg);
+	}
 
 	// 欠番は次の値になる
 	CHECK(canonical_type(9) == BPFW && canonical_type(18) == LPF12_BPF6 && canonical_type(20) == THRU);

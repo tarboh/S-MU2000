@@ -58,18 +58,20 @@ static constexpr float g_table[256] = {
 
 
 // ---- レゾナンス（2026-10-19。tools/motif/mr_reso.py の録音、目盛り 96・128・160 に当てはめ） ----
-// 多くの型は SVF の q が「16 ごとに半分」: q = 2.74 × 2^(-reso/16)、上限は型のもとの q（2）。
+// 多くの型は SVF の q が「16 ごとに半分」: q = 2 × 2^(-reso/16)。
 // 外れる型は測った q の表（reso 0, 8, … 120, 127）を対数で補間する。
-// 線形の模型なので、実機が発振して飽和する所（4 段の型は reso 40〜48、2 段の型は 80、LPF18 は 88 から上）は表せない。
+// 録音のときは雛形のレゾナンスのベロシティ感度（+35）がベロシティ 100 で効いていて、実際のレゾナンスは書いた値より 7.4 低かった。
+// 式と表はその分を直したもの（2026-10-19、mr_fscale.py の録音で確かめた。レゾナンス 32・感度 0 で q = 0.511）。
+// 線形の模型なので、実機が発振して飽和する所（本当のレゾナンスで、4 段の型は 33〜41、2 段の型は 73、LPF18 は 81 から上）は表せない。
 static constexpr float reso_points[17] = { 0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 127 };
-static constexpr float q_lpf24a[17] = { 1.399f, 1.372f, 1.178f, 0.973f, 0.836f, 0.704f, 0.616f, 0.539f, 0.490f, 0.437f, 0.405f,
-                                        0.375f, 0.354f, 0.341f, 0.330f, 0.318f, 0.308f };   // 112 から上は飽和するので、その手前の下がり方で延ばした
-static constexpr float q_bef12[17]  = { 2.010f, 1.972f, 1.453f, 0.992f, 0.760f, 0.539f, 0.413f, 0.328f, 0.261f, 0.200f, 0.162f,
-                                        0.131f, 0.113f, 0.095f, 0.085f, 0.078f, 0.074f };
-static constexpr float q_bef6[17]   = { 2.169f, 2.088f, 1.568f, 1.092f, 0.836f, 0.593f, 0.463f, 0.334f, 0.271f, 0.208f, 0.172f,
-                                        0.136f, 0.117f, 0.099f, 0.090f, 0.082f, 0.078f };   // DualBEF も同じ
-static constexpr float q_bpfw[17]   = { 1.010f, 1.010f, 1.010f, 1.074f, 1.229f, 1.441f, 1.733f, 2.134f, 2.597f, 3.121f, 3.845f,
-                                        4.736f, 5.906f, 7.012f, 8.123f, 10.64f, 12.63f };    // BPFw は逆に広がる（山の高さは保つ）
+static constexpr float q_lpf24a[17] = { 1.374f, 1.192f, 0.987f, 0.846f, 0.713f, 0.622f, 0.545f, 0.494f, 0.441f, 0.407f, 0.377f,
+                                        0.356f, 0.342f, 0.331f, 0.319f, 0.307f, 0.298f };   // 112 から上は飽和するので、その手前の下がり方で延ばした
+static constexpr float q_bef12[17]  = { 1.975f, 1.488f, 1.022f, 0.776f, 0.553f, 0.422f, 0.334f, 0.266f, 0.204f, 0.165f, 0.133f,
+                                        0.114f, 0.096f, 0.086f, 0.079f, 0.074f, 0.070f };
+static constexpr float q_bef6[17]   = { 2.094f, 1.603f, 1.123f, 0.853f, 0.609f, 0.472f, 0.343f, 0.275f, 0.212f, 0.175f, 0.138f,
+                                        0.118f, 0.100f, 0.091f, 0.083f, 0.078f, 0.074f };   // DualBEF も同じ
+static constexpr float q_bpfw[17]   = { 1.010f, 1.010f, 1.069f, 1.216f, 1.423f, 1.709f, 2.100f, 2.558f, 3.077f, 3.784f, 4.660f,
+                                        5.806f, 6.920f, 8.031f, 10.421f, 12.749f, 15.133f };    // BPFw は逆に広がる（山の高さは保つ）
 
 static inline float q_from_table(const float *tab, int reso)
 {
@@ -105,6 +107,28 @@ static inline double velocity_steps(int sens, int velocity)
 	return VELSENS_STEPS * (s < 0 ? -s : s) * (v - VELSENS_CENTER);
 }
 
+// ---- カットオフのスケーリング（0x23-0x2D）（2026-10-19。tools/motif/mr_fscale.py の録音、BEF12 の谷で測った） ----
+// ブレークポイント 4 つ（鍵）とずらし 4 つ（0-255、128 が 0）。ブレークポイントの間はずらしをまっすぐにつなぎ、外側はいちばん端の値のまま。
+// ずらし 1 = 0.8 目盛り（32 で 1 オクターブ）。オクターブの整数倍でない量は実機と ±1.5 目盛り（±80 セント）ずれる（キーフォローと同じ性質）
+static constexpr double SCALING_STEPS = 0.8;
+
+static inline double scaling_steps(int key, const int bp[4], const int offset[4])
+{
+	double o;
+	if (key <= bp[0])
+		o = offset[0] - 128;
+	else if (key >= bp[3])
+		o = offset[3] - 128;
+	else {
+		int i = 0;
+		while (i < 2 && key > bp[i + 1])
+			i++;
+		const double t = bp[i + 1] > bp[i] ? double(key - bp[i]) / (bp[i + 1] - bp[i]) : 0.0;
+		o = (offset[i] - 128) + t * (offset[i + 1] - offset[i]);
+	}
+	return SCALING_STEPS * o;
+}
+
 // ---- Filter Gain（0x0C、0-255）（同じ録音） ----
 // 大きさは dB でまっすぐ、1 あたり 0.375dB（チップの減衰の単位と同じ。0x10 = 6dB）。255 を 0dB とした値を返す。32 以下は無音（-1e9）
 static inline double filter_gain_db(int gain)
@@ -133,6 +157,18 @@ enum : int {
 
 static inline int canonical_type(int t) { return t == 9 ? 10 : t == 18 ? 19 : t == 20 ? 21 : t; }
 
+// レゾナンスのベロシティ感度（0x06、64 が 0）。感度が正ならベロシティ 127、負なら 1 のとき書いた値のままで、
+// そこから離れるほど |感度 − 64| × 離れた量 / 128 だけレゾナンスが下がる（書いた値より上がることはない）
+static inline int resonance_with_velocity(int reso, int sens, int velocity)
+{
+	const int s = sens - 64;
+	if (s == 0)
+		return reso;
+	const int away = s > 0 ? 127 - velocity : velocity - 1;
+	const double r = reso - (s < 0 ? -s : s) * away / 128.0;
+	return r < 0 ? 0 : int(r + 0.5);
+}
+
 // 型とレゾナンス（0-127）から SVF の q
 static inline float type_q(int t, int reso)
 {
@@ -142,7 +178,7 @@ static inline float type_q(int t, int reso)
 	case BPFW:   return q_from_table(q_bpfw, reso);
 	case BEF12:  return q_from_table(q_bef12, reso);
 	case BEF6: case DUAL_BEF: return q_from_table(q_bef6, reso);
-	default: { const float q = 2.74f * std::exp2(-reso / 16.0f); return q < 2.0f ? q : 2.0f; }
+	default: return 2.0f * std::exp2(-reso / 16.0f);
 	}
 }
 
@@ -177,6 +213,21 @@ struct svf {
 	}
 };
 
+// エレメントのフィルターのパラメーター（Data List の 43 xx の欄。既定値は「効かせない」値）
+struct filter_params {
+	int type = 21;            // 0x00
+	int cutoff = 255;         // 0x01
+	int vel_sens = 64;        // 0x03
+	int reso = 0;             // 0x05
+	int reso_vel_sens = 64;   // 0x06
+	int hpf = 0;              // 0x07
+	int distance = 0;         // 0x0A
+	int keyfollow = 64;       // 0x22
+	int bp[4] = { 27, 48, 72, 84 };          // 0x23-0x26
+	int offset[4] = { 128, 128, 128, 128 };  // 0x27-0x2D
+	int hpf_keyfollow = 64;   // 0x2F
+};
+
 struct element_filter {
 	int   type = THRU;
 	float g = 0.999f;
@@ -192,8 +243,9 @@ struct element_filter {
 	// distance は Dual 系の 2 つのフィルターの間隔（0-255、128 で重なる。雛形の音色では 0）
 	// vel_sens はカットオフのベロシティ感度（0-127、64 が 0）、velocity は鳴らしたベロシティ
 	void set(int t, int cutoff, int reso = 0, int keyfollow = 64, int key = 60, int hpf = 0, int hpf_keyfollow = 64, int distance = 0,
-	         int vel_sens = 64, int velocity = 100)
+	         int vel_sens = 64, int velocity = 100, int reso_vel_sens = 64)
 	{
+		reso = resonance_with_velocity(reso, reso_vel_sens, velocity);
 		double c = keyfollow == 64 ? double(cutoff < 0 ? 0 : cutoff > 255 ? 255 : cutoff) : cutoff_with_keyfollow(cutoff, keyfollow, key);
 		if (vel_sens != 64) {
 			c += velocity_steps(vel_sens, velocity);
@@ -214,6 +266,15 @@ struct element_filter {
 		q = stable_q(gs, type_q(type, reso));
 	}
 	void reset() { s1 = s2 = s3 = sh = svf(); p1 = p2 = 0; }
+
+	// 全部のパラメーターから（スケーリングも入れる）
+	void set(const filter_params &p, int key, int velocity)
+	{
+		const int sc = int(std::lround(scaling_steps(key, p.bp, p.offset)));
+		int c = p.cutoff + sc;
+		c = c < 0 ? 0 : c > 255 ? 255 : c;
+		set(p.type, c, p.reso, p.keyfollow, key, p.hpf, p.hpf_keyfollow, p.distance, p.vel_sens, velocity, p.reso_vel_sens);
+	}
 
 	float process(float x)
 	{
