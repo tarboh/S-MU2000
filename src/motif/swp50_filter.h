@@ -80,6 +80,26 @@ static inline float q_from_table(const float *tab, int reso)
 	return std::exp(std::log(tab[i]) + t * (std::log(tab[i + 1]) - std::log(tab[i])));
 }
 
+// ---- キーフォロー（2026-10-19。tools/motif/mr_kf.py の録音、BEF12 の谷で測った） ----
+// 中心の鍵は 60（C3）。値 0-127 が −200%〜+200%（64 が 0%）。100% のとき 1 半音で 2.13 目盛り（1 オクターブで 25.6 = くり返し 1 つ）。
+// キーフォローはセントではなく目盛りの側に足される（目盛り 128 で 50% のとき、鍵 +12 で +680 セント、−12 で −528 セント）。
+// ±6 半音ぶん動かす所では測った値と 1.8 目盛りほどずれる。値 127・鍵 84 だけ実機は 59Hz に回り込んだ（理由は不明。模型は頭打ち）
+static constexpr double KEYFOLLOW_STEPS_PER_SEMITONE = 2.13;
+
+static inline double cutoff_with_keyfollow(int cutoff, int keyfollow, int key)
+{
+	const double c = cutoff + (keyfollow - 64) / 32.0 * (key - 60) * KEYFOLLOW_STEPS_PER_SEMITONE;
+	return c < 0 ? 0 : c > 255 ? 255 : c;
+}
+
+// 小数の目盛りの g（隣の目盛りの間を対数で補間）
+static inline float g_at(double c)
+{
+	const int i = c >= 255 ? 254 : int(c);
+	const double t = c - i;
+	return float(std::exp(std::log(double(g_table[i])) + t * (std::log(double(g_table[i + 1])) - std::log(double(g_table[i])))));
+}
+
 // 型の番号（Data List の並び。9・18・20 は欠番で、書くと次の値になる）
 enum : int {
 	LPF24D = 0, LPF24A = 1, LPF18 = 2, LPF18S = 3, LPF12 = 4, LPF6 = 5, HPF24D = 6, HPF12 = 7, BPF12D = 8,
@@ -110,6 +130,12 @@ static inline float stable_q(float g, float q)
 	return q < m ? q : m;
 }
 
+// ---- HPF（2026-10-19。tools/motif/mr_kf.py の録音） ----
+// エレメントの HPF は、型が LPF12 と LPF6 のときだけ効く（ほかの型では値は入るが音は変わらない。THRU でも効かない）。
+// 形は SVF の高域通過で q = 1.05（目盛り 16〜208 で誤差 0.25〜0.5dB。実機は f0 の少し上に +1.4dB の山がある）。
+// 目盛り → g はカットオフと同じ表。キーフォローもカットオフと同じ決まり（中心の鍵 60、100% で 1 半音 2.13 目盛り）。目盛り 0 は効かない
+static constexpr float HPF_Q = 1.05f;
+
 struct svf {
 	float lp = 0, bp = 0;
 	void step(float x, float g, float q, float &olp, float &obp, float &ohp)
@@ -125,21 +151,34 @@ struct element_filter {
 	int   type = THRU;
 	float g = 0.999f;
 	float q = 2.0f;
-	svf   s1, s2, s3;
+	float hg = 0;                                        // HPF の g（0 = 切）
+	svf   s1, s2, s3, sh;
 	float p1 = 0, p2 = 0;
 
 	// reso はエレメントのレゾナンス（0-127）。LPF6 と LPF18s には効かない（LPF18s は実機では効くが、まだ模型にしていない）
-	void set(int t, int cutoff, int reso = 0)
+	// keyfollow はカットオフのキーフォロー（0-127、64 が 0%）、key は鳴らした鍵。
+	// hpf は HPF のカットオフ（0-255、0 = 切）、hpf_keyfollow はそのキーフォロー。HPF が効くのは型が LPF12 と LPF6 のときだけ
+	void set(int t, int cutoff, int reso = 0, int keyfollow = 64, int key = 60, int hpf = 0, int hpf_keyfollow = 64)
 	{
+		hg = 0;
+		if (hpf > 0 && (canonical_type(t) == LPF12 || canonical_type(t) == LPF6)) {
+			const float x = g_at(cutoff_with_keyfollow(hpf, hpf_keyfollow, key));
+			hg = x < 0.82f ? x : 0.82f;
+		}
 		type = canonical_type(t);
-		g = g_table[cutoff < 0 ? 0 : cutoff > 255 ? 255 : cutoff];
+		g = keyfollow == 64 ? g_table[cutoff < 0 ? 0 : cutoff > 255 ? 255 : cutoff] : g_at(cutoff_with_keyfollow(cutoff, keyfollow, key));
 		const float gs = g < 0.82f ? g : 0.82f;
 		q = stable_q(gs, type_q(type, reso));
 	}
-	void reset() { s1 = s2 = s3 = svf(); p1 = p2 = 0; }
+	void reset() { s1 = s2 = s3 = sh = svf(); p1 = p2 = 0; }
 
 	float process(float x)
 	{
+		if (hg > 0) {                                     // HPF（SVF の高域通過、q = 1.05）
+			float hl, hb, hh;
+			sh.step(x, hg, HPF_Q, hl, hb, hh);
+			x = hh;
+		}
 		const float gs = g < 0.82f ? g : 0.82f;           // q = 2 の SVF が不安定にならない所まで
 		float l, b, h, l2, b2, h2;
 		switch (type) {
@@ -163,7 +202,7 @@ struct element_filter {
 };
 
 // 同じ模型の周波数特性（f Hz、サンプリング 44,100Hz）。試験と、録音との突き合わせに使う
-static inline double response_db(int t, int cutoff, double f, int reso = 0)
+static inline double response_db(int t, int cutoff, double f, int reso = 0, int hpf = 0)
 {
 	using cd = std::complex<double>;
 	t = canonical_type(t);
@@ -195,6 +234,10 @@ static inline double response_db(int t, int cutoff, double f, int reso = 0)
 	case DUAL_HPF: h = 1.0 + sv(gs, q, 2); break;
 	case DUAL_BPF: h = sv(gs, q, 1) + 0.707 * sv(g0 * 0.0131390, 1.414, 1); break;
 	default: break;
+	}
+	if (hpf > 0 && (t == LPF12 || t == LPF6)) {
+		const double hg0 = g_table[hpf > 255 ? 255 : hpf];
+		h *= sv(hg0 < 0.82 ? hg0 : 0.82, HPF_Q, 2);
 	}
 	return 20 * std::log10(std::abs(h) + 1e-30);
 }

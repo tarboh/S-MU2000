@@ -77,6 +77,37 @@ int main()
 	CHECK(response_db(BEF12, 128, 458.4) < -40);                           // 谷
 	CHECK(std::fabs(response_db(LPF6, 128, 50.0)) < 0.1);                  // 通る所は 0dB
 
+	// キーフォロー: 鍵 60 では動かない。100%（96）で鍵 +12 は約 +25.6 目盛り、−200%（0）で鍵 −24 は +102 目盛り
+	CHECK(std::fabs(cutoff_with_keyfollow(128, 96, 60) - 128) < 1e-9);
+	CHECK(std::fabs(cutoff_with_keyfollow(128, 96, 72) - (128 + 25.56)) < 0.01);
+	CHECK(std::fabs(cutoff_with_keyfollow(128, 0, 36) - (128 + 102.24)) < 0.01);
+	CHECK(cutoff_with_keyfollow(250, 127, 108) == 255 && cutoff_with_keyfollow(10, 127, 0) == 0);
+	{
+		// 実機: BEF12・目盛り 128・キーフォロー 96 で、鍵 72 の谷は 917Hz（鍵 60 は 459Hz）。g の比は周波数の比とほぼ同じ
+		const double ratio = g_at(cutoff_with_keyfollow(128, 96, 72)) / g_at(128.0);
+		CHECK(std::fabs(ratio - 916.9 / 459.2) < 0.12);
+	}
+	for (double c = 0; c < 254.9; c += 0.25)
+		CHECK(g_at(c + 0.25) >= g_at(c));
+
+	// HPF: LPF6・カットオフ 255 のとき、HPF 128 で f0/2 は -11.1dB、f0 は -0.1dB（実機）。LPF24D では効かない
+	CHECK(std::fabs(response_db(LPF6, 255, 229.2, 0, 128) - response_db(LPF6, 255, 229.2) - (-11.1)) < 1.0);
+	CHECK(std::fabs(response_db(LPF6, 255, 458.4, 0, 128) - response_db(LPF6, 255, 458.4) - (-0.1)) < 1.0);
+	CHECK(std::fabs(response_db(LPF24D, 255, 229.2, 0, 128) - response_db(LPF24D, 255, 229.2)) < 1e-9);
+	{
+		// 処理でも同じ（LPF12・カットオフ 200・HPF 100）
+		swp50_filter::element_filter flt;
+		flt.set(LPF12, 200, 0, 64, 60, 100);
+		flt.reset();
+		double re = 0, im = 0;
+		for (int i = 0; i < (1 << 18); i++) {
+			const double y = flt.process(i == 0 ? 1.0f : 0.0f);
+			re += y * std::cos(2 * PI * 150.0 * i / 44100.0);
+			im -= y * std::sin(2 * PI * 150.0 * i / 44100.0);
+		}
+		CHECK(std::fabs(10 * std::log10(re * re + im * im) - response_db(LPF12, 200, 150.0, 0, 100)) < 0.05);
+	}
+
 	// 欠番は次の値になる
 	CHECK(canonical_type(9) == BPFW && canonical_type(18) == LPF12_BPF6 && canonical_type(20) == THRU);
 
