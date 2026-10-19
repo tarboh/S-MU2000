@@ -38,7 +38,7 @@ def main():
     lines = ["# %s" % v.get("name", "")]
     missing = []
     for e in v["elements"]:
-        osc, amp, pit, flt, eq = e["oscillator"], e["amplitude"], e["pitch"], e["filter"], e["eq"]
+        osc, amp, pit, flt, eq, lfo = e["oscillator"], e["amplitude"], e["pitch"], e["filter"], e["eq"], e["lfo"]
         if not osc["element_switch"]:
             continue
         w = osc["wave_number"]
@@ -46,6 +46,17 @@ def main():
             "wave": w, "note_lo": osc["note_limit_low"], "note_hi": osc["note_limit_high"],
             "vel_lo": osc["velocity_limit_low"], "vel_hi": osc["velocity_limit_high"], "pan": osc["pan"],
             "level": amp["element_level"], "release": amp["aeg_release_time"],
+            "aegt": "%d,%d,%d,%d" % tuple(amp["aeg_%s_time" % n] for n in ("attack", "decay1", "decay2", "release")),
+            "aegl": "%d,%d,%d,%d" % tuple(amp["aeg_%s_level" % n] for n in ("init", "attack", "decay1", "decay2")),
+            "aegtv": amp["aeg_time_velocity_sensitivity"], "aegtvs": amp["aeg_time_velocity_segment"], "aegkf": amp["aeg_time_key_follow_sensitivity"],
+            "aegkc": amp["aeg_time_key_follow_center_note"],
+            "lvel": amp["level_velocity_sensitivity"], "lcurve": amp["level_velocity_curve"],
+            "lkf": amp["level_key_follow_sensitivity"],
+            "lbp": "%d,%d,%d,%d" % tuple(amp["level_scaling_break_point%d" % i] for i in range(1, 5)),
+            "loff": "%d,%d,%d,%d" % tuple(amp["level_scaling_offset%d" % i] for i in range(1, 5)),
+            "lfow": lfo["lfo_wave"], "lfosync": lfo["lfo_key_on_sync"], "lfodelay": lfo["lfo_key_on_delay_time"],
+            "lfospeed": lfo["lfo_speed"], "lfoa": lfo["lfo_amod_depth"], "lfop": lfo["lfo_pmod_depth"],
+            "lfof": lfo["lfo_fmod_depth"], "lfofade": lfo["lfo_fade_in_time"],
             "coarse": pit["coarse_tune"] - 64, "fine": pit["fine_tune"] - 64,
             "ftype": flt["filter_type"], "cutoff": flt["filter_cutoff"], "fvel": flt["filter_cutoff_velocity_sensitivity"],
             "reso": flt["filter_resonance"], "rvel": flt["filter_resonance_velocity_sensitivity"], "hpf": flt["hpf_cutoff"],

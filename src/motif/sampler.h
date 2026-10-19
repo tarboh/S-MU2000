@@ -7,17 +7,20 @@
 //             本当の元の鍵が分からないので入れていない
 //   補間    : 4 点（エルミート）
 //   その後  : FEG つきのフィルター（swp50_filter.h）→ EQ（swp50_eq.h）→ エレメントの音量 → パン
-//   音量    : 40 × log10(音量 / 127) dB（測った 120〜64 の 7 点と 0.3dB 以内）
-//   音量の EG: まだ測っていない高さの目盛りは入れず、リリースの長さだけ swp50_eg::time_down(127 − 値) で dB でまっすぐ下げる
+//   音量    : swp50_aeg::level_db（測った表）。レベルスケーリングを足してからキーフォローを掛ける
+//   音量の EG: swp50_aeg.h（高さ・段の長さ・時間のベロシティ感度とキーフォロー、音量のベロシティ感度とカーブ、音量のキーフォロー）
+//   LFO     : swp50_lfo.h（音程・音量・フィルター）
 #pragma once
 
 #include <cmath>
 #include <cstdint>
 #include <vector>
 
+#include "swp50_aeg.h"
 #include "swp50_eg.h"
 #include "swp50_eq.h"
 #include "swp50_filter.h"
+#include "swp50_lfo.h"
 
 namespace motif_sampler {
 
@@ -34,7 +37,10 @@ struct element_params {
 	int fine = 0;                 // -64..+63（1 = 1.5625 セント）
 	int level = 127;
 	int pan = 64;                 // 1..127、64 が中央
-	int aeg_release = 0;          // 0..127
+	int level_vel_sens = 64, level_vel_curve = 0, level_kf = 64;
+	int level_bp[4] = { 0, 0, 0, 0 }, level_off[4] = { 128, 128, 128, 128 };   // 音量のレベルスケーリング
+	swp50_aeg::amp_eg aeg;        // 時間・高さ・時間の感度（鍵とベロシティは start で入れる）
+	swp50_lfo::element_lfo lfo;
 	swp50_filter::filter_params filter;
 	swp50_filter::filter_eg feg;
 	int eq_type = swp50_eq::THRU, eq_res = 16, eq_f1 = 100, eq_g1 = 0x40, eq_f2 = 200, eq_g2 = 0x40;
@@ -47,9 +53,10 @@ static inline double step_for(const sample &s, int note, int coarse, int fine)
 	return std::exp2(reg / 1024.0) / s.stretch;
 }
 
-static inline double level_gain(int level)
+static inline double level_gain(double level)
 {
-	return level <= 0 ? 0.0 : std::pow(10.0, 40.0 * std::log10(level / 127.0) / 20.0);
+	const double d = swp50_aeg::level_db(level);
+	return d <= swp50_aeg::SILENT ? 0.0 : std::pow(10.0, d / 20.0);
 }
 
 struct voice {
@@ -58,7 +65,7 @@ struct voice {
 	int note = 60, velocity = 100;
 	double pos = 0, step = 1;
 	bool on = false, released = false, done = false;
-	double rel_atten = 0, rel_step = 0;   // リリースの減らす量（目盛り、0x10 = 6dB）
+	double level = 127, vel_gain = 1;     // キーフォローを掛けた音量の値と、ベロシティ感度の倍率
 	swp50_filter::element_filter flt, flt_r;
 	swp50_eq::element_eq eq, eq_r;
 	double gl = 1, gr = 1;
@@ -67,7 +74,17 @@ struct voice {
 	{
 		smp = &s; p = ep; note = n; velocity = v;
 		pos = 0; step = step_for(s, n, p.coarse, p.fine);
-		on = true; released = false; done = false; rel_atten = 0;
+		on = true; released = false; done = false;
+		p.aeg.key = n;
+		p.aeg.velocity = v;
+		p.aeg.key_on();
+		p.lfo.key_on();
+		level = std::fmin(127.0, std::fmax(0.0, p.level + swp50_aeg::level_scaling(p.level_bp, p.level_off, n)));
+		level *= swp50_aeg::key_follow_factor(p.level_kf, n);
+		const double vd = swp50_aeg::velocity_db(p.level_vel_sens, p.level_vel_curve, v);
+		vel_gain = vd <= swp50_aeg::SILENT ? 0.0 : std::pow(10.0, vd / 20.0);
+		if (vel_gain == 0.0)
+			done = true;
 		p.feg.key = n;
 		p.feg.velocity = v;
 		p.feg.key_on();
@@ -77,10 +94,9 @@ struct voice {
 		eq.set(p.eq_type, p.eq_res, p.eq_f1, p.eq_g1, p.eq_f2, p.eq_g2);
 		eq.reset();
 		eq_r = eq;
-		const double g = level_gain(p.level);
 		const double a = (p.pan < 1 ? 1 : p.pan > 127 ? 127 : p.pan - 1) / 126.0 * (3.14159265358979 / 2);
-		gl = g * std::cos(a) * std::sqrt(2.0);
-		gr = g * std::sin(a) * std::sqrt(2.0);
+		gl = std::cos(a) * std::sqrt(2.0);
+		gr = std::sin(a) * std::sqrt(2.0);
 	}
 
 	void release()
@@ -89,8 +105,7 @@ struct voice {
 			return;
 		released = true;
 		p.feg.key_off();
-		const double t = p.aeg_release <= 0 ? 1.0 : swp50_eg::time_down(uint32_t(127 - (p.aeg_release > 127 ? 127 : p.aeg_release)));
-		rel_step = 255.0 / t;
+		p.aeg.key_off();
 	}
 
 	float at(const std::vector<float> &x, long i) const
@@ -120,14 +135,15 @@ struct voice {
 			return ((c3 * t + c2) * t + c1) * t + y1;
 		};
 		double l = herm(s.L), r = herm(s.R);
-		pos += step;
+		p.lfo.step(44100.0);
+		pos += p.lfo.pmod ? step * std::exp2(p.lfo.pitch_cents_now() / 1200.0) : step;
 		if (s.loop_start < 0 && pos >= double(s.L.size()))
 			done = true;
 		// FEG を目盛りに足してフィルターの g を決め直すのは重いので、FEG の深さが 0 でなければ毎サンプル（芯の試しなので素直に書く）
 		const double fs = p.feg.step();
-		if (p.feg.depth != 64) {
+		if (p.feg.depth != 64 || p.lfo.fmod) {
 			swp50_filter::filter_params fp = p.filter;
-			fp.cutoff = int(std::lround(swp50_filter::cutoff_with_feg(p.filter.cutoff, fs)));
+			fp.cutoff = int(std::lround(swp50_filter::cutoff_with_feg(p.filter.cutoff, fs + p.lfo.filter_octaves_now() * 25.6)));
 			swp50_filter::element_filter tmp;
 			tmp.set(fp, note, velocity);
 			flt.g = flt_r.g = tmp.g;
@@ -135,15 +151,12 @@ struct voice {
 		}
 		l = eq.process(flt.process(float(l)));
 		r = eq_r.process(flt_r.process(float(r)));
-		double g = 1.0;
-		if (released) {
-			rel_atten += rel_step;
-			if (rel_atten >= 255.0) {
-				done = true;
-				return;
-			}
-			g = std::pow(2.0, -rel_atten / 16.0);
+		const double eg = p.aeg.step();
+		if (p.aeg.finished()) {
+			done = true;
+			return;
 		}
+		const double g = eg * vel_gain * level_gain(level - p.lfo.level_drop_now());
 		outl += float(l * gl * g);
 		outr += float(r * gr * g);
 	}

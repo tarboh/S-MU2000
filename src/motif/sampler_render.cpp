@@ -169,7 +169,33 @@ int main(int argc, char **argv)
 		p.fine = geti(e.f, "fine");
 		p.level = geti(e.f, "level", 127);
 		p.pan = geti(e.f, "pan", 64);
-		p.aeg_release = geti(e.f, "release");
+		const auto at = list(e.f, "aegt"), al = list(e.f, "aegl");
+		for (int i = 0; i < 4 && i < int(at.size()); i++)
+			p.aeg.time[i] = at[i];
+		for (int i = 0; i < 4 && i < int(al.size()); i++)
+			p.aeg.level[i] = al[i];
+		if (at.empty())
+			p.aeg.time[3] = geti(e.f, "release");
+		p.aeg.time_vel_sens = geti(e.f, "aegtv", 64);
+		p.aeg.time_vel_segment = geti(e.f, "aegtvs", 4);
+		p.aeg.time_kf = geti(e.f, "aegkf", 64);
+		p.aeg.time_kf_center = geti(e.f, "aegkc", 60);
+		p.level_vel_sens = geti(e.f, "lvel", 64);
+		p.level_vel_curve = geti(e.f, "lcurve");
+		p.level_kf = geti(e.f, "lkf", 64);
+		const auto lbp = list(e.f, "lbp"), loff = list(e.f, "loff");
+		for (int i = 0; i < 4 && i < int(lbp.size()); i++)
+			p.level_bp[i] = lbp[i];
+		for (int i = 0; i < 4 && i < int(loff.size()); i++)
+			p.level_off[i] = loff[i];
+		p.lfo.wave = geti(e.f, "lfow", 1);
+		p.lfo.key_sync = geti(e.f, "lfosync", 1) != 0;
+		p.lfo.delay = geti(e.f, "lfodelay");
+		p.lfo.speed = geti(e.f, "lfospeed", 32);
+		p.lfo.amod = geti(e.f, "lfoa");
+		p.lfo.pmod = geti(e.f, "lfop");
+		p.lfo.fmod = geti(e.f, "lfof");
+		p.lfo.fade = geti(e.f, "lfofade");
 		auto &fp = p.filter;
 		fp.type = geti(e.f, "ftype", 21);
 		fp.cutoff = geti(e.f, "cutoff", 255);

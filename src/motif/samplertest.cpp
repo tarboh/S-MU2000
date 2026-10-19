@@ -73,17 +73,17 @@ int main()
 	element_params pc = p;
 	pc.coarse = 12;
 	CHECK(std::fabs(freq(play(pc, 60, 22050), 2000, 8000) - 882.0) < 1.0);
-	// 音量 64 は約 -11.9dB
+	// 音量 64 は -12.06dB（測った表）
 	element_params pl = p;
 	pl.level = 64;
-	CHECK(std::fabs(20 * std::log10(rms(play(pl, 60, 8000), 2000, 4000) / rms(a, 2000, 4000)) - (-11.9)) < 0.1);
+	CHECK(std::fabs(20 * std::log10(rms(play(pl, 60, 8000), 2000, 4000) / rms(a, 2000, 4000)) - (-12.06)) < 0.1);
 	// パン中央は左右同じで、音量は 0dB（√2 × cos 45° = 1）
 	CHECK(std::fabs(rms(a, 2000, 4000) - 0.5 / std::sqrt(2.0)) < 0.01);
 	// リリース 0 はすぐ消える。リリース 64 は 34,950 サンプルで 255 目盛り（96dB）下がる
 	auto d = play(p, 60, 20000, 10000);
 	CHECK(rms(d, 10010, 2000) < 1e-6);
 	element_params pr = p;
-	pr.aeg_release = 64;
+	pr.aeg.time[3] = 64;
 	auto e = play(pr, 60, 10000 + 34950 / 2 + 2000, 10000);
 	const double drop = 20 * std::log10(rms(e, 10000 + 34950 / 2 - 500, 1000) / rms(a, 2000, 4000));
 	CHECK(std::fabs(drop - (-48.0)) < 1.5);

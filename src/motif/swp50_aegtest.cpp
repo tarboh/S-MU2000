@@ -51,7 +51,15 @@ int main()
 	// 高さ
 	static const struct { int L; double db; } LV[] = { { 120, -0.85 }, { 96, -4.52 }, { 64, -12.06 }, { 32, -24.09 }, { 16, -36.14 }, { 8, -48.17 } };
 	for (auto &l : LV)
-		CHECK(std::fabs(level_db(l.L) - l.db) < 0.6);
+		CHECK(std::fabs(level_db(l.L) - l.db) < 0.05);
+	CHECK(std::fabs(level_db(100) - -3.7) < 0.3);
+	// レベルスケーリング（区切り 36・48・72・84、区切り 1 だけ −64）
+	{
+		const int bp[4] = { 36, 48, 72, 84 }, off[4] = { 64, 128, 128, 128 };
+		CHECK(level_scaling(bp, off, 24) == -64 && level_scaling(bp, off, 36) == -64);
+		CHECK(std::fabs(level_db(127 + level_scaling(bp, off, 42)) - -4.56) < 0.6);
+		CHECK(level_scaling(bp, off, 60) == 0 && level_scaling(bp, off, 96) == 0);
+	}
 	CHECK(level_db(1) == SILENT && level_db(0) == SILENT);
 
 	// ベロシティ感度
@@ -69,6 +77,14 @@ int main()
 	CHECK(velocity_db(64, 0, 1) == 0.0);
 	CHECK(std::fabs(velocity_db(96, 3, 64) - -12.1) < 0.6);
 	CHECK(std::fabs(velocity_db(96, 1, 64) - -47.1) < 0.6);
+	// カーブ 1〜4 はほかの感度でも x だけで決まる
+	CHECK(std::fabs(velocity_db(80, 2, 1) - -29.1) < 1.0);
+	CHECK(std::fabs(velocity_db(88, 2, 64) - -18.3) < 1.0);
+	CHECK(std::fabs(velocity_db(72, 3, 1) - -4.5) < 1.0);
+	CHECK(std::fabs(velocity_db(112, 3, 96) - -11.5) < 1.5);
+	CHECK(std::fabs(velocity_db(80, 4, 1) - -29.6) < 2.0);
+	CHECK(std::fabs(velocity_db(88, 1, 1) - -71.2) < 1.5);
+	CHECK(velocity_db(96, 1, 16) == SILENT);
 
 	// 音量のキーフォロー
 	CHECK(std::fabs(kf_db(96, 36) - -3.33) < 0.4);
@@ -92,17 +108,30 @@ int main()
 		e.velocity = t.v;
 		CHECK(std::fabs(decay1_seconds(e) / t.sec - 1) < 0.1);
 	}
-	// 時間のキーフォロー（ディケイ 1 = 80 と 64、中心 60）
+	// 時間のキーフォロー（ディケイ 1 = 80、中心 60）。ディケイ 1 = 64 で測った分（0.211・0.060 秒）は、アタックの平らな所との境を
+	// 読み違えたらしく、ここでは使わない
 	static const struct { int base, s, key; double sec; } TK[] = {
 		{ 80, 80, 84, 1.839 }, { 80, 96, 72, 1.864 }, { 80, 96, 84, 1.077 }, { 80, 127, 72, 1.085 }, { 80, 127, 84, 0.388 },
-		{ 64, 96, 84, 0.211 }, { 64, 127, 84, 0.060 },
 	};
 	for (auto &t : TK) {
 		amp_eg e = decay_eg(t.base, 64);
 		e.time_kf = t.s;
 		e.key = t.key;
-		const double got = decay1_seconds(e);
-		CHECK(std::fabs(got / t.sec - 1) < 0.2);
+		CHECK(std::fabs(decay1_seconds(e) / t.sec - 1) < 0.05);
+	}
+	// 遅い段（127 → 0、傾きから出した長さ）: ディケイ 1 = 88・96・104、中心 60 と 24
+	static const struct { int base, s, c, key; double sec; } TS[] = {
+		{ 88, 96, 60, 84, 2.150 }, { 88, 96, 60, 96, 1.307 }, { 88, 127, 60, 84, 0.789 }, { 88, 96, 24, 60, 1.338 }, { 88, 96, 24, 36, 3.653 },
+		{ 96, 96, 60, 84, 4.335 }, { 96, 127, 60, 84, 1.571 }, { 104, 96, 60, 84, 8.641 }, { 104, 96, 24, 60, 5.276 },
+		{ 88, 96, 60, 36, 17.23 }, { 96, 96, 60, 36, 33.77 },
+	};
+	for (auto &t : TS) {
+		amp_eg e;
+		e.time_kf = t.s;
+		e.time_kf_center = t.c;
+		e.key = t.key;
+		const double want = amp_eg::seg_samples_at(t.base) / 44100.0;
+		CHECK(std::fabs(want * e.kf_factor() / t.sec - 1) < 0.12);
 	}
 
 	// 無音への段: ディケイ 1 = 64 で 127 → 0 は、0.79 秒で −96dB に着いてそのあと無音
