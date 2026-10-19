@@ -11,7 +11,7 @@
 // q = 2 の SVF は g が 0.83 を超えると不安定になるので、process では g をそこで止める（実機は安定。いちばん上はつくりが少し違うはず）。
 //
 // 当てはまり（dB の RMS、目盛り 60-180 / 180-210 / 210-226）: 多くの型で 0.1-0.3 / 0.3-0.6 / 1.2-2.9。
-// 帯域阻止（BEF12・BEF6・DualBEF）は 0.4-1.7 / 3.0 / 4.2、LPF18s は 0.8 / 0.2 / 0.1。レゾナンスはまだ入れていない。
+// 帯域阻止（BEF12・BEF6・DualBEF）は 0.4-1.7 / 3.0 / 4.2、LPF18s は 0.8 / 0.2 / 0.1。レゾナンスは下の「レゾナンス」の節。
 #pragma once
 
 #include <cmath>
@@ -56,6 +56,30 @@ static constexpr float g_table[256] = {
 	0.999000f, 0.999000f, 0.999000f, 0.999000f, 0.999000f, 0.999000f, 0.999000f, 0.999000f,  // 248-255
 };
 
+
+// ---- レゾナンス（2026-10-19。tools/motif/mr_reso.py の録音、目盛り 96・128・160 に当てはめ） ----
+// 多くの型は SVF の q が「16 ごとに半分」: q = 2.74 × 2^(-reso/16)、上限は型のもとの q（2）。
+// 外れる型は測った q の表（reso 0, 8, … 120, 127）を対数で補間する。
+// 線形の模型なので、実機が発振して飽和する所（4 段の型は reso 40〜48、2 段の型は 80、LPF18 は 88 から上）は表せない。
+static constexpr float reso_points[17] = { 0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 127 };
+static constexpr float q_lpf24a[17] = { 1.399f, 1.372f, 1.178f, 0.973f, 0.836f, 0.704f, 0.616f, 0.539f, 0.490f, 0.437f, 0.405f,
+                                        0.375f, 0.354f, 0.341f, 0.330f, 0.318f, 0.308f };   // 112 から上は飽和するので、その手前の下がり方で延ばした
+static constexpr float q_bef12[17]  = { 2.010f, 1.972f, 1.453f, 0.992f, 0.760f, 0.539f, 0.413f, 0.328f, 0.261f, 0.200f, 0.162f,
+                                        0.131f, 0.113f, 0.095f, 0.085f, 0.078f, 0.074f };
+static constexpr float q_bef6[17]   = { 2.169f, 2.088f, 1.568f, 1.092f, 0.836f, 0.593f, 0.463f, 0.334f, 0.271f, 0.208f, 0.172f,
+                                        0.136f, 0.117f, 0.099f, 0.090f, 0.082f, 0.078f };   // DualBEF も同じ
+static constexpr float q_bpfw[17]   = { 1.010f, 1.010f, 1.010f, 1.074f, 1.229f, 1.441f, 1.733f, 2.134f, 2.597f, 3.121f, 3.845f,
+                                        4.736f, 5.906f, 7.012f, 8.123f, 10.64f, 12.63f };    // BPFw は逆に広がる（山の高さは保つ）
+
+static inline float q_from_table(const float *tab, int reso)
+{
+	int i = 0;
+	while (i < 15 && reso > reso_points[i + 1])
+		i++;
+	const float t = (reso - reso_points[i]) / (reso_points[i + 1] - reso_points[i]);
+	return std::exp(std::log(tab[i]) + t * (std::log(tab[i + 1]) - std::log(tab[i])));
+}
+
 // 型の番号（Data List の並び。9・18・20 は欠番で、書くと次の値になる）
 enum : int {
 	LPF24D = 0, LPF24A = 1, LPF18 = 2, LPF18S = 3, LPF12 = 4, LPF6 = 5, HPF24D = 6, HPF12 = 7, BPF12D = 8,
@@ -64,6 +88,27 @@ enum : int {
 };
 
 static inline int canonical_type(int t) { return t == 9 ? 10 : t == 18 ? 19 : t == 20 ? 21 : t; }
+
+// 型とレゾナンス（0-127）から SVF の q
+static inline float type_q(int t, int reso)
+{
+	reso = reso < 0 ? 0 : reso > 127 ? 127 : reso;
+	switch (canonical_type(t)) {
+	case LPF24A: return q_from_table(q_lpf24a, reso);
+	case BPFW:   return q_from_table(q_bpfw, reso);
+	case BEF12:  return q_from_table(q_bef12, reso);
+	case BEF6: case DUAL_BEF: return q_from_table(q_bef6, reso);
+	default: { const float q = 2.74f * std::exp2(-reso / 16.0f); return q < 2.0f ? q : 2.0f; }
+	}
+}
+
+// Chamberlin の SVF が安定な q の上限（g q < 2 と g^2 + 2 g q < 4。少し余裕を持たせる）
+static inline float stable_q(float g, float q)
+{
+	const float a = 1.9f / g, b = 0.98f * (4.0f - g * g) / (2.0f * g);
+	const float m = a < b ? a : b;
+	return q < m ? q : m;
+}
 
 struct svf {
 	float lp = 0, bp = 0;
@@ -79,10 +124,18 @@ struct svf {
 struct element_filter {
 	int   type = THRU;
 	float g = 0.999f;
+	float q = 2.0f;
 	svf   s1, s2, s3;
 	float p1 = 0, p2 = 0;
 
-	void set(int t, int cutoff) { type = canonical_type(t); g = g_table[cutoff < 0 ? 0 : cutoff > 255 ? 255 : cutoff]; }
+	// reso はエレメントのレゾナンス（0-127）。LPF6 と LPF18s には効かない（LPF18s は実機では効くが、まだ模型にしていない）
+	void set(int t, int cutoff, int reso = 0)
+	{
+		type = canonical_type(t);
+		g = g_table[cutoff < 0 ? 0 : cutoff > 255 ? 255 : cutoff];
+		const float gs = g < 0.82f ? g : 0.82f;
+		q = stable_q(gs, type_q(type, reso));
+	}
 	void reset() { s1 = s2 = s3 = svf(); p1 = p2 = 0; }
 
 	float process(float x)
@@ -90,28 +143,27 @@ struct element_filter {
 		const float gs = g < 0.82f ? g : 0.82f;           // q = 2 の SVF が不安定にならない所まで
 		float l, b, h, l2, b2, h2;
 		switch (type) {
-		case LPF24D: s1.step(x, gs, 2.0f, l, b, h); s2.step(l, gs, 2.0f, l2, b2, h2); return l2;
-		case LPF24A: s1.step(x, gs, 1.414f, l, b, h); s2.step(l, gs, 1.414f, l2, b2, h2); return l2;
-		case LPF18:  s1.step(x, gs, 2.0f, l, b, h); p1 += g * (l - p1); return p1;
+		case LPF24D: case LPF24A: s1.step(x, gs, q, l, b, h); s2.step(l, gs, q, l2, b2, h2); return l2;
+		case LPF18:  s1.step(x, gs, q, l, b, h); p1 += g * (l - p1); return p1;
 		case LPF18S: { p1 += g * (x - p1); const float g2 = g * 5.657f < 0.999f ? g * 5.657f : 0.999f; p2 += g2 * (p1 - p2); return p2; }
-		case LPF12: case DUAL_LPF: case LPF12_BPF6: s1.step(x, gs, 2.0f, l, b, h); return l;
+		case LPF12: case DUAL_LPF: case LPF12_BPF6: s1.step(x, gs, q, l, b, h); return l;
 		case LPF6:   p1 += g * (x - p1); return p1;
-		case HPF24D: s1.step(x, gs, 2.0f, l, b, h); s2.step(h, gs, 2.0f, l2, b2, h2); return h2;
-		case HPF12:  s1.step(x, gs, 2.0f, l, b, h); return h;
-		case BPF12D: s1.step(x, gs, 2.0f, l, b, h); s2.step(b, gs, 2.0f, l2, b2, h2); return b2;
-		case BPFW:   s1.step(x, gs, 1.0f, l, b, h); s2.step(b, gs, 1.0f, l2, b2, h2); return b2;
-		case BPF6:   s1.step(x, gs, 2.0f, l, b, h); return b;
-		case BEF12:  s1.step(x, gs, 2.0f, l, b, h); s2.step(l + h, gs, 2.0f, l2, b2, h2); return l2 + h2;
-		case BEF6: case DUAL_BEF: s1.step(x, gs, 2.0f, l, b, h); return l + h;
-		case DUAL_HPF: s1.step(x, gs, 2.0f, l, b, h); return x + h;
-		case DUAL_BPF: { s1.step(x, gs, 2.0f, l, b, h); s3.step(x, g * 0.0131390f, 1.414f, l2, b2, h2); return b + 0.707f * b2; }   // 2^-7.5
+		case HPF24D: s1.step(x, gs, q, l, b, h); s2.step(h, gs, q, l2, b2, h2); return h2;
+		case HPF12:  s1.step(x, gs, q, l, b, h); return h;
+		case BPF12D: s1.step(x, gs, q, l, b, h); s2.step(b, gs, q, l2, b2, h2); return b2;
+		case BPFW:   s1.step(x, gs, q, l, b, h); s2.step(q * b, gs, q, l2, b2, h2); return q * b2;   // 山の高さを保つ
+		case BPF6:   s1.step(x, gs, q, l, b, h); return b;
+		case BEF12:  s1.step(x, gs, q, l, b, h); s2.step(l + h, gs, q, l2, b2, h2); return l2 + h2;
+		case BEF6: case DUAL_BEF: s1.step(x, gs, q, l, b, h); return l + h;
+		case DUAL_HPF: s1.step(x, gs, q, l, b, h); return x + h;
+		case DUAL_BPF: { s1.step(x, gs, q, l, b, h); s3.step(x, g * 0.0131390f, 1.414f, l2, b2, h2); return b + 0.707f * b2; }   // 2^-7.5
 		default:     return x;
 		}
 	}
 };
 
 // 同じ模型の周波数特性（f Hz、サンプリング 44,100Hz）。試験と、録音との突き合わせに使う
-static inline double response_db(int t, int cutoff, double f)
+static inline double response_db(int t, int cutoff, double f, int reso = 0)
 {
 	using cd = std::complex<double>;
 	t = canonical_type(t);
@@ -125,23 +177,23 @@ static inline double response_db(int t, int cutoff, double f)
 		const cd bp = g * hp / a, lp = g * bp / a;
 		return i == 0 ? lp : i == 1 ? bp : i == 2 ? hp : lp + hp;
 	};
+	const double q = stable_q(float(gs), type_q(t, reso));
 	cd h = 1.0;
 	switch (t) {
-	case LPF24D: h = sv(gs, 2.0, 0) * sv(gs, 2.0, 0); break;
-	case LPF24A: h = sv(gs, 1.414, 0) * sv(gs, 1.414, 0); break;
-	case LPF18:  h = sv(gs, 2.0, 0) * lp1(g0); break;
+	case LPF24D: case LPF24A: h = sv(gs, q, 0) * sv(gs, q, 0); break;
+	case LPF18:  h = sv(gs, q, 0) * lp1(g0); break;
 	case LPF18S: h = lp1(g0) * lp1(g0 * 5.657 < 0.999 ? g0 * 5.657 : 0.999); break;
-	case LPF12: case DUAL_LPF: case LPF12_BPF6: h = sv(gs, 2.0, 0); break;
+	case LPF12: case DUAL_LPF: case LPF12_BPF6: h = sv(gs, q, 0); break;
 	case LPF6:   h = lp1(g0); break;
-	case HPF24D: h = sv(gs, 2.0, 2) * sv(gs, 2.0, 2); break;
-	case HPF12:  h = sv(gs, 2.0, 2); break;
-	case BPF12D: h = sv(gs, 2.0, 1) * sv(gs, 2.0, 1); break;
-	case BPFW:   h = sv(gs, 1.0, 1) * sv(gs, 1.0, 1); break;
-	case BPF6:   h = sv(gs, 2.0, 1); break;
-	case BEF12:  h = sv(gs, 2.0, 3) * sv(gs, 2.0, 3); break;
-	case BEF6: case DUAL_BEF: h = sv(gs, 2.0, 3); break;
-	case DUAL_HPF: h = 1.0 + sv(gs, 2.0, 2); break;
-	case DUAL_BPF: h = sv(gs, 2.0, 1) + 0.707 * sv(g0 * 0.0131390, 1.414, 1); break;
+	case HPF24D: h = sv(gs, q, 2) * sv(gs, q, 2); break;
+	case HPF12:  h = sv(gs, q, 2); break;
+	case BPF12D: h = sv(gs, q, 1) * sv(gs, q, 1); break;
+	case BPFW:   h = q * sv(gs, q, 1) * q * sv(gs, q, 1); break;
+	case BPF6:   h = sv(gs, q, 1); break;
+	case BEF12:  h = sv(gs, q, 3) * sv(gs, q, 3); break;
+	case BEF6: case DUAL_BEF: h = sv(gs, q, 3); break;
+	case DUAL_HPF: h = 1.0 + sv(gs, q, 2); break;
+	case DUAL_BPF: h = sv(gs, q, 1) + 0.707 * sv(g0 * 0.0131390, 1.414, 1); break;
 	default: break;
 	}
 	return 20 * std::log10(std::abs(h) + 1e-30);

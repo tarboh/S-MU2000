@@ -15,10 +15,10 @@ static int g_fail = 0;
 
 #define CHECK(cond) do { if (!(cond)) { std::printf("NG  %s:%d  %s\n", __FILE__, __LINE__, #cond); g_fail++; } } while (0)
 
-static double impulse_db(int type, int cutoff, double f)
+static double impulse_db(int type, int cutoff, double f, int reso = 0)
 {
 	swp50_filter::element_filter flt;
-	flt.set(type, cutoff);
+	flt.set(type, cutoff, reso);
 	flt.reset();
 	double re = 0, im = 0;
 	const int n = 1 << 18;
@@ -46,6 +46,27 @@ int main()
 					g_fail++;
 				}
 			}
+
+	// 1b. レゾナンスを入れても処理と式が一致すること
+	for (int t : types)
+		for (int r : { 32, 64 })
+			for (double f : { 250.0, 458.4, 1000.0 }) {
+				const double a = impulse_db(t, 128, f, r), b = response_db(t, 128, f, r);
+				if (b > -80 && std::fabs(a - b) > 0.05) {
+					std::printf("type %d reso %d f %.0f: process %.2f dB, response %.2f dB\n", t, r, f, a, b);
+					g_fail++;
+				}
+			}
+
+	// 2b. レゾナンスの実機の値（目盛り 128、f0 = 458Hz での高さ。mr_reso.py の録音）
+	CHECK(std::fabs(response_db(LPF12, 128, 458.4, 48) - 8.98) < 0.8);
+	CHECK(std::fabs(response_db(LPF12, 128, 458.4, 64) - 14.94) < 0.8);
+	CHECK(std::fabs(response_db(BPF6, 128, 458.4, 64) - 14.87) < 0.8);
+	CHECK(std::fabs(response_db(LPF24A, 128, 458.4, 64) - 14.97) < 3.0);  // LPF24A は山の頂上が 2.7dB 低く出る（全体の RMS は 0.8dB）
+	CHECK(std::fabs(response_db(LPF18, 128, 458.4, 64) - 12.07) < 1.0);
+	CHECK(std::fabs(response_db(LPF24D, 128, 458.4, 32) - 5.85) < 1.0);
+	CHECK(std::fabs(type_q(LPF12, 0) - 2.0f) < 1e-6 && std::fabs(type_q(LPF12, 40) - 0.4844f) < 0.001f);   // 16 ごとに半分
+	CHECK(type_q(BPFW, 127) > type_q(BPFW, 0));                            // BPFw は広がる
 
 	// 2. 実機の録音の代表の点（目盛り 128 = 共通のカットオフ周波数 458Hz）
 	CHECK(std::fabs(response_db(LPF24D, 128, 458.4) - (-11.9)) < 0.7);     // 測定 -11.9dB
