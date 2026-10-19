@@ -1,8 +1,8 @@
 """mr_capture.py で録った長い音を、まとめて「出だし + ループ」（または鳴らし切り）に切り出す。
-  python mr_extract_all.py 録った置き場 出力の置き場
+  python mr_extract_all.py 録った置き場 出力の置き場 [--redo-raw]
 
 録った置き場の capture.csv を読み、まだ切り出していないものを順に処理する（もうある .npz は飛ばす）。
-* ループ: mr_extract.py と同じ（相関 0.999 以上をループとみなす）
+* ループ: mr_extract.py と同じ（相関 0.998 以上をループとみなす。小さい音の高い鍵は 0.998〜0.999 に来る）
 * 鳴らし切り: 離す前に音が消える（最後の 0.3 秒が出だしの山より 70dB 以上小さい）なら、消えるまでをそのまま持つ
 * どちらでもない（揺れていてループが見つからない）ものは、離すまでをそのまま持ち、印を付ける
 結果の一覧は出力の置き場の samples.csv に書く。録音を読むだけで、実機には何も送らない。"""
@@ -36,13 +36,29 @@ def process(path, hold=HOLD):
         oL, oR, start, Li, Lf, rr, k = X.extract(L, R, hold_end=off)
     except Exception:
         rr = 0.0
-    if rr >= 0.999:
+    if rr >= 0.998:
         return dict(kind="loop", L=oL, R=oR, loop_start=start, loop_length=Li, corr=rr, stretch=k)
     return dict(kind="raw", L=L[on:off], R=R[on:off], loop_start=-1, loop_length=0, corr=rr, stretch=1.0)
 
 
 def main():
     src, dst = sys.argv[1], sys.argv[2]
+    if "--redo-raw" in sys.argv:
+        # 「そのまま」にしたものを消して、もう一度切り出す（線や探し方を変えたあと）
+        path = os.path.join(dst, "samples.csv")
+        keep = []
+        for r in csv.DictReader(open(path)):
+            if r["kind"] == "raw":
+                try:
+                    os.remove(os.path.join(dst, r["file"]))
+                except OSError:
+                    pass
+            else:
+                keep.append(r)
+        with open(path, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(keep[0].keys()) if keep else [], lineterminator="\n")
+            w.writeheader()
+            w.writerows(keep)
     os.makedirs(dst, exist_ok=True)
     rows = list(csv.DictReader(open(os.path.join(src, "capture.csv"))))
     out_csv = os.path.join(dst, "samples.csv")
