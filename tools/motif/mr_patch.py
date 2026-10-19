@@ -28,6 +28,10 @@ def main():
     os.makedirs(odir, exist_ok=True)
     v = json.load(open(vpath, encoding="utf-8"))
     samples = list(csv.DictReader(open(os.path.join(sdir, "samples.csv"))))
+    alias = {}
+    ap = os.path.join(sdir, "..", "wave_alias.csv")     # 同じサンプルを共有する波形は、もとの波形のサンプルを使う（mr_alias.py）
+    if os.path.exists(ap):
+        alias = {int(r["wave"]): int(r["same_as"]) for r in csv.DictReader(open(ap))}
     by_wave = {}
     for s in samples:
         by_wave.setdefault(int(s["wave"]), []).append(s)
@@ -58,7 +62,7 @@ def main():
             "eqf2": eq["eq2_frequency"], "eqg2": eq["eq2_gain"],
         }
         lines.append("element " + " ".join("%s=%s" % kv for kv in f.items()))
-        zs = by_wave.get(w, [])
+        zs = by_wave.get(w, []) or by_wave.get(alias.get(w, -1), [])
         if not zs:
             missing.append(w)
         for s in zs:

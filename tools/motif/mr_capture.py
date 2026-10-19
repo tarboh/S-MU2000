@@ -42,6 +42,10 @@ def main():
     zones = {int(r["wave"]): r for r in csv.DictReader(open(os.path.join(cap, "zones_all.csv")))}
     vz = {int(r["wave"]): r for r in csv.DictReader(open(os.path.join(cap, "velzones.csv")))}
     waves = [int(l.split(",")[0]) for l in open(wl) if l.strip() and l.split(",")[0].strip().isdigit()]
+    ap = os.path.join(cap, "wave_alias.csv")        # 同じサンプルを共有する波形は録らない（mr_alias.py）
+    if os.path.exists(ap):
+        same = {int(r["wave"]) for r in csv.DictReader(open(ap))}
+        waves = [w for w in waves if w not in same]
     os.makedirs(d, exist_ok=True)
     log = os.path.join(d, "capture.csv")
     new_log = not os.path.exists(log)
