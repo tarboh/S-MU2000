@@ -33,11 +33,14 @@ int main()
 	CHECK(std::fabs(filter_octaves_pp(32) - 1.02) < 0.06);
 	CHECK(std::fabs(filter_octaves_pp(64) - 1.93) < 0.06);
 	CHECK(std::fabs(filter_octaves_pp(127) - 3.78) < 0.06);
-	// ディレイ・フェード（測った 2 点）
-	CHECK(std::fabs(delay_seconds(32) - 0.68) < 0.02);
-	CHECK(std::fabs(delay_seconds(64) - 2.55) < 0.1);
-	CHECK(delay_seconds(96) > 5.0);
-	CHECK(std::fabs(fade_seconds(64) - 3.06) < 0.15);
+	// ディレイ・フェード
+	static const struct { int v; double sec; } DL[] = { { 8, 0.125 }, { 16, 0.354 }, { 32, 1.018 }, { 48, 1.871 }, { 64, 2.894 } };
+	for (auto &x : DL)
+		CHECK(near_ratio(delay_seconds(x.v), x.sec, 0.05));
+	CHECK(delay_seconds(96) > 4.6);
+	static const struct { int v; double sec; } FD[] = { { 16, 0.35 }, { 32, 1.15 }, { 48, 1.95 }, { 64, 2.9 }, { 80, 4.15 }, { 96, 5.5 } };
+	for (auto &x : FD)
+		CHECK(near_ratio(fade_seconds(x.v), x.sec, 0.1));
 
 	// 動かしてみる: 三角・速さ 32・音程 64 で、一周の山と谷が ±37.9 セント、キーオンでそろう
 	element_lfo l;
@@ -61,15 +64,25 @@ int main()
 		drop = std::fmax(drop, l.level_drop_now());
 	}
 	CHECK(std::fabs(drop - 64) < 0.5);
-	// ディレイ 32: 0.6 秒では揺れない、1.0 秒では揺れている
+	// ディレイ 32: 0.95 秒では揺れない、1.1 秒では揺れている
 	l.delay = 32;
 	l.key_on();
-	for (int i = 0; i < int(0.6 * 44100); i++)
+	for (int i = 0; i < int(0.95 * 44100); i++)
 		l.step(44100.0);
 	CHECK(l.amount() == 0.0);
-	for (int i = 0; i < int(0.4 * 44100); i++)
+	for (int i = 0; i < int(0.15 * 44100); i++)
 		l.step(44100.0);
 	CHECK(l.amount() == 1.0);
+	// のこぎりは真ん中から下がり、四角は上から
+	element_lfo w;
+	w.wave = 0;
+	w.key_on();
+	CHECK(std::fabs(w.shape()) < 1e-9);
+	w.step(44100.0);
+	CHECK(w.shape() < 0);
+	w.wave = 2;
+	w.key_on();
+	CHECK(w.shape() == 1.0);
 
 	if (g_fail) {
 		std::printf("swp50_lfotest: %d NG\n", g_fail);

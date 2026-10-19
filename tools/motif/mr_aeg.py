@@ -6,6 +6,9 @@
   kf    : 音量のキーフォロー（41 ee 2F、64 が 0）× 鍵 36・48・60・72・84（ak???_k??.wav）
   time  : アタック 64・ディケイ 1 64（高さ 127 → 64）で、時間のベロシティ感度（41 ee 2E、対象 41 ee 2D = ALL）× ベロシティ、
           時間のキーフォロー（41 ee 3C、中心 41 ee 3D = 60）× 鍵（at???_v???.wav・ak2???_k??.wav）
+  vel2  : 感度 +56・+60・+62（カーブ 0）と、感度 +32 でのカーブ 1〜4（av???_c?_v???.wav）
+  time2 : ディケイ 1 を 80 にして、時間のベロシティ感度 × ベロシティと、時間のキーフォロー × 鍵（bt???_v???.wav・bk???_k??.wav）
+  shape : 段の長さが高さの差によるか（sd???.wav）と、アタックの時間の目盛り（sa???.wav）
 雛形の値（mr_ref.py）を基にし、測るもの以外は 0 にする。もうあるものは飛ばす。数を出すのは別。
 送るのはパラメーターチェンジとノートだけ（保存しない）。終わったらマルチへ戻す。"""
 import os
@@ -20,7 +23,7 @@ VELS = [1] + list(range(8, 128, 8)) + [127]
 def main():
     a = sys.argv[1:]
     d = mr_ref.opt(a, "--dir", ".")
-    parts = mr_ref.opt(a, "--part", "level,vel,kf,time").split(",")
+    parts = mr_ref.opt(a, "--part", "level,vel,kf,time,vel2,time2,shape").split(",")
     r = mr_ref.Ref(mr_ref.opt(a, "--midi", "MOTIF-RACK ES-1"), mr_ref.opt(a, "--rec", "../../build/rec.exe"),
                    mr_ref.opt(a, "--dev", "0"), d)
 
@@ -99,6 +102,53 @@ def main():
                 for k in (36, 60, 84):
                     take("ak2%03d_k%02d" % (s, k), 3.0, k)
             print("time done", flush=True)
+            base()
+        if "vel2" in parts:
+            # 感度 +56・+60・+62 の細かいところと、感度 +32 でのカーブ 1〜4
+            for s, c in [(s, 0) for s in (120, 124, 126)] + [(96, c) for c in (1, 2, 3, 4)]:
+                amp(0x01, s)
+                amp(0x02, c)
+                time.sleep(0.05)
+                for v in VELS:
+                    take("av%03d_c%d_v%03d" % (s, c, v), 0.8, 60, v)
+            print("vel2 done", flush=True)
+            base()
+        if "time2" in parts:
+            # ディケイ 1 を 80（3.2 秒）にして、速い側まで長さを読めるようにする
+            amp(0x04, 0)
+            amp(0x05, 80)
+            amp(0x0A, 64)
+            amp(0x0B, 64)
+            for s in (72, 80, 88, 96, 112):
+                amp(0x0E, s)
+                time.sleep(0.05)
+                for v in (16, 32, 64, 96, 127):
+                    take("bt%03d_v%03d" % (s, v), 4.0, 60, v)
+            amp(0x0E, 64)
+            for s in (32, 80, 96, 127):
+                amp(0x1C, s)
+                time.sleep(0.05)
+                for k in (36, 48, 72, 84):
+                    take("bk%03d_k%02d" % (s, k), 4.0, k)
+            print("time2 done", flush=True)
+            base()
+        if "shape" in parts:
+            # 段の長さが高さの差によるか（ディケイ 1 の時間 64 で 127 → 96・32・8・0）と、
+            # アタック（初め 0 → 127）の長さが時間の値 32・48・64・80 でどうなるか
+            amp(0x05, 64)
+            amp(0x0B, 127)
+            for L in (96, 32, 8, 0):
+                amp(0x0A, L)
+                amp(0x0B, L)
+                time.sleep(0.05)
+                take("sd%03d" % L, 3.0)
+            base()
+            amp(0x08, 0)
+            for t in (32, 48, 64, 80):
+                amp(0x04, t)
+                time.sleep(0.05)
+                take("sa%03d" % t, 4.0)
+            print("shape done", flush=True)
             base()
         r.all_off()
         r.mode(3)

@@ -100,7 +100,7 @@ def main():
             bins = np.roll(bins, -int(np.argmin(bins)))
             bins = (bins - bins.min()) / (np.ptp(bins) + 1e-12) * 2 - 1
             print("  %d %s" % (w, " ".join("%+.2f" % v for v in bins[::4])))
-    for pre, vals, lab in (("ld", (0, 32, 64, 96), "delay"), ("lfd", (0, 32, 64, 96), "fade")):
+    for pre, vals, lab in (("ld", (0, 8, 16, 32, 48, 64, 96), "delay"), ("lfd", (0, 8, 16, 32, 48, 64, 80, 96), "fade")):
         print("%s: 値 10%% 90%% の時刻（秒）" % lab)
         for v in vals:
             if have("%s%03d" % (pre, v)):
@@ -117,6 +117,17 @@ def main():
                 c = 1200 * np.log2(f / 261.6256)
                 row.append("%+.1f" % np.mean(c[:4]))
         print("  %d %s" % (s, " ".join(row)))
+    for w in (0, 2):
+        if have("lk1w%d" % w):
+            t, f, db = tracks(p("lk1w%d" % w))
+            c = 1200 * np.log2(f / 261.6256)
+            print("sync on・形 %d（速さ 16）: 最初の 0.3 秒の音程（セント、25ms ごと）: %s" % (w, " ".join("%+.0f" % v for v in c[:60:5])))
+    if have("lpa"):
+        t, f, db = tracks(p("lpa"))
+        c = cents(f)
+        c, db = c[len(c) // 4:], db[len(db) // 4:]
+        # 音程と音量の揺れの相関（+1 なら音程が高い時に音量が大きい）
+        print("音程と音量の揺れの相関: %+.2f" % np.corrcoef(c, db)[0, 1])
 
 
 if __name__ == "__main__":

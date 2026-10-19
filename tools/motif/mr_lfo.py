@@ -1,5 +1,5 @@
 """MOTIF-RACK ES のエレメントの LFO を測る録音（正弦波の波形 704、鍵 60、フィルター THRU）。
-  python mr_lfo.py --dir 置き場
+  python mr_lfo.py --dir 置き場 [--more]
 
   speed : 形 tri・音程の深さ 64 で、速さ 0〜63 を 4 刻み（ls??.wav）
   wave  : 速さ 32・音程の深さ 64 で、形 saw・tri・squ（lw?.wav）
@@ -9,6 +9,7 @@
   delay : 音程の深さ 64・速さ 32 で、ディレイ 0・32・64・96（ld???.wav）
   fade  : 同じで、フェード 0・32・64・96（lfd???.wav）
   sync  : キーオンでそろえる off / on（lk?_?.wav を 2 回ずつ）
+  --more: ディレイ 8・16・48、フェード 8・16・48・80、のこぎり・四角のそろえた始まり（lk1w?.wav）、音程と音量を同時に揺らす（lpa.wav）
 もうあるものは飛ばす。数を出すのは別。送るのはパラメーターチェンジとノートだけ（保存しない）。終わったら LFO を切り、マルチへ戻す。"""
 import os
 import sys
@@ -44,6 +45,33 @@ def main():
         r.el(0, 0x43, 0x01, 1, 127)
         r.el(0, 0x43, 0x22, 64)
         off_all()
+        if "--more" in a:
+            # 2 回目: ディレイとフェードのほかの値、のこぎり・四角のそろえた始まり、音量と音程の揺れの位相
+            lfo(5, 64)
+            for dl in (8, 16, 48):
+                lfo(2, dl)
+                time.sleep(0.05)
+                take("ld%03d" % dl, 5.0)
+            lfo(2, 0)
+            for fd in (8, 16, 48, 80):
+                lfo(7, fd)
+                time.sleep(0.05)
+                take("lfd%03d" % fd, 5.0 if fd < 64 else 9.0)
+            lfo(7, 0)
+            lfo(3, 16)
+            for w in (0, 2):
+                lfo(0, w)
+                time.sleep(0.05)
+                take("lk1w%d" % w, 1.5)
+            lfo(0, 1)
+            lfo(3, 32)
+            lfo(4, 64)
+            time.sleep(0.05)
+            take("lpa", 3.0)
+            off_all()
+            r.all_off()
+            r.mode(3)
+            return
         lfo(5, 64)
         for sp in list(range(0, 64, 4)) + [63]:
             lfo(3, sp)
