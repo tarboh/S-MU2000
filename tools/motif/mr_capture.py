@@ -2,7 +2,7 @@
   python mr_capture.py --dir 置き場 --capture 取ったものの置き場 [--waves 一覧.txt] [--hold 6] [--hours 8] [--min-free-gb 25]
 
 鍵 48 より下の区間は、低いほどループが長くなるので、押さえる長さを 1 オクターブ下がるごとに 2 倍にする（24 秒まで）。
-12 鍵より広い区間は 12 鍵ずつに分けて録る（読む速さが 3 倍で音程が折り返すので、真ん中の 1 本から区間の全部は作れない。いちばん下の区間は除く）。
+区間の境目は zones_all.csv の境目と「~」の所。12 鍵より広い区間は 12 鍵ずつに分けて録る（読む速さが 3 倍で音程が折り返すので、真ん中の 1 本から区間の全部は作れない。いちばん下の区間は除く）。
 層は velzones.csv の相関が 0.98 を下回る所と、velkeys.csv（6 つの鍵）の境目を合わせたもの。
 前の分け方で録ったものは残り、mr_patch.py は鍵とベロシティの幅が狭い区間を先に使う。
 
@@ -28,6 +28,9 @@ VELSCAN = (1, 16, 32, 48, 64, 80, 96, 104, 112, 120, 127)   # mr_velscan.py の�
 
 def zones_of(row):
     b = [int(v) for v in row["boundaries"].split()] if row["boundaries"] else []
+    # 「~」（S と見たが相関 0.9〜0.95）も境目にする。波形 141 の鍵 48 / 49 は ~ で、実機の鍵 48 は鍵 49 で録ったものを半音下げても合わなかった
+    first = int(row.get("first_sounding_key") or 0)
+    b = sorted(set(b) | {first + i + 1 for i, c in enumerate(row.get("pattern") or "") if c == "~"})
     top = int(row["wrap_from"]) - 1 if row.get("wrap_from") else 128
     edges = [0] + [v for v in b if v < top] + [top]
     out = []
