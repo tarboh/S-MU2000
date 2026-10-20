@@ -67,11 +67,12 @@ def main():
     if os.path.exists(os.path.join(cap, "velkeys.csv")):
         for r in csv.DictReader(open(os.path.join(cap, "velkeys.csv"))):
             vk[int(r["wave"])] = {int(v) for k, x in r.items() if k.endswith("_bounds") and x for v in x.split()}
+    ap = os.path.join(cap, "wave_alias.csv")        # 同じサンプルを共有する波形は録らない（mr_alias.py）。
+    if os.path.exists(ap):                          # ただし層の分かれ方が元と違えば録る（下の層だけ同じで、上の層が別のものがある。276 と 270 など）
+        same = {int(r["wave"]): int(r["same_as"]) for r in csv.DictReader(open(ap))}
+        waves = [w for w in waves if w not in same
+                 or layers_of(vz.get(w), vk.get(w, ())) != layers_of(vz.get(same[w]), vk.get(same[w], ()))]
     waves = [int(l.split(",")[0]) for l in open(wl) if l.strip() and l.split(",")[0].strip().isdigit()]
-    ap = os.path.join(cap, "wave_alias.csv")        # 同じサンプルを共有する波形は録らない（mr_alias.py）
-    if os.path.exists(ap):
-        same = {int(r["wave"]) for r in csv.DictReader(open(ap))}
-        waves = [w for w in waves if w not in same]
     os.makedirs(d, exist_ok=True)
     log = os.path.join(d, "capture.csv")
     new_log = not os.path.exists(log)

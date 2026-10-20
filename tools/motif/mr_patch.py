@@ -79,7 +79,7 @@ def main():
             "eqf2": eq["eq2_frequency"], "eqg2": eq["eq2_gain"],
         }
         lines.append("element " + " ".join("%s=%s" % kv for kv in f.items()))
-        zs = by_wave.get(w, []) or by_wave.get(alias.get(w, -1), [])
+        zs = by_wave.get(w, []) or by_wave.get(alias.get(w, -1), [])   # 自分のサンプルが無いときだけ、同じ音の波形のものを使う（層の数が違うことがある）
         if not zs:
             missing.append(w)
         # 鍵とベロシティの幅が狭い区間を先に（後から細かく録り足したものを、前の広い区間より先に使う。芯は最初に合った区間を使う）
