@@ -38,6 +38,20 @@ struct swp50_eg
 	static double time_down(uint32_t rate) { return rate ? std::max(MIN_TIME, double(FULL) / increment(rate)) : INFINITY; }
 	static double time_up(uint32_t rate) { return std::max(MIN_TIME, up_scale(rate) / increment(rate)); }
 
+	// MOTIF-RACK ES の時間の値（0..127、端数あり）を、time_down(127 − 値) で引くときの値に直す。56 から上はそのまま。
+	// それより下は実機のほうが速い: AEG のディケイ 1（127 → 64）が値 48・40・32 で 0.135・0.055・0.028 秒（表なら 0.198・0.099・0.050）、
+	// PEG の値 48 も 0.13 秒（2026-10-20、tools/motif/mr_aeg.py の table）。48 で −4.4、40 から下で −6.8 目盛り、間はまっすぐ
+	static double motif_time(double t)
+	{
+		if (t >= 56)
+			return t;
+		if (t >= 48)
+			return t - 4.4 * (56 - t) / 8.0;
+		if (t >= 40)
+			return t - 4.4 - 2.4 * (48 - t) / 8.0;
+		return t - 6.8;
+	}
+
 	static double gain_of(double atten) { return atten >= 255.0 ? 0.0 : std::pow(2.0, -atten / 16.0); }
 
 	// 本体プログラムの選び方: 時間 t（サンプル）で差 delta（目盛り）を動かしたいときの速さの番号

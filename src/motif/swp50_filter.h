@@ -436,6 +436,9 @@ struct filter_eg {
 	{
 		if (t <= 0)
 			return 0.0;
+		t = swp50_eg::motif_time(t);
+		if (t <= -20)
+			return swp50_eg::MIN_TIME;
 		const double r = 127 - (t > 127 ? 127 : t);
 		const int i = int(r);
 		const double a = swp50_eg::time_down(uint32_t(i < 1 ? 1 : i)), b = swp50_eg::time_down(uint32_t(i + 1 > 127 ? 127 : i + 1));
@@ -447,7 +450,7 @@ struct filter_eg {
 		const bool atk = s <= 1, dcy = s == 2 || s == 3, rls = s == 4;
 		switch (time_vel_segment) {
 		case 0: return atk;
-		case 1: return atk || dcy;
+		case 1: return atk || s == 2;                     // AEG では 1 はディケイ 1 だけに効いた
 		case 2: return dcy;
 		case 3: return atk || rls;
 		default: return true;

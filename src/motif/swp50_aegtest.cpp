@@ -97,6 +97,11 @@ int main()
 	for (int L : { 64, 96, 32, 8 })
 		CHECK(std::fabs(decay1_seconds(decay_eg(64, L)) - 0.79) < 0.03);
 	CHECK(std::fabs(decay1_seconds(decay_eg(80, 64)) - 3.17) < 0.1);
+	// 速い側（値 56 より下）は表より速い: 32・40・48・56 で 0.028・0.055・0.135・0.40 秒（5ms ごとの音量から読んだ）
+	CHECK(std::fabs(decay1_seconds(decay_eg(56, 64)) / 0.40 - 1) < 0.1);
+	CHECK(std::fabs(decay1_seconds(decay_eg(48, 64)) / 0.135 - 1) < 0.15);
+	CHECK(std::fabs(decay1_seconds(decay_eg(40, 64)) / 0.055 - 1) < 0.2);
+	CHECK(std::fabs(decay1_seconds(decay_eg(32, 64)) / 0.028 - 1) < 0.25);
 
 	// 時間のベロシティ感度（ディケイ 1 = 80）
 	static const struct { int s, v; double sec; } TV[] = {
@@ -134,6 +139,31 @@ int main()
 		CHECK(std::fabs(want * e.kf_factor() / t.sec - 1) < 0.12);
 	}
 
+	// 効く段: 1 はディケイ 2 に効かず、2・4 は効く（ディケイ 2 = 80 で 127 → 64、感度 +32・v = 127 で 3.13 / 0.13 / 0.14 秒）
+	for (int sg : { 1, 2, 4 }) {
+		amp_eg e;
+		e.level[0] = e.level[1] = e.level[2] = 127;
+		e.level[3] = 64;
+		e.time[2] = 80;
+		e.time_vel_sens = 96;
+		e.velocity = 127;
+		e.time_vel_segment = sg;
+		e.key_on();
+		const double want = sg == 1 ? 3.13 : 0.135;
+		long i_hi = -1, i_lo = -1;
+		const double hi = -12.06 * 0.2, lo = -12.06 * 0.8;
+		for (long n = 0; n < 44100L * 6; n++) {
+			const double g = e.step();
+			const double d = g > 0 ? 20 * std::log10(g) : -999;
+			if (i_hi < 0 && d < hi)
+				i_hi = n;
+			if (i_lo < 0 && d < lo) {
+				i_lo = n;
+				break;
+			}
+		}
+		CHECK(std::fabs((i_lo - i_hi) / 44100.0 / 0.6 / want - 1) < 0.25);
+	}
 	// 無音への段: ディケイ 1 = 64 で 127 → 0 は、0.79 秒で −96dB に着いてそのあと無音
 	{
 		amp_eg e = decay_eg(64, 0);

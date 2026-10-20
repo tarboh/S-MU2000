@@ -178,6 +178,40 @@ def main():
                 take("sg%d" % sg, 4.0, 60, 127)
             print("seg done", flush=True)
             base()
+        if "seg2" in parts:
+            # ディケイ 2・リリースへの効き: ディケイ 1 は 0（127 のまま）、ディケイ 2 = 80 で 127 → 64、リリース 64
+            amp(0x05, 0)
+            amp(0x06, 80)
+            amp(0x07, 64)
+            amp(0x0B, 64)
+            amp(0x0E, 96)
+            for sg in (0, 1, 2, 3, 4):
+                amp(0x0D, sg)
+                time.sleep(0.05)
+                take("sd2g%d" % sg, 4.0, 60, 127)
+            amp(0x0E, 64)
+            amp(0x1C, 127)                          # 時間のキーフォロー +63、中心 60
+            time.sleep(0.05)
+            for k in (60, 84):
+                take("sd2k_k%02d" % k, 4.0, k)
+            print("seg2 done", flush=True)
+            base()
+        if "table" in parts:
+            # 段の長さの表: ディケイ 1（127 → 64）を時間 16〜72 の 4 刻みで（dt??.wav）。アタック（初め 0 → 127）を 24〜88 の 8 刻みで（at2_??.wav）
+            amp(0x0A, 64)
+            amp(0x0B, 64)
+            for t in range(16, 76, 4):
+                amp(0x05, t)
+                time.sleep(0.05)
+                take("dt%02d" % t, 1.5 if t < 64 else 3.0)
+            base()
+            amp(0x08, 0)
+            for t in range(24, 96, 8):
+                amp(0x04, t)
+                time.sleep(0.05)
+                take("at2_%02d" % t, 1.5)
+            print("table done", flush=True)
+            base()
         if "kfslow" in parts:
             # 遅い段での時間のキーフォロー: ディケイ 1 を 88・96・104（127 → 0）にして、最初の 2 秒の傾き（dB/秒）を見る。
             # 感度 0・+32・+63、中心 60 と 24、鍵 36・60・84・96
