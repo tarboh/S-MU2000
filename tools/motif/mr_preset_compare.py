@@ -1,6 +1,6 @@
 """プリセットの音色を実機で鳴らして録り、サンプリング方式の芯（sampler_render）で同じ鍵・ベロシティを鳴らして比べる。
   python mr_preset_compare.py --voices 00_011,06_006 [--notes 60:100,60:40] [--hold 2] [--dir 置き場]
-                              [--capture 取ったものの置き場] [--render sampler_render.exe] [--analyze-only] [--tweak nofeg] [--reverb]
+                              [--capture 取ったものの置き場] [--render sampler_render.exe] [--analyze-only] [--tweak nofeg] [--reverb] [--fx]
 
 音色は voice_json/<mm>_<nn>.json（mr_voice.py --json）で選ぶ。mm がバンク（00〜05 = PRE1〜6 → MSB 63・LSB mm、06 = GM → MSB 0・LSB 0、
 08〜0A = USR1〜3 → MSB 63・LSB 8〜10）、nn が番号。音色を選んだあと、エディットバッファ（0E 0F 00）を一括ダンプで受けて、
@@ -10,7 +10,7 @@
 実機の録音は <置き場>/<音色>_k<鍵>_v<ベロシティ>_hw.wav、芯で鳴らしたものは _sm.wav。
 --tweak を付けると、実機と芯の両方で部品を 1 つ切って録る（nofeg = FEG の深さ 0、noscale = カットオフのスケーリング 0、nofilter = フィルター THRU）。
 名前の後ろに _<tweak> が付く。--reverb は、実機の CC91 を音色の送りにして（リバーブを残して）録り、芯の側も mr_fx_apply.py で
-リバーブを掛けて比べる（名前の後ろに _rv）。
+リバーブを掛けて比べる（名前の後ろに _rv）。--fx はコーラスも残す（CC93 も音色の送り、名前の後ろに _fx）。
 比べるのは、10ms ごとの音量（dB）の動きと、0.1〜0.6 秒の平均のスペクトル（1/3 オクターブ）。絶対の音量は共通の音量などでずれるので、
 音色ごとに「ベロシティ 100・鍵 60」の差を引いてから比べる。終わったらマルチへ戻す。録った音は配らないこと（ヤマハの音）。"""
 import json
@@ -95,8 +95,9 @@ def main():
     notes = [tuple(int(v) for v in s.split(":")) for s in mr_ref.opt(a, "--notes", "60:100,60:40,60:127,48:100,72:100").split(",")]
     hold = float(mr_ref.opt(a, "--hold", "2"))
     tweak = mr_ref.opt(a, "--tweak", "")
-    reverb = "--reverb" in a                       # リバーブを残して録り、芯の側も mr_fx_apply.py で掛けて比べる
-    sfx = ("_" + tweak if tweak else "") + ("_rv" if reverb else "")
+    reverb = "--reverb" in a or "--fx" in a        # リバーブを残して録り、芯の側も mr_fx_apply.py で掛けて比べる
+    chorus = "--fx" in a                           # コーラスも残す
+    sfx = ("_" + tweak if tweak else "") + ("_fx" if chorus else "_rv" if reverb else "")
     os.makedirs(d, exist_ok=True)
     pdir = os.path.join(d, "patches")
     os.makedirs(pdir, exist_ok=True)
@@ -118,7 +119,7 @@ def main():
                     print("%s: 名前が違う（実機 %r、JSON %r）ので飛ばす" % (v, name, js["name"]), flush=True)
                     continue
                 r.cc(91, js["common"].get("reverb_send", 0) if reverb else 0)
-                r.cc(93, 0)
+                r.cc(93, js["common"].get("chorus_send", 0) if chorus else 0)
                 for e in range(4):
                     r.el(e, 0x41, 0x16, 0)
                     for blk, off, data in (TWEAKS[tweak][0] if tweak else []):
@@ -157,7 +158,12 @@ def main():
             if reverb:
                 import mr_fx_apply
                 L, R = mr_ref.read_wav(sm)
-                oL, oR, msg = mr_fx_apply.apply(np.asarray(L), np.asarray(R), js, os.path.join(cap, "fx"))
+                L, R = np.asarray(L), np.asarray(R)
+                oL, oR, msg = mr_fx_apply.apply(L, R, js, os.path.join(cap, "fx"))
+                if chorus:
+                    cL, cR, msg2 = mr_fx_apply.apply_chorus(L, R, js)
+                    oL[:len(L)] += cL - L
+                    oR[:len(R)] += cR - R
                 mr_fx_apply.write_wav(sm, oL, oR)
             rows.append((k, vel) + compare(hw, sm))
         if not rows:

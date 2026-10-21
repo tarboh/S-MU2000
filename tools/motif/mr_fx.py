@@ -1,12 +1,12 @@
 """MOTIF-RACK ES のエフェクト（ボイスのリバーブ・コーラス）を測る録音。
-  python mr_fx.py --dir 置き場 [--block reverb|chorus] [--types 1:0,1:2,…] [--tail 8] [--set p1=30,ret=64] [--send 127] [--cc 127] [--tag 名前]
+  python mr_fx.py --dir 置き場 [--block reverb|chorus] [--types 1:0,1:2,…] [--tail 8] [--set p1=30,ret=64] [--send 127] [--cc 127] [--tag 名前] [--train 6]
 
 ノイズの波形 705 を 50ms ほどの短い音にして鳴らし、エフェクトへの送りを 0 にした録音（_dry）と 127 にした録音（_wet）を 1 本ずつ録る。
 2 本の比から、エフェクトのインパルス応答を逆畳み込みで出す（mr_fx_fit.py）。
 型は「MSB:LSB」（Data List の Effect Type List の MIDI (HEX) を 10 進で）。型を変えたあと、エディットバッファ（0E 0F 00）を一括ダンプで受け、
 実機が入れたパラメーター（型の既定値）を <名前>.json に控える。アドレスは 40 01 00（リバーブ）・40 02 00（コーラス）、送りは 40 00 0B・0C と CC91・93。
 --set は型を入れたあとに変えるパラメーター（pN = パラメーター N、ret = Return、pan = Pan）、--send は wet の音色の送り（40 00 0B・0C、既定 127）、--cc は wet の CC91・93（既定 127）、
---tag は名前の後ろに付ける印。
+--tag は名前の後ろに付ける印。--train は、0.1 秒おきに短い音を train 秒ぶん鳴らし続ける（コーラスなど揺れるものを時刻ごとに見る）。
 送るのはパラメーターチェンジ・ダンプの要求・ノートと CC だけ（保存しない）。終わったらマルチへ戻す。録った音は配らないこと。"""
 import json
 import os
@@ -56,8 +56,19 @@ def main():
     def common(am_, al, *v):
         r.param(0x40, am_, al, *v)
 
+    train = float(mr_ref.opt(a, "--train", "0"))     # > 0 なら 0.1 秒おきに train 秒ぶん鳴らし続ける（揺れるエフェクトを時刻ごとに見る）
+
     def take(name):
-        if not os.path.exists(os.path.join(d, name + ".wav")):
+        if os.path.exists(os.path.join(d, name + ".wav")):
+            return
+        if train > 0:
+            ev = []
+            for i in range(int(train / 0.1)):
+                t = 0.3 + i * 0.1
+                ev.append((t, lambda: r.note_on(60, 100)))
+                ev.append((t + 0.05, lambda: r.note_off(60)))
+            r.record(name, 0.3 + train + tail, ev)
+        else:
             r.record(name, 0.3 + 0.1 + tail, [(0.3, lambda: r.note_on(60, 100)), (0.4, lambda: r.note_off(60))])
 
     try:
