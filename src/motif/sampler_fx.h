@@ -495,9 +495,9 @@ inline void distortion(buf &L, buf &R, const block &b, const std::string &fxddir
 
 // Cross Delay（02 30）: 左の入力 →（左 → 右、p1 × 0.1ms）→ 右の出力、右の入力 →（右 → 左、p2）→ 左の出力。出たものは反対側の線へ
 // フィードバック (p3 − 64) / 64 を掛け、1 次の LPF（係数 (1 − p5 / 10)²）を通して戻る。入力の選び方 p4: 0 = L、1 = R、2 = 両方。
-// Dry/Wet p10: 元の音 0.9 × min(1, (127 − v) / 63)²、こだま 0.9 × min(1, (v − 1) / 63)²
+// Dry/Wet p10: 元の音 min(1, (127 − v) / 63)²、こだま min(1, (v − 1) / 63)²
 // Tempo Cross Delay（02 60、tempo > 0）: 遅れは表 14 の音符 × 60 / テンポ + Lag（p6、(v − 64) ms）、混ぜ方はエネルギーを保つ形
-// （元の音 0.9 cos、こだま 0.9 sin、角 π/2 × (v − 1) / 126）
+// （元の音 cos、こだま sin、角 π/2 × (v − 1) / 126）
 static const double TABLE14_Q[20] = {1.0 / 12, 3.0 / 32, 1.0 / 8, 1.0 / 6, 3.0 / 16, 1.0 / 4, 1.0 / 3, 3.0 / 8, 1.0 / 2, 2.0 / 3, 3.0 / 4, 1,
 	4.0 / 3, 3.0 / 2, 2, 8.0 / 3, 3, 4, 5, 6};
 
@@ -515,10 +515,10 @@ inline void cross_delay(buf &L, buf &R, const block &b, int tempo = 0)
 	const int sel = b.p[4];
 	const double a = std::pow(1 - std::max(1, b.p[5]) / 10.0, 2);
 	const int v = std::max(1, b.p[10]);
-	double gd = 0.9 * std::pow(std::min(1.0, (127 - v) / 63.0), 2), gw = 0.9 * std::pow(std::min(1.0, (v - 1) / 63.0), 2);
+	double gd = std::pow(std::min(1.0, (127 - v) / 63.0), 2), gw = std::pow(std::min(1.0, (v - 1) / 63.0), 2);
 	if (tempo > 0) {
-		gd = 0.9 * std::cos(PI / 2 * (v - 1) / 126.0);
-		gw = 0.9 * std::sin(PI / 2 * (v - 1) / 126.0);
+		gd = std::cos(PI / 2 * (v - 1) / 126.0);
+		gw = std::sin(PI / 2 * (v - 1) / 126.0);
 	}
 	buf lr(n, 0.0), rl(n, 0.0), lr_in(n, 0.0), rl_in(n, 0.0);
 	double plr = 0, prl = 0;
@@ -538,13 +538,24 @@ inline void cross_delay(buf &L, buf &R, const block &b, int tempo = 0)
 	}
 }
 
-// インサーションのコーラス: 遅れの動きはシステムのコーラスと同じ。元の音 0.9 cos(π/2 (v − 1) / 126)、コーラスの線のエネルギーは
+// 揺れる系のエフェクトの EQ（p6 低の周波数・p7 低の利き・p8 高の周波数・p9 高の利き）。2 Band EQ と同じ棚を、元の音も含めた出口に掛ける
+inline void fx_eq(buf &L, buf &R, const block &b)
+{
+	if (b.p[7] == 64 && b.p[9] == 64)
+		return;
+	block q;
+	q.p[1] = b.p[6], q.p[2] = b.p[7], q.p[3] = b.p[8], q.p[4] = b.p[9];
+	L = filter_freq(L, L.size(), [&](double f) { return eq2(q, f); });
+	R = filter_freq(R, R.size(), [&](double f) { return eq2(q, f); });
+}
+
+// インサーションのコーラス: 遅れの動きはシステムのコーラスと同じ。元の音 cos(π/2 (v − 1) / 126)、コーラスの線のエネルギーは
 // 32・64・127 で 0.364・0.838・1.5 を補間（v = Dry/Wet）
 inline void insertion_chorus(buf &L, buf &R, const block &b)
 {
 	const int v = std::max(1, b.p[10]);
 	static const double xs[4] = {1, 32, 64, 127}, ys[4] = {0.0, 0.364, 0.838, 1.5};
-	const double gd = 0.9 * std::cos(PI / 2 * (v - 1) / 126.0), gw = std::sqrt(interp(xs, ys, 4, v));
+	const double gd = std::cos(PI / 2 * (v - 1) / 126.0), gw = std::sqrt(interp(xs, ys, 4, v));
 	const double hz = LFO_HZ[std::min(127, b.p[1])], depth = 0.176 * b.p[2] / 1000 * FS, off = MOD_DELAY_MS[std::min(127, b.p[4])] / 1000 * FS;
 	const size_t n = L.size();
 	buf x(n);
@@ -564,10 +575,53 @@ inline void insertion_chorus(buf &L, buf &R, const block &b)
 		L[t] = gd * L[t] + gw * o[0];
 		R[t] = gd * R[t] + gw * o[1];
 	}
+	fx_eq(L, R, b);
+}
+
+// フランジャー（Flanger 1〜3、06 00・01）: 左右それぞれ y = x + 帰り × 遅れた y。遅れ = 表 2[p4] + p2 × 0.0914ms × 三角波（表 1[p1]）、
+// 右は (p14 − 64) × 3° ずらす。帰り (p3 − 64) / 64。元の音 cos、揺れの線 sin（角 π/2 × (v − 1) / 126）
+inline bool flanger_type(const block &b) { return b.is(6, 0) || b.is(6, 1); }
+
+inline void flanger(buf &L, buf &R, const block &b)
+{
+	const int v = std::max(1, b.p[10]);
+	const double gd = std::cos(PI / 2 * (v - 1) / 126.0), gw = std::sin(PI / 2 * (v - 1) / 126.0);
+	const double hz = LFO_HZ[std::min(127, b.p[1])], depth = 0.0914 * b.p[2] / 1000 * FS, off = MOD_DELAY_MS[std::min(127, b.p[4])] / 1000 * FS;
+	const double fb = (b.p[3] - 64) / 64.0, dph = (b.p[14] - 64) * 3.0 / 360.0;
+	const size_t n = L.size();
+	buf x(n), y(n), w[2] = {buf(n), buf(n)};
+	for (size_t i = 0; i < n; i++)
+		x[i] = (L[i] + R[i]) / 2;
+	for (int c = 0; c < 2; c++) {
+		const double ph0 = c == 0 ? 0.0 : dph;
+		for (size_t t = 0; t < n; t++) {
+			double ph = std::fmod(double(t) * hz / FS + ph0, 1.0);
+			if (ph < 0)
+				ph += 1.0;
+			const double pos = double(t) - (off + depth * (ph < 0.5 ? 2 * ph : 2 - 2 * ph));
+			double o = 0;
+			if (pos >= 0) {
+				const size_t k = size_t(pos);
+				const double fr = pos - double(k);
+				o = (1 - fr) * y[k] + (k + 1 < t ? fr * y[k + 1] : 0.0);
+			}
+			w[c][t] = o;
+			y[t] = x[t] + fb * o;
+		}
+	}
+	for (size_t t = 0; t < n; t++) {
+		L[t] = gd * L[t] + gw * w[0][t];
+		R[t] = gd * R[t] + gw * w[1][t];
+	}
+	fx_eq(L, R, b);
 }
 
 inline void apply_block(buf &L, buf &R, const block &b, const std::string &fxddir, int tempo = 120)
 {
+	if (flanger_type(b)) {
+		flanger(L, R, b);
+		return;
+	}
 	if (chorus_type(b)) {
 		insertion_chorus(L, R, b);
 		return;

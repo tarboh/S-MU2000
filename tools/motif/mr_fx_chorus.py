@@ -1,5 +1,5 @@
 """mr_fx.py --train で録った揺れるエフェクト（コーラスなど）を、0.1 秒ごとの応答に分けて読む（録音を読むだけで、実機には何も送らない）。
-  python mr_fx_chorus.py 名前（_dry.wav・_wet.wav の前まで）
+  python mr_fx_chorus.py 名前（_dry.wav・_wet.wav の前まで） [探し始めの ms（既定 5。フランジャーは 0.1）]
 
 dry の最初の 1 発（60ms）を型にして wet 全体を逆畳み込みすると、0.1 秒ごとに「dry の線 + エフェクトの線」が並ぶ。
 dry の線の位置を 1 サンプル未満まで読んで差し引き、各回の 5〜60ms の中で（dry の線の裾を避ける）一番大きい線の遅れ（放物線で 1 サンプル未満まで）と高さを、
@@ -15,6 +15,7 @@ FS = 44100
 
 def main():
     base = sys.argv[1]
+    t0 = float(sys.argv[2]) if len(sys.argv) > 2 else 5.0     # dry の線は整数の位置の 1 本なので、手前を短くしても裾は拾わない
     dL, dR = F.load(base + "_dry.wav")
     wL, wR = F.load(base + "_wet.wav")
     od = int(np.argmax(np.abs(dL) > 1e-4))
@@ -34,7 +35,7 @@ def main():
         g = hL[k]
         res = []
         for h in (hL, hR):
-            seg = h[k + int(0.005 * FS):k + int(0.06 * FS)].copy()
+            seg = h[k + max(2, int(t0 / 1000 * FS)):k + int(0.06 * FS)].copy()
             i = int(np.argmax(np.abs(seg)))
             if 0 < i < len(seg) - 1:
                 y0, y1, y2 = seg[i - 1], seg[i], seg[i + 1]
@@ -42,7 +43,7 @@ def main():
                 dt = 0.5 * (y0 - y2) / den if den != 0 else 0.0
             else:
                 dt = 0.0
-            res.append(((i + dt) / FS * 1000 + 5.0, seg[i] / g))
+            res.append(((i + dt + max(2, int(t0 / 1000 * FS))) / FS * 1000, seg[i] / g))
         rows.append((k / FS, res, g))
         t = k + step
     gmax = max(abs(r[2]) for r in rows)

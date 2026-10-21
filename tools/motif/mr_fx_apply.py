@@ -10,7 +10,7 @@
 コーラス（Chorus 1〜5・Celeste 1〜4 の型、05 00〜05 18）: 遅れの線 1 本を左右に置き、遅れ =
 Delay Offset（表 2）+ 0.176ms × LFO Depth ×（三角波 0〜1）、速さは LFO Speed（表 1）、左右は逆の向き（mr_fx.py --train → mr_fx_chorus.py で測った）。
 線の高さ 2.06（エネルギーの増え方から）× Return / 96 × 送り / 127。フィードバック・EQ・コーラスからリバーブへの送りは入れていない。
-インサーション（apply_insertion）: 3 Band EQ（0F 00）と 2 Band EQ（0F 01、eq2_response）と Compressor（0A 00、compressor）と歪み系（Amp Simulator 09 30・31、Distortion 09 00、V-Distortion 09 10、distortion）と Cross Delay（02 30、cross_delay）と Tempo Cross Delay（02 60、テンポは音色の arp_tempo）とコーラス系（insertion_chorus）。低・高は 1 次の棚（角は表 3 × √2・表 3 / √2）、中は「上げるときは分子だけ、
+インサーション（apply_insertion）: 3 Band EQ（0F 00）と 2 Band EQ（0F 01、eq2_response）と Compressor（0A 00、compressor）と歪み系（Amp Simulator 09 30・31、Distortion 09 00、V-Distortion 09 10、distortion）と Cross Delay（02 30、cross_delay）と Tempo Cross Delay（02 60、テンポは音色の arp_tempo）とコーラス系（insertion_chorus）とフランジャー（06 00・01、flanger）。低・高は 1 次の棚（角は表 3 × √2・表 3 / √2）、中は「上げるときは分子だけ、
 下げるときは分母だけに利きを入れる」山（Q = Mid Width / 10）、利きは 1 目盛り 1dB（mr_fx.py --block insa → mr_fx_eq.py で測った。
 21 本の格子と 0.1〜0.4dB で合う）。周波数ごとに応答を掛ける（FFT）。全部のエレメントが同じインサーションを通る音色のときだけ正しい。"""
 import json
@@ -295,7 +295,7 @@ def cross_delay(L, R, prm, tempo=None):
     """Cross Delay（02 30）。mr_fx.py --block insa で測った形: 左の入力 →（左 → 右、パラメーター 1 × 0.1ms）→ 右の出力、
     右の入力 →（右 → 左、パラメーター 2）→ 左の出力。出たものは反対側の線へ、フィードバック (値 − 64) / 64 を掛け、1 次の LPF
     （係数 (1 − High Damp / 10)²）を通して戻る（最初のこだまは LPF を通らない）。入力の選び方（4）: 0 = L だけ左 → 右へ、1 = R だけ右 → 左へ、
-    2 = 両方。Dry/Wet（10）: 元の音 0.9 × min(1, (127 − 値) / 63)²、こだま 0.9 × min(1, (値 − 1) / 63)²。EQ（13〜16）は入れていない"""
+    2 = 両方。Dry/Wet（10）: 元の音 min(1, (127 − 値) / 63)²、こだま min(1, (値 − 1) / 63)²。EQ（13〜16）は入れていない"""
     L, R = np.asarray(L, dtype=np.float64), np.asarray(R, dtype=np.float64)
     n = len(L)
     if tempo is None:
@@ -312,12 +312,12 @@ def cross_delay(L, R, prm, tempo=None):
     sel = prm["param4"]
     a = (1 - max(1, prm["param5"]) / 10.0) ** 2
     v = max(1, prm.get("param10", 127))
-    gd = 0.9 * min(1.0, (127 - v) / 63.0) ** 2
-    gw = 0.9 * min(1.0, (v - 1) / 63.0) ** 2
+    gd = min(1.0, (127 - v) / 63.0) ** 2
+    gw = min(1.0, (v - 1) / 63.0) ** 2
     if tempo is not None:
-        # Tempo Cross Delay はエネルギーを保つ混ぜ方（32・64・96・127 でこだま 0.340・0.639・0.835・0.9）
-        gd = 0.9 * np.cos(np.pi / 2 * (v - 1) / 126.0)
-        gw = 0.9 * np.sin(np.pi / 2 * (v - 1) / 126.0)
+        # Tempo Cross Delay はエネルギーを保つ混ぜ方（32・64・96・127 でこだま 0.378・0.710・0.928・1）
+        gd = np.cos(np.pi / 2 * (v - 1) / 126.0)
+        gw = np.sin(np.pi / 2 * (v - 1) / 126.0)
     inL = L if sel in (0, 2) else np.zeros(n)
     inR = R if sel in (1, 2) else np.zeros(n)
     lr = np.zeros(n)     # 左 → 右の線の出力（右へ）
@@ -339,9 +339,10 @@ def cross_delay(L, R, prm, tempo=None):
 
 def insertion_chorus(L, R, prm):
     """インサーションのコーラス（Chorus 1〜5・Celeste 1〜4）。遅れの動きはシステムのコーラスと同じ（mr_fx.py --block insa --train で確かめた）。
-    Dry/Wet（10）: 元の音 0.9 cos(π/2 (v − 1) / 126)、コーラスの線のエネルギー（元の音を 1 として）は 32・64・127 で 0.364・0.838・1.5 を補間"""
+    Dry/Wet（10）: 元の音 cos(π/2 (v − 1) / 126)、コーラスの線のエネルギー（元の音を 1 として）は 32・64・127 で 0.364・0.838・1.5 を補間。
+    EQ（6〜9）はフランジャーと同じ欄なので fx_eq を掛ける（コーラスでは確かめていない）。Feedback（3）と Input Mode（15）は入れていない"""
     v = max(1, prm.get("param10", 64))
-    gd = 0.9 * np.cos(np.pi / 2 * (v - 1) / 126.0)
+    gd = np.cos(np.pi / 2 * (v - 1) / 126.0)
     gw = np.sqrt(np.interp(v, [1, 32, 64, 127], [0.0, 0.364, 0.838, 1.5]))
     hz = LFO_HZ[min(127, prm["param1"])]
     depth = 0.176 * prm["param2"] / 1000 * FS
@@ -352,7 +353,66 @@ def insertion_chorus(L, R, prm):
     ph = (t * hz / FS) % 1.0
     tri = np.where(ph < 0.5, 2 * ph, 2 - 2 * ph)
     out = [np.interp(t - (off + depth * tr), t, x, left=0.0) for tr in (tri, 1 - tri)]
-    return gd * np.asarray(L) + gw * out[0], gd * np.asarray(R) + gw * out[1]
+    return fx_eq(gd * np.asarray(L) + gw * out[0], gd * np.asarray(R) + gw * out[1], prm)
+
+
+FLANGER_TYPES = {(6, 0x00), (6, 0x01)}       # Flanger 1〜3（測ったのは Flanger 1）
+FLANGER_MS_PER_DEPTH = 0.0914                 # 深さ 1 あたりの遅れの幅（14・64・127 で 1.28・5.83・11.65ms）
+FLANGER_RATE = 1.0                            # 表 1 に掛ける揺れの速さの直し
+
+
+def flanger(L, R, prm):
+    """インサーションのフランジャー（mr_fx.py --block insa --types 6:0 --train 6 で測った形）。左右それぞれ
+    y = x + 帰り × 遅れた y、遅れ = 表 2[Delay Offset（4）] + 深さ（2）× 0.0914ms × 三角波（速さは表 1[1]）。
+    右の三角波は左から LFO Phase Difference（14、(値 − 64) × 3°）ずらす（4 で逆向き、64 で同じ）。帰りは (値 − 64) / 64。
+    Dry/Wet（10）: 元の音 cos、揺れの線 sin（角 π/2 (v − 1) / 126）"""
+    v = max(1, prm.get("param10", 64))
+    gd = np.cos(np.pi / 2 * (v - 1) / 126.0)
+    gw = np.sin(np.pi / 2 * (v - 1) / 126.0)
+    hz = LFO_HZ[min(127, prm["param1"])] * FLANGER_RATE
+    depth = FLANGER_MS_PER_DEPTH * prm["param2"] / 1000 * FS
+    off = MOD_DELAY_MS[min(127, prm["param4"])] / 1000 * FS
+    fb = (prm["param3"] - 64) / 64.0
+    dph = (prm.get("param14", 64) - 64) * 3.0 / 360.0
+    x = (np.asarray(L, dtype=np.float64) + np.asarray(R, dtype=np.float64)) / 2
+    n = len(x)
+    t = np.arange(n)
+    outs = []
+    for ph0 in (0.0, dph):
+        ph = (t * hz / FS + ph0) % 1.0
+        d = off + depth * np.where(ph < 0.5, 2 * ph, 2 - 2 * ph)
+        if fb == 0:
+            outs.append(np.interp(t - d, t, x, left=0.0))
+            continue
+        y = np.zeros(n)
+        w = np.zeros(n)      # 遅れの線の出力
+        for i in range(n):
+            p = i - d[i]
+            k = int(np.floor(p))
+            f = p - k
+            if k >= 0:
+                w[i] = (1 - f) * y[k] + f * (y[k + 1] if k + 1 < i else 0.0)
+            y[i] = x[i] + fb * w[i]
+        outs.append(w)
+    oL, oR = gd * np.asarray(L) + gw * outs[0], gd * np.asarray(R) + gw * outs[1]
+    return fx_eq(oL, oR, prm)
+
+
+FX_EQ_FORM = "eq2"
+
+
+def fx_eq(L, R, prm):
+    """揺れる系のエフェクトの EQ（6 低の周波数・7 低の利き・8 高の周波数・9 高の利き）を、出口（元の音も含む）に掛ける"""
+    if prm.get("param7", 64) == 64 and prm.get("param9", 64) == 64:
+        return L, R
+    q = dict(param1=prm["param6"], param2=prm["param7"], param3=prm["param8"], param4=prm["param9"])
+    N = 1 << int(np.ceil(np.log2(len(L) + 1)))
+    f = np.fft.rfftfreq(N, 1 / FS)
+    if FX_EQ_FORM == "eq2":
+        H = eq2_response(q, f)
+    else:
+        H = eq3_response(dict(param1=q["param2"], param2=34, param3=64, param4=10, param5=q["param4"], param6=q["param1"], param7=q["param3"]), f)
+    return tuple(np.fft.irfft(np.fft.rfft(np.asarray(x), N) * H, N)[:len(x)] for x in (L, R))
 
 
 def apply_block(L, R, ins, fxdir=None):
@@ -375,6 +435,9 @@ def apply_block(L, R, ins, fxdir=None):
     if t in CHORUS_TYPES:
         oL, oR = insertion_chorus(L, R, ins)
         return oL, oR, "コーラス %d:%d（Dry/Wet %d）" % (t[0], t[1], ins.get("param10", 64))
+    if t in FLANGER_TYPES:
+        oL, oR = flanger(L, R, ins)
+        return oL, oR, "フランジャー %d:%d（Dry/Wet %d）" % (t[0], t[1], ins.get("param10", 64))
     if t == (2, 96):
         tempo = ins.get("_tempo", 120)
         oL, oR = cross_delay(L, R, ins, tempo)
