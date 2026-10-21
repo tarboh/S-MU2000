@@ -5,7 +5,8 @@
 //   リバーブ   : 型ごとの応答（mr_fx_export.py が書く fx/reverb_<MSB>_<LSB>.irx）を、Reverb Time の表 4 に合わせて帯ごとに伸び縮みさせて畳み込む。
 //                音量は Return / 96 × 送り / 127、入力は左右の平均
 //   コーラス   : Chorus 1〜5・Celeste 1〜4。遅れ = Delay Offset（表 2）+ 0.176ms × Depth × 三角波、速さは表 1、左右は逆向き。高さ 2.06
-//   インサーション: 3 Band EQ・2 Band EQ（周波数ごとの応答を掛ける）、Compressor（時間で回す）、歪み系（fxd/*.dsx の応答 → 頭打ち → 山のある LPF）。
+//   インサーション: 3 Band EQ・2 Band EQ（周波数ごとの応答を掛ける）、Compressor（時間で回す）、歪み系（fxd/*.dsx の応答 → 頭打ち → 山のある LPF）、
+//                Cross Delay（たすき掛けの 2 本の遅れ）。
 //                つなぎ方（並列・A → B・B → A）と、エレメントのスイッチ（全部のエレメントで同じとする）に合わせて掛ける
 // 掛ける順は インサーション → （その出力から）リバーブとコーラスを並列に足す。エレメントを足してから掛けるので、エレメントごとに違う
 // インサーションを通る音色は正しくない。
@@ -492,8 +493,43 @@ inline void distortion(buf &L, buf &R, const block &b, const std::string &fxddir
 	}
 }
 
+// Cross Delay（02 30）: 左の入力 →（左 → 右、p1 × 0.1ms）→ 右の出力、右の入力 →（右 → 左、p2）→ 左の出力。出たものは反対側の線へ
+// フィードバック (p3 − 64) / 64 を掛け、1 次の LPF（係数 (1 − p5 / 10)²）を通して戻る。入力の選び方 p4: 0 = L、1 = R、2 = 両方。
+// Dry/Wet p10: 元の音 0.9 × min(1, (127 − v) / 63)²、こだま 0.9 × min(1, (v − 1) / 63)²
+inline void cross_delay(buf &L, buf &R, const block &b)
+{
+	const size_t n = L.size();
+	const size_t d1 = std::max<size_t>(1, size_t(std::lround(b.p[1] * 0.1e-3 * FS)));
+	const size_t d2 = std::max<size_t>(1, size_t(std::lround(b.p[2] * 0.1e-3 * FS)));
+	const double fb = (b.p[3] - 64) / 64.0;
+	const int sel = b.p[4];
+	const double a = std::pow(1 - std::max(1, b.p[5]) / 10.0, 2);
+	const int v = std::max(1, b.p[10]);
+	const double gd = 0.9 * std::pow(std::min(1.0, (127 - v) / 63.0), 2), gw = 0.9 * std::pow(std::min(1.0, (v - 1) / 63.0), 2);
+	buf lr(n, 0.0), rl(n, 0.0), lr_in(n, 0.0), rl_in(n, 0.0);
+	double plr = 0, prl = 0;
+	for (size_t t = 0; t < n; t++) {
+		if (t >= d1)
+			lr[t] = lr_in[t - d1];
+		if (t >= d2)
+			rl[t] = rl_in[t - d2];
+		plr = (1 - a) * lr[t] + a * plr;
+		prl = (1 - a) * rl[t] + a * prl;
+		lr_in[t] = (sel == 0 || sel == 2 ? L[t] : 0.0) + fb * prl;
+		rl_in[t] = (sel == 1 || sel == 2 ? R[t] : 0.0) + fb * plr;
+	}
+	for (size_t t = 0; t < n; t++) {
+		L[t] = gd * L[t] + gw * rl[t];
+		R[t] = gd * R[t] + gw * lr[t];
+	}
+}
+
 inline void apply_block(buf &L, buf &R, const block &b, const std::string &fxddir)
 {
+	if (b.is(2, 0x30)) {
+		cross_delay(L, R, b);
+		return;
+	}
 	if (b.is(15, 0) || b.is(15, 1)) {
 		const bool three = b.is(15, 0);
 		L = filter_freq(L, L.size(), [&](double f) { return three ? eq3(b, f) : eq2(b, f); });
