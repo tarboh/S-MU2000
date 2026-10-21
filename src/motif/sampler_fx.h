@@ -687,8 +687,67 @@ inline void ensemble_detune(buf &L, buf &R, const block &b)
 	fx_eq(L, R, b, 11);
 }
 
+// Pitch Change 1（0B 00）: 2 本の音程変え。Fine → セントは測った表（まっすぐでない）、遅れの下限と幅は |Fine| の表（音程 0 のとき）。
+// のこぎりと最後の 1/4 の受け渡しは Ensemble Detune と同じ形（確かめていない）。1 本目は p11 Pan・p12 Level、2 本目は p13・p14。元の音 cos・wet sin
+inline void pitch_change(buf &L, buf &R, const block &b)
+{
+	static const double fx[15] = {-50, -10, -3, 0, 3, 5, 6, 7, 8, 10, 15, 20, 30, 40, 50},
+			    fy[15] = {-26.2, -10.79, -5.51, 0.0, 2.48, 5.13, 5.47, 7.88, 7.58, 10.59, 10.22, 10.06, 18.26, 23.77, 26.15};
+	static const double gx[4] = {3, 5, 10, 50}, glo[4] = {2.1, 3.2, 4.6, 13.0}, gsp[4] = {11.4, 12.7, 16.7, 29.8};
+	const int v = std::max(1, b.p[10]);
+	const double gd = std::cos(PI / 2 * (v - 1) / 126.0), gw = std::sin(PI / 2 * (v - 1) / 126.0);
+	const size_t n = L.size();
+	buf x(n), oL(n, 0.0), oR(n, 0.0);
+	for (size_t i = 0; i < n; i++)
+		x[i] = (L[i] + R[i]) / 2;
+	auto at = [&](double pos) {
+		if (pos < 0)
+			return 0.0;
+		const size_t k = size_t(pos);
+		const double fr = pos - double(k);
+		return k + 1 < n ? x[k] + (x[k + 1] - x[k]) * fr : (k < n ? x[k] : 0.0);
+	};
+	const int semi = b.p[1] - 64;
+	for (int c = 0; c < 2; c++) {
+		const int fine = b.p[c == 0 ? 3 : 4] - 64, pan = std::max(1, b.p[c == 0 ? 11 : 13]), lvl = b.p[c == 0 ? 12 : 14];
+		const double ph0 = c == 0 ? 0.0 : 0.5, cents = 100.0 * semi + interp(fx, fy, 15, fine), rate = 1 - std::exp2(cents / 1200.0);
+		double lo, span;
+		if (semi == 0) {
+			const double af = std::min(50.0, std::max(3.0, double(std::abs(fine))));
+			lo = interp(gx, glo, 4, af) / 1000 * FS;
+			span = interp(gx, gsp, 4, af) / 1000 * FS;
+		} else {
+			span = 1280.0;
+			lo = span / 4;
+		}
+		const double a = PI / 2 * (pan - 1) / 126.0, g = lvl / 127.0, gl = g * std::cos(a), gr = g * std::sin(a);
+		const double hz = std::fabs(rate) * FS / span;
+		for (size_t t = 0; t < n; t++) {
+			double y;
+			if (std::fabs(rate) < 1e-9) {
+				y = at(double(t) - lo);
+			} else {
+				const double sw = std::fmod(double(t) * hz / FS + ph0, 1.0), s1 = rate > 0 ? sw : 1 - sw;
+				const double d1 = lo + span * s1, d2 = std::max(0.0, rate > 0 ? lo + span * (s1 - 1) : lo + span * (s1 + 1));
+				const double u = std::min(1.0, std::max(0.0, (sw - 0.75) / 0.25));
+				y = (1 - u) * at(double(t) - d1) + u * at(double(t) - d2);
+			}
+			oL[t] += y * gl;
+			oR[t] += y * gr;
+		}
+	}
+	for (size_t t = 0; t < n; t++) {
+		L[t] = gd * L[t] + gw * oL[t];
+		R[t] = gd * R[t] + gw * oR[t];
+	}
+}
+
 inline void apply_block(buf &L, buf &R, const block &b, const std::string &fxddir, int tempo = 120)
 {
+	if (b.is(11, 0)) {
+		pitch_change(L, R, b);
+		return;
+	}
 	if (b.is(5, 0x30)) {
 		ensemble_detune(L, R, b);
 		return;

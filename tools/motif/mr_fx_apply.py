@@ -475,6 +475,56 @@ def input_mode(L, R, prm):
     return x, x
 
 
+# Pitch Change 1（0B 00）の Fine（値 − 64）→ セント（正弦波 鍵 69 で測った。まっすぐでなく、+ と − でも違う）
+PC_FINE = [(-50, -26.2), (-10, -10.79), (-3, -5.51), (0, 0.0), (3, 2.48), (5, 5.13), (6, 5.47), (7, 7.88), (8, 7.58), (10, 10.59),
+           (15, 10.22), (20, 10.06), (30, 18.26), (40, 23.77), (50, 26.15)]
+# のこぎりの遅れの下限と幅（ms）を |Fine| で（ノイズの列で読んだ ±3・±5・±10・±50）
+PC_GEOM = [(3, 2.1, 11.4), (5, 3.2, 12.7), (10, 4.6, 16.7), (50, 13.0, 29.8)]
+
+
+def pitch_change(L, R, prm):
+    """Pitch Change 1（0B 00）: 2 本の音程変え（Pitch（01、半音）+ Fine 1・2（03・04））。1 本目は Pan 1（11）・Output Level 1（12）、
+    2 本目は Pan 2（13）・Level 2（14）。遅れ線ののこぎりと最後の 1/4 の受け渡しは Ensemble Detune と同じ形にした（受け渡しの長さは確かめていない）。
+    下限と幅は |Fine| の表から（音程を半音で変えるときは幅 1280 サンプル・下限は幅の 1/4 として近似。確かめていない）。
+    Feedback（05）と Initial Delay（02）は入れていない。Dry/Wet（10）は元の音 cos・wet sin"""
+    v = max(1, prm.get("param10", 64))
+    gd = np.cos(np.pi / 2 * (v - 1) / 126.0)
+    gw = np.sin(np.pi / 2 * (v - 1) / 126.0)
+    x = (np.asarray(L, dtype=np.float64) + np.asarray(R, dtype=np.float64)) / 2
+    n = len(x)
+    t = np.arange(n)
+    oL, oR = np.zeros(n), np.zeros(n)
+    semi = prm["param1"] - 64
+    for fk, pk, lk, ph0 in (("param3", "param11", "param12", 0.0), ("param4", "param13", "param14", 0.5)):
+        fine = prm[fk] - 64
+        c = 100 * semi + float(np.interp(fine, [a for a, _ in PC_FINE], [b for _, b in PC_FINE]))
+        rate = 1 - 2 ** (c / 1200.0)
+        if semi == 0:
+            af = min(50, max(3, abs(fine)))
+            lo = float(np.interp(af, [g[0] for g in PC_GEOM], [g[1] for g in PC_GEOM])) / 1000 * FS
+            span = float(np.interp(af, [g[0] for g in PC_GEOM], [g[2] for g in PC_GEOM])) / 1000 * FS
+        else:
+            span = 1280.0
+            lo = span / 4
+        if abs(rate) < 1e-9:
+            y = np.interp(t - lo, t, x, left=0.0)
+        else:
+            hz = abs(rate) * FS / span
+            sw = (t * hz / FS + ph0) % 1.0
+            s1 = sw if rate > 0 else 1 - sw
+            # 主の線は lo + span·s1。最後の 1/4 で、次の周の始まりへ続く線へまっすぐ渡す
+            d1 = lo + span * s1
+            d2 = lo + span * (s1 - 1) if rate > 0 else lo + span * (s1 + 1)
+            u = np.clip((sw - 0.75) / 0.25, 0, 1)
+            d2 = np.maximum(d2, 0)
+            y = (1 - u) * np.interp(t - d1, t, x, left=0.0) + u * np.interp(t - d2, t, x, left=0.0)
+        a = np.pi / 2 * (max(1, prm[pk]) - 1) / 126.0
+        g = prm[lk] / 127.0
+        oL += y * g * np.cos(a)
+        oR += y * g * np.sin(a)
+    return gd * np.asarray(L) + gw * oL, gd * np.asarray(R) + gw * oR
+
+
 def apply_block(L, R, ins, fxdir=None):
     """インサーション 1 つ（A か B）を掛ける。まだの型はそのまま返す"""
     t = (ins["type"] >> 7, ins["type"] & 0x7F)
@@ -498,6 +548,9 @@ def apply_block(L, R, ins, fxdir=None):
     if t == (5, 0x30):
         oL, oR = ensemble_detune(L, R, ins)
         return oL, oR, "Ensemble Detune（%+d セント・Dry/Wet %d）" % (ins["param1"] - 64, ins.get("param10", 64))
+    if t == (11, 0):
+        oL, oR = pitch_change(L, R, ins)
+        return oL, oR, "Pitch Change 1（%+d 半音・Fine %+d / %+d・Dry/Wet %d）" % (ins["param1"] - 64, ins["param3"] - 64, ins["param4"] - 64, ins.get("param10", 64))
     if t == (15, 16):
         oL, oR = enhancer(L, R, ins)
         return oL, oR, "Enhancer（%.0fHz・Drive %d・Mix %d）" % (T3[min(60, ins["param1"])], ins["param2"], ins["param3"])

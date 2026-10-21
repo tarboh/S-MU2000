@@ -165,6 +165,7 @@ int main(int argc, char **argv)
 	std::vector<std::unique_ptr<motif_sampler::sample>> samples;
 	std::vector<motif_sampler::voice> voices;
 	for (const element &e : els) {
+		ins_count[geti(e.f, "ins")]++;      // インサーションのスイッチは、鳴る鳴らないによらず入っているエレメント全部の多数決（mr_fx_apply.apply_insertion と同じ）
 		if (note < geti(e.f, "note_lo") || note > geti(e.f, "note_hi") || vel < geti(e.f, "vel_lo") || vel > geti(e.f, "vel_hi"))
 			continue;
 		const zone *z = nullptr;
@@ -266,7 +267,6 @@ int main(int argc, char **argv)
 		p.eq_g1 = geti(e.f, "eqg1", 0x40);
 		p.eq_f2 = geti(e.f, "eqf2", 200);
 		p.eq_g2 = geti(e.f, "eqg2", 0x40);
-		ins_count[geti(e.f, "ins")]++;
 		samples.push_back(std::move(s));
 		voices.emplace_back();
 		voices.back().start(*samples.back(), p, note, vel);
