@@ -135,7 +135,7 @@ int main(int argc, char **argv)
 		else if (!std::strcmp(argv[i], "--no-chorus"))
 			use_cho = false;
 	}
-	kv fxline;
+	kv fxline, voiceline;
 	std::map<int, int> ins_count;
 
 	std::vector<element> els;
@@ -148,6 +148,8 @@ int main(int argc, char **argv)
 	while (std::fgets(line, sizeof line, pf)) {
 		if (!std::strncmp(line, "fx ", 3))
 			fxline = parse(line);
+		else if (!std::strncmp(line, "voice ", 6))
+			voiceline = parse(line);
 		else if (!std::strncmp(line, "element ", 8))
 			els.push_back({ parse(line), {} });
 		else if (!std::strncmp(line, "zone ", 5) && !els.empty()) {
@@ -189,6 +191,8 @@ int main(int argc, char **argv)
 		p.coarse = geti(e.f, "coarse");
 		p.fine = geti(e.f, "fine");
 		p.level = geti(e.f, "level", 127);
+		// Filter Gain は 1 あたり 0.375dB。サンプルは雛形の音色（250）で録ったので、その差だけ掛ける
+		p.gain = std::pow(10.0, (swp50_filter::filter_gain_db(geti(e.f, "fgain", 250)) - swp50_filter::filter_gain_db(250)) / 20.0);
 		p.pan = geti(e.f, "pan", 64);
 		const auto at = list(e.f, "aegt"), al = list(e.f, "aegl");
 		for (int i = 0; i < 4 && i < int(at.size()); i++)
@@ -275,6 +279,12 @@ int main(int argc, char **argv)
 				v.release();
 		for (auto &v : voices)
 			v.render(l[i], r[i]);
+	}
+	// 共通の音量（0〜127）は 40·log10(値 / 127) dB（プリセット 29 音色の実機と芯の音量の差から。インサーションの前に掛ける）
+	const double vg = std::pow(geti(voiceline, "volume", 127) / 127.0, 2.0);
+	for (int i = 0; i < n; i++) {
+		l[i] = float(l[i] * vg);
+		r[i] = float(r[i] * vg);
 	}
 	if (!fxdir.empty() && !fxline.empty()) {
 		using namespace motif_fx;

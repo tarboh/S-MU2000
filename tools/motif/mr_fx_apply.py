@@ -10,7 +10,7 @@
 コーラス（Chorus 1〜5・Celeste 1〜4 の型、05 00〜05 18）: 遅れの線 1 本を左右に置き、遅れ =
 Delay Offset（表 2）+ 0.176ms × LFO Depth ×（三角波 0〜1）、速さは LFO Speed（表 1）、左右は逆の向き（mr_fx.py --train → mr_fx_chorus.py で測った）。
 線の高さ 2.06（エネルギーの増え方から）× Return / 96 × 送り / 127。フィードバック・EQ・コーラスからリバーブへの送りは入れていない。
-インサーション（apply_insertion）: 3 Band EQ（0F 00）と 2 Band EQ（0F 01、eq2_response）と Compressor（0A 00、compressor）と歪み系（Amp Simulator 09 30・31、Distortion 09 00、V-Distortion 09 10、distortion）と Cross Delay（02 30、cross_delay）と Tempo Cross Delay（02 60、テンポは音色の arp_tempo）とコーラス系（insertion_chorus）とフランジャー（06 00・01、flanger）。低・高は 1 次の棚（角は表 3 × √2・表 3 / √2）、中は「上げるときは分子だけ、
+インサーション（apply_insertion）: 3 Band EQ（0F 00）と 2 Band EQ（0F 01、eq2_response）と Compressor（0A 00、compressor）と歪み系（Amp Simulator 09 30・31、Distortion 09 00、V-Distortion 09 10、distortion）と Cross Delay（02 30、cross_delay）と Tempo Cross Delay（02 60、テンポは音色の arp_tempo）とコーラス系（insertion_chorus）とフランジャー（06 00・01、flanger）と Harmonic Enhancer（0F 10、enhancer）。低・高は 1 次の棚（角は表 3 × √2・表 3 / √2）、中は「上げるときは分子だけ、
 下げるときは分母だけに利きを入れる」山（Q = Mid Width / 10）、利きは 1 目盛り 1dB（mr_fx.py --block insa → mr_fx_eq.py で測った。
 21 本の格子と 0.1〜0.4dB で合う）。周波数ごとに応答を掛ける（FFT）。全部のエレメントが同じインサーションを通る音色のときだけ正しい。"""
 import json
@@ -356,7 +356,7 @@ def insertion_chorus(L, R, prm):
     return fx_eq(gd * np.asarray(L) + gw * out[0], gd * np.asarray(R) + gw * out[1], prm)
 
 
-FLANGER_TYPES = {(6, 0x00), (6, 0x01)}       # Flanger 1〜3（測ったのは Flanger 1）
+FLANGER_TYPES = {(6, 0x00), (6, 0x01)}       # Flanger 1・2（測ったのは Flanger 1。2 は遅れと揺れが同じで EQ の既定だけ違う）
 FLANGER_MS_PER_DEPTH = 0.0914                 # 深さ 1 あたりの遅れの幅（14・64・127 で 1.28・5.83・11.65ms）
 FLANGER_RATE = 1.0                            # 表 1 に掛ける揺れの速さの直し
 
@@ -398,6 +398,22 @@ def flanger(L, R, prm):
     return fx_eq(oL, oR, prm)
 
 
+def enhancer_response(prm, f):
+    """Harmonic Enhancer（0F 10）の応答: 1 + g × HPF。HPF は 3 次のバターワース（双一次変換、角は表 3[01 HPF Cutoff]）、
+    g = 8.13 × Drive（02）/ 64 × Mix Level（03）/ 64（小さいノイズで、角 4 通り・Drive と Mix 5 通りが 0.1〜0.9dB）"""
+    fc = min(T3[min(60, prm["param1"])], FS * 0.49)
+    s = 1j * np.tan(np.pi * np.minimum(f, FS * 0.4999) / FS) / np.tan(np.pi * fc / FS)
+    g = 8.13 * prm["param2"] / 64.0 * prm["param3"] / 64.0
+    return 1 + g * (s / (s + 1)) * (s * s / (s * s + s * np.sqrt(2) + 1))
+
+
+def enhancer(L, R, prm):
+    """倍音は足さない（正弦波 8 段で、出口が ±1.0 に届くまでは倍音が無い）。出口は ±1.0 で頭打ち（届いたときは方形波の倍音）"""
+    N = 1 << int(np.ceil(np.log2(len(L) + 1)))
+    H = enhancer_response(prm, np.fft.rfftfreq(N, 1 / FS))
+    return tuple(np.clip(np.fft.irfft(np.fft.rfft(np.asarray(x), N) * H, N)[:len(x)], -1.0, 1.0) for x in (L, R))
+
+
 FX_EQ_FORM = "eq2"
 
 
@@ -435,6 +451,9 @@ def apply_block(L, R, ins, fxdir=None):
     if t in CHORUS_TYPES:
         oL, oR = insertion_chorus(L, R, ins)
         return oL, oR, "コーラス %d:%d（Dry/Wet %d）" % (t[0], t[1], ins.get("param10", 64))
+    if t == (15, 16):
+        oL, oR = enhancer(L, R, ins)
+        return oL, oR, "Enhancer（%.0fHz・Drive %d・Mix %d）" % (T3[min(60, ins["param1"])], ins["param2"], ins["param3"])
     if t in FLANGER_TYPES:
         oL, oR = flanger(L, R, ins)
         return oL, oR, "フランジャー %d:%d（Dry/Wet %d）" % (t[0], t[1], ins.get("param10", 64))

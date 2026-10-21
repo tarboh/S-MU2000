@@ -616,8 +616,30 @@ inline void flanger(buf &L, buf &R, const block &b)
 	fx_eq(L, R, b);
 }
 
+// Harmonic Enhancer（0F 10）: 1 + g × HPF（3 次のバターワース、双一次変換、角は表 3[p1]）、g = 8.13 × p2 / 64 × p3 / 64。出口は ±1.0 で頭打ち
+inline void enhancer(buf &L, buf &R, const block &b)
+{
+	const double fc = std::min(t3(b.p[1]), FS * 0.49), g = 8.13 * b.p[2] / 64.0 * b.p[3] / 64.0;
+	auto H = [&](double f) {
+		const double fa = std::min(std::fabs(f), FS * 0.4999);
+		const cplx s(0, std::tan(PI * fa / FS) / std::tan(PI * fc / FS));
+		cplx h = 1.0 + g * (s / (s + 1.0)) * (s * s / (s * s + s * std::sqrt(2.0) + 1.0));
+		return f < 0 ? std::conj(h) : h;
+	};
+	L = filter_freq(L, L.size(), H);
+	R = filter_freq(R, R.size(), H);
+	for (size_t i = 0; i < L.size(); i++) {
+		L[i] = std::max(-1.0, std::min(1.0, L[i]));
+		R[i] = std::max(-1.0, std::min(1.0, R[i]));
+	}
+}
+
 inline void apply_block(buf &L, buf &R, const block &b, const std::string &fxddir, int tempo = 120)
 {
+	if (b.is(15, 0x10)) {
+		enhancer(L, R, b);
+		return;
+	}
 	if (flanger_type(b)) {
 		flanger(L, R, b);
 		return;

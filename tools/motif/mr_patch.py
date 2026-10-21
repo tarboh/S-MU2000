@@ -60,6 +60,7 @@ def main():
     fx["connect"] = v.get("insertion_connect", {}).get("insertion_connect_type", 0)
     fx["tempo"] = voice_tempo(vpath)
     lines.append("fx " + " ".join("%s=%s" % kv for kv in fx.items()))
+    lines.append("voice volume=%d" % v.get("common", {}).get("volume", 127))
     missing = []
     for e in v["elements"]:
         osc, amp, pit, flt, eq, lfo = e["oscillator"], e["amplitude"], e["pitch"], e["filter"], e["eq"], e["lfo"]
@@ -69,7 +70,7 @@ def main():
         f = {
             "wave": w, "ins": osc.get("insertion_effect_switch", 0), "note_lo": osc["note_limit_low"], "note_hi": osc["note_limit_high"],
             "vel_lo": osc["velocity_limit_low"], "vel_hi": osc["velocity_limit_high"], "pan": osc["pan"],
-            "level": amp["element_level"], "release": amp["aeg_release_time"],
+            "level": amp["element_level"], "fgain": flt["filter_gain"], "release": amp["aeg_release_time"],
             "aegt": "%d,%d,%d,%d" % tuple(amp["aeg_%s_time" % n] for n in ("attack", "decay1", "decay2", "release")),
             "aegl": "%d,%d,%d,%d" % tuple(amp["aeg_%s_level" % n] for n in ("init", "attack", "decay1", "decay2")),
             "aegtv": amp["aeg_time_velocity_sensitivity"], "aegtvs": amp["aeg_time_velocity_segment"], "aegkf": amp["aeg_time_key_follow_sensitivity"],

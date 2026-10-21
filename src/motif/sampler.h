@@ -38,6 +38,7 @@ struct element_params {
 	int coarse = 0;               // 半音
 	int fine = 0;                 // -64..+63（1 = 1.5625 セント）
 	int level = 127;
+	double gain = 1.0;            // Filter Gain（録った雛形の 250 からの比）
 	int pan = 64;                 // 1..127、64 が中央
 	int level_vel_sens = 64, level_vel_curve = 0, level_kf = 64;
 	int level_bp[4] = { 0, 0, 0, 0 }, level_off[4] = { 128, 128, 128, 128 };   // 音量のレベルスケーリング
@@ -173,7 +174,7 @@ struct voice {
 			done = true;
 			return;
 		}
-		const double g = eg * vel_gain * level_gain(level - p.lfo.level_drop_now());
+		const double g = eg * vel_gain * p.gain * level_gain(level - p.lfo.level_drop_now());
 		outl += float(l * gl * g);
 		outr += float(r * gr * g);
 	}

@@ -788,7 +788,7 @@ Cross Delay（Dry/Wet 32・96）と Tempo Cross Delay（32・127）が −0.1dB�
 
 ### インサーションのフランジャー（2026-10-22。`mr_fx.py --block insa --types 6:0 --train 6`、録音は `capture/fxfl/`、読み取りは `mr_fx_flanger.py`）
 
-Flanger 1〜3 のパラメーター: 01 LFO Speed（表 1）・02 LFO Depth・03 Feedback Level（−63〜+63）・04 Delay Offset（表 2）・06〜09 EQ（低の周波数・利き・高の周波数・利き）・
+Flanger 1〜3 のパラメーター（06 00 = Flanger 1、06 01 = Flanger 2、06 08 = Flanger 3）: 01 LFO Speed（表 1）・02 LFO Depth・03 Feedback Level（−63〜+63）・04 Delay Offset（表 2）・06〜09 EQ（低の周波数・利き・高の周波数・利き）・
 10 Dry/Wet・11〜13 EQ Mid・14 LFO Phase Difference（4〜124 = −180〜+180°）。遅れが 0.2ms からと短いので、`mr_fx_chorus.py` の探し始め（第 2 引数）を 0.05ms にして読む。
 0.1 秒ごとの遅れに三角波を当てはめると（残り 0.006〜0.13ms）:
 * **揺れの速さは表 1 のとおり**（14・32・40・80 で 0.59・1.35・1.69・4.38Hz）
@@ -797,11 +797,28 @@ Flanger 1〜3 のパラメーター: 01 LFO Speed（表 1）・02 LFO Depth・03
 * **帰りは (値 − 64) / 64 で、遅れの線ごと戻る**（y = x + 帰り × 遅れた y）。+32・−32 で 2 回目の線が 1 回目の ±0.41 倍（模型を同じ読み取りに通すと 0.42。遅れが動くので線が鈍る）。
   +63 だけは 1 にごく近く、補間の損失しだいで響きが大きく振れる（模型が中央値で 2dB 小さい。割る数を 63.7・63.4 にすると −1.3・+0.9dB）
 * **混ぜ方は元の音 cos、揺れの線 sin**（角 π/2 × (v − 1) / 126。Dry/Wet 1・32・64・127 の音量の比べで ±0.05dB）
-* **EQ（6〜9）は 2 Band EQ と同じ棚を、元の音を含む出口に掛ける**: Flanger 3（06 01）は既定で高の利きが 60（−4dB）で、元の音の線が下がっていた。
+* **EQ（6〜9）は 2 Band EQ と同じ棚を、元の音を含む出口に掛ける**: Flanger 2（06 01）は既定で高の利きが 60（−4dB）で、元の音の線が下がっていた。
   2 Band EQ の形で −0.28dB、3 Band EQ の形で −0.42dB（2 Band の形を採った）。Mid（11〜13）は入れていない
 芯（`mr_fx_apply.flanger`・`sampler_fx.h`）は Python と C++ で 5e-8 で一致（帰り 113 の Flangewall は 1e-5）。
 使う音色で、インサーションを入れたときの音量の変わり（0.2〜2 秒）は実機と芯で 1〜2dB 以内（Vapor・Nomad・Flangewall・Pro-Atack）。
-Pro-Atack（B にフランジャー）は 50ms ごとの比べで中央値 0.3〜1.0dB。Flangewall は B の型 14:80 がまだ。フェイザーなどはまだ
+Pro-Atack（B にフランジャー）は 50ms ごとの比べで中央値 0.3〜1.0dB。Flangewall は B の型 0E 50（Slice）がまだ。フェイザーなどはまだ
+
+型の番号と名前: Data List の Effect Type List は 2 段組が崩れて名前と番号がずれて文字になるので、名前の並びと番号の並びを別々に拾って順に突き合わせた
+（測って確かめた 02 30 Cross Delay・02 60 Tempo Cross Delay・05 00 Chorus 1・06 00 Flanger 1・09 00 Distortion・09 30 Amp Simulator・0A 00 Compressor・0F 00 3 Band EQ・0F 01 2 Band EQ とすべて合う）。
+プリセットでまだの型を使う音色の数（インサーションのスイッチが通すものだけ）: 0F 10 Harmonic Enhancer 37、05 30 Ensemble Detune 34、0B 00 Pitch Change 1 29、
+0D 00 Lo-Fi 22、09 01 Comp + Distortion 18、0F 70 Ring Modulator 18、08 70 Dual Rotor Speaker 1 16、0E 50 Slice 16、08 72 Dual Rotor 3 15、0E 40 Isolator 14 など
+
+### Harmonic Enhancer（0F 10、2026-10-22。録音は `capture/fxen/`）
+
+パラメーターは 01 HPF Cutoff（表 3、500Hz〜16kHz）・02 Drive・03 Mix Level の 3 つ。
+小さいノイズ（`mr_fx.py --block insa --types 15:16 --level 16`）で、角 3 通り・Drive 3 通り・Mix 4 通りの周波数応答を録り、wet / dry を複素数のまま読んだ:
+* **出口 = 元の音 + g × HPF(元の音)**。足される側は高域で位相 0、下では 18dB/オクターブで落ちる 3 次の形
+* **HPF は 3 次のバターワース（Q 0.70）で、角は表 3 そのまま**（当てはめで 1.04 倍）。16kHz（値 58）は双一次変換で角を歪ませた形でそろう
+* **g = 8.13 × Drive / 64 × Mix / 64**（Drive 64・Mix 32 と Drive 32・Mix 64 が同じ。どちらも 0 なら素通し）
+* **倍音は足さない**: 正弦波（`mr_fx_comp.py --type 15:16 --key 84`）で、出口が ±1.0 に届く音量 96・127 だけ方形波の倍音（3・5 次が −10・−18dB）が出る。
+  出口を ±1.0 で切ると、正弦波 5 段の出口の音量が 0.05dB 以内
+`mr_fx_check.py` でノイズ 5 通りが ±0.06dB。使う音色（C Flute・BaroqTrpt：A が EQ、B が Enhancer）で 50ms ごとの比べが中央値 0.2〜0.7dB。
+HousePiano は 6kHz より上が 18〜22dB 足りないが、インサーションを切っても同じなので音色の側の問題
 
 ### Dry Level の測り直し（2026-10-18。録音は `capture/dry/`）
 
