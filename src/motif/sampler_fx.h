@@ -496,16 +496,30 @@ inline void distortion(buf &L, buf &R, const block &b, const std::string &fxddir
 // Cross Delay（02 30）: 左の入力 →（左 → 右、p1 × 0.1ms）→ 右の出力、右の入力 →（右 → 左、p2）→ 左の出力。出たものは反対側の線へ
 // フィードバック (p3 − 64) / 64 を掛け、1 次の LPF（係数 (1 − p5 / 10)²）を通して戻る。入力の選び方 p4: 0 = L、1 = R、2 = 両方。
 // Dry/Wet p10: 元の音 0.9 × min(1, (127 − v) / 63)²、こだま 0.9 × min(1, (v − 1) / 63)²
-inline void cross_delay(buf &L, buf &R, const block &b)
+// Tempo Cross Delay（02 60、tempo > 0）: 遅れは表 14 の音符 × 60 / テンポ + Lag（p6、(v − 64) ms）、混ぜ方はエネルギーを保つ形
+// （元の音 0.9 cos、こだま 0.9 sin、角 π/2 × (v − 1) / 126）
+static const double TABLE14_Q[20] = {1.0 / 12, 3.0 / 32, 1.0 / 8, 1.0 / 6, 3.0 / 16, 1.0 / 4, 1.0 / 3, 3.0 / 8, 1.0 / 2, 2.0 / 3, 3.0 / 4, 1,
+	4.0 / 3, 3.0 / 2, 2, 8.0 / 3, 3, 4, 5, 6};
+
+inline void cross_delay(buf &L, buf &R, const block &b, int tempo = 0)
 {
 	const size_t n = L.size();
-	const size_t d1 = std::max<size_t>(1, size_t(std::lround(b.p[1] * 0.1e-3 * FS)));
-	const size_t d2 = std::max<size_t>(1, size_t(std::lround(b.p[2] * 0.1e-3 * FS)));
+	size_t d1 = std::max<size_t>(1, size_t(std::lround(b.p[1] * 0.1e-3 * FS)));
+	size_t d2 = std::max<size_t>(1, size_t(std::lround(b.p[2] * 0.1e-3 * FS)));
+	if (tempo > 0) {
+		const double lag = (b.p[6] - 64) * 1e-3, q = 60.0 / tempo;
+		d1 = std::max<size_t>(1, size_t(std::lround((TABLE14_Q[std::min(19, b.p[1])] * q + lag) * FS)));
+		d2 = std::max<size_t>(1, size_t(std::lround((TABLE14_Q[std::min(19, b.p[2])] * q + lag) * FS)));
+	}
 	const double fb = (b.p[3] - 64) / 64.0;
 	const int sel = b.p[4];
 	const double a = std::pow(1 - std::max(1, b.p[5]) / 10.0, 2);
 	const int v = std::max(1, b.p[10]);
-	const double gd = 0.9 * std::pow(std::min(1.0, (127 - v) / 63.0), 2), gw = 0.9 * std::pow(std::min(1.0, (v - 1) / 63.0), 2);
+	double gd = 0.9 * std::pow(std::min(1.0, (127 - v) / 63.0), 2), gw = 0.9 * std::pow(std::min(1.0, (v - 1) / 63.0), 2);
+	if (tempo > 0) {
+		gd = 0.9 * std::cos(PI / 2 * (v - 1) / 126.0);
+		gw = 0.9 * std::sin(PI / 2 * (v - 1) / 126.0);
+	}
 	buf lr(n, 0.0), rl(n, 0.0), lr_in(n, 0.0), rl_in(n, 0.0);
 	double plr = 0, prl = 0;
 	for (size_t t = 0; t < n; t++) {
@@ -524,10 +538,46 @@ inline void cross_delay(buf &L, buf &R, const block &b)
 	}
 }
 
-inline void apply_block(buf &L, buf &R, const block &b, const std::string &fxddir)
+// インサーションのコーラス: 遅れの動きはシステムのコーラスと同じ。元の音 0.9 cos(π/2 (v − 1) / 126)、コーラスの線のエネルギーは
+// 32・64・127 で 0.364・0.838・1.5 を補間（v = Dry/Wet）
+inline void insertion_chorus(buf &L, buf &R, const block &b)
 {
+	const int v = std::max(1, b.p[10]);
+	static const double xs[4] = {1, 32, 64, 127}, ys[4] = {0.0, 0.364, 0.838, 1.5};
+	const double gd = 0.9 * std::cos(PI / 2 * (v - 1) / 126.0), gw = std::sqrt(interp(xs, ys, 4, v));
+	const double hz = LFO_HZ[std::min(127, b.p[1])], depth = 0.176 * b.p[2] / 1000 * FS, off = MOD_DELAY_MS[std::min(127, b.p[4])] / 1000 * FS;
+	const size_t n = L.size();
+	buf x(n);
+	for (size_t i = 0; i < n; i++)
+		x[i] = (L[i] + R[i]) / 2;
+	for (size_t t = 0; t < n; t++) {
+		const double ph = std::fmod(double(t) * hz / FS, 1.0), tri = ph < 0.5 ? 2 * ph : 2 - 2 * ph;
+		double o[2] = {0, 0};
+		for (int c = 0; c < 2; c++) {
+			const double pos = double(t) - (off + depth * (c == 0 ? tri : 1 - tri));
+			if (pos < 0)
+				continue;
+			const size_t i = size_t(pos);
+			const double fr = pos - double(i), a0 = x[i], a1 = i + 1 < n ? x[i + 1] : a0;
+			o[c] = a0 + (a1 - a0) * fr;
+		}
+		L[t] = gd * L[t] + gw * o[0];
+		R[t] = gd * R[t] + gw * o[1];
+	}
+}
+
+inline void apply_block(buf &L, buf &R, const block &b, const std::string &fxddir, int tempo = 120)
+{
+	if (chorus_type(b)) {
+		insertion_chorus(L, R, b);
+		return;
+	}
 	if (b.is(2, 0x30)) {
 		cross_delay(L, R, b);
+		return;
+	}
+	if (b.is(2, 0x60)) {
+		cross_delay(L, R, b, tempo);
 		return;
 	}
 	if (b.is(15, 0) || b.is(15, 1)) {
@@ -542,7 +592,7 @@ inline void apply_block(buf &L, buf &R, const block &b, const std::string &fxddi
 }
 
 // つなぎ方 0 = 並列（スイッチ 1 は A、2 は B）、1 = A → B（1 は A → B、2 は B）、2 = B → A（2 は B → A、1 は A）
-inline void insertion(buf &L, buf &R, const block &a, const block &b, int connect, int sw, const std::string &fxddir)
+inline void insertion(buf &L, buf &R, const block &a, const block &b, int connect, int sw, const std::string &fxddir, int tempo = 120)
 {
 	const char *chain = "";
 	if (sw == 1)
@@ -550,7 +600,7 @@ inline void insertion(buf &L, buf &R, const block &a, const block &b, int connec
 	else if (sw == 2)
 		chain = connect == 2 ? "BA" : "B";
 	for (const char *c = chain; *c; c++)
-		apply_block(L, R, *c == 'A' ? a : b, fxddir);
+		apply_block(L, R, *c == 'A' ? a : b, fxddir, tempo);
 }
 
 } // namespace motif_fx

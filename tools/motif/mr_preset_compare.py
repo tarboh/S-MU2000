@@ -142,6 +142,7 @@ def main():
     for v in voices:
         jp = os.path.join(cap, "voice_json", v + ".json")
         js = json.load(open(jp, encoding="utf-8"))
+        js["arp_tempo"] = mr_patch.voice_tempo(jp)
         sys.argv = ["mr_patch.py", jp, os.path.join(cap, "samples"), pdir]
         mr_patch.main()
         patch = os.path.join(pdir, v + ".patch")

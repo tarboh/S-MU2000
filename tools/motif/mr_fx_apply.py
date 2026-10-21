@@ -10,7 +10,7 @@
 コーラス（Chorus 1〜5・Celeste 1〜4 の型、05 00〜05 18）: 遅れの線 1 本を左右に置き、遅れ =
 Delay Offset（表 2）+ 0.176ms × LFO Depth ×（三角波 0〜1）、速さは LFO Speed（表 1）、左右は逆の向き（mr_fx.py --train → mr_fx_chorus.py で測った）。
 線の高さ 2.06（エネルギーの増え方から）× Return / 96 × 送り / 127。フィードバック・EQ・コーラスからリバーブへの送りは入れていない。
-インサーション（apply_insertion）: 3 Band EQ（0F 00）と 2 Band EQ（0F 01、eq2_response）と Compressor（0A 00、compressor）と歪み系（Amp Simulator 09 30・31、Distortion 09 00、V-Distortion 09 10、distortion）と Cross Delay（02 30、cross_delay）。低・高は 1 次の棚（角は表 3 × √2・表 3 / √2）、中は「上げるときは分子だけ、
+インサーション（apply_insertion）: 3 Band EQ（0F 00）と 2 Band EQ（0F 01、eq2_response）と Compressor（0A 00、compressor）と歪み系（Amp Simulator 09 30・31、Distortion 09 00、V-Distortion 09 10、distortion）と Cross Delay（02 30、cross_delay）と Tempo Cross Delay（02 60、テンポは音色の arp_tempo）とコーラス系（insertion_chorus）。低・高は 1 次の棚（角は表 3 × √2・表 3 / √2）、中は「上げるときは分子だけ、
 下げるときは分母だけに利きを入れる」山（Q = Mid Width / 10）、利きは 1 目盛り 1dB（mr_fx.py --block insa → mr_fx_eq.py で測った。
 21 本の格子と 0.1〜0.4dB で合う）。周波数ごとに応答を掛ける（FFT）。全部のエレメントが同じインサーションを通る音色のときだけ正しい。"""
 import json
@@ -288,21 +288,36 @@ def distortion(L, R, prm, t, fxdir, default_prm):
     return [(1 - wmix) * np.asarray(src) + wmix * o * og for src, o in zip((L, R), outs)], name
 
 
-def cross_delay(L, R, prm):
+TABLE14_Q = [1 / 12, 3 / 32, 1 / 8, 1 / 6, 3 / 16, 1 / 4, 1 / 3, 3 / 8, 1 / 2, 2 / 3, 3 / 4, 1, 4 / 3, 3 / 2, 2, 8 / 3, 3, 4, 5, 6]   # 表 14（4 分音符 = 1）
+
+
+def cross_delay(L, R, prm, tempo=None):
     """Cross Delay（02 30）。mr_fx.py --block insa で測った形: 左の入力 →（左 → 右、パラメーター 1 × 0.1ms）→ 右の出力、
     右の入力 →（右 → 左、パラメーター 2）→ 左の出力。出たものは反対側の線へ、フィードバック (値 − 64) / 64 を掛け、1 次の LPF
     （係数 (1 − High Damp / 10)²）を通して戻る（最初のこだまは LPF を通らない）。入力の選び方（4）: 0 = L だけ左 → 右へ、1 = R だけ右 → 左へ、
     2 = 両方。Dry/Wet（10）: 元の音 0.9 × min(1, (127 − 値) / 63)²、こだま 0.9 × min(1, (値 − 1) / 63)²。EQ（13〜16）は入れていない"""
     L, R = np.asarray(L, dtype=np.float64), np.asarray(R, dtype=np.float64)
     n = len(L)
-    d1 = max(1, int(round(prm["param1"] * 0.1e-3 * FS)))
-    d2 = max(1, int(round(prm["param2"] * 0.1e-3 * FS)))
+    if tempo is None:
+        d1 = max(1, int(round(prm["param1"] * 0.1e-3 * FS)))
+        d2 = max(1, int(round(prm["param2"] * 0.1e-3 * FS)))
+    else:
+        # Tempo Cross Delay（02 60）: 遅れは表 14 の音符 × 60 / テンポ + Lag（パラメーター 6、(値 − 64) ms を両方に）。
+        # テンポ 120 で 8 分・4 分が 250・500ms、Lag +20 で 270・520ms
+        lag = (prm.get("param6", 64) - 64) * 1e-3
+        q = 60.0 / max(1, tempo)
+        d1 = max(1, int(round((TABLE14_Q[min(19, prm["param1"])] * q + lag) * FS)))
+        d2 = max(1, int(round((TABLE14_Q[min(19, prm["param2"])] * q + lag) * FS)))
     fb = (prm["param3"] - 64) / 64.0
     sel = prm["param4"]
     a = (1 - max(1, prm["param5"]) / 10.0) ** 2
     v = max(1, prm.get("param10", 127))
     gd = 0.9 * min(1.0, (127 - v) / 63.0) ** 2
     gw = 0.9 * min(1.0, (v - 1) / 63.0) ** 2
+    if tempo is not None:
+        # Tempo Cross Delay はエネルギーを保つ混ぜ方（32・64・96・127 でこだま 0.340・0.639・0.835・0.9）
+        gd = 0.9 * np.cos(np.pi / 2 * (v - 1) / 126.0)
+        gw = 0.9 * np.sin(np.pi / 2 * (v - 1) / 126.0)
     inL = L if sel in (0, 2) else np.zeros(n)
     inR = R if sel in (1, 2) else np.zeros(n)
     lr = np.zeros(n)     # 左 → 右の線の出力（右へ）
@@ -322,6 +337,24 @@ def cross_delay(L, R, prm):
     return gd * L + gw * rl, gd * R + gw * lr
 
 
+def insertion_chorus(L, R, prm):
+    """インサーションのコーラス（Chorus 1〜5・Celeste 1〜4）。遅れの動きはシステムのコーラスと同じ（mr_fx.py --block insa --train で確かめた）。
+    Dry/Wet（10）: 元の音 0.9 cos(π/2 (v − 1) / 126)、コーラスの線のエネルギー（元の音を 1 として）は 32・64・127 で 0.364・0.838・1.5 を補間"""
+    v = max(1, prm.get("param10", 64))
+    gd = 0.9 * np.cos(np.pi / 2 * (v - 1) / 126.0)
+    gw = np.sqrt(np.interp(v, [1, 32, 64, 127], [0.0, 0.364, 0.838, 1.5]))
+    hz = LFO_HZ[min(127, prm["param1"])]
+    depth = 0.176 * prm["param2"] / 1000 * FS
+    off = MOD_DELAY_MS[min(127, prm["param4"])] / 1000 * FS
+    x = (np.asarray(L) + np.asarray(R)) / 2
+    n = len(x)
+    t = np.arange(n)
+    ph = (t * hz / FS) % 1.0
+    tri = np.where(ph < 0.5, 2 * ph, 2 - 2 * ph)
+    out = [np.interp(t - (off + depth * tr), t, x, left=0.0) for tr in (tri, 1 - tri)]
+    return gd * np.asarray(L) + gw * out[0], gd * np.asarray(R) + gw * out[1]
+
+
 def apply_block(L, R, ins, fxdir=None):
     """インサーション 1 つ（A か B）を掛ける。まだの型はそのまま返す"""
     t = (ins["type"] >> 7, ins["type"] & 0x7F)
@@ -339,6 +372,13 @@ def apply_block(L, R, ins, fxdir=None):
     if t == (10, 0):
         oL, oR = compressor(L, R, ins)
         return oL, oR, "Compressor（%ddB・%.1f:1）" % (ins["param3"] - 127, COMP_RATIO[min(7, ins["param4"])])
+    if t in CHORUS_TYPES:
+        oL, oR = insertion_chorus(L, R, ins)
+        return oL, oR, "コーラス %d:%d（Dry/Wet %d）" % (t[0], t[1], ins.get("param10", 64))
+    if t == (2, 96):
+        tempo = ins.get("_tempo", 120)
+        oL, oR = cross_delay(L, R, ins, tempo)
+        return oL, oR, "Tempo Cross Delay（テンポ %d）" % tempo
     if t == (2, 48):
         oL, oR = cross_delay(L, R, ins)
         return oL, oR, "Cross Delay（%.1f / %.1f ms）" % (ins["param1"] / 10, ins["param2"] / 10)
@@ -365,7 +405,9 @@ def apply_insertion(L, R, voice, fxdir=None):
     chain = {(0, 1): "A", (0, 2): "B", (1, 1): "AB", (1, 2): "B", (2, 1): "A", (2, 2): "BA"}[(con, sw)]
     msgs = []
     for blk in chain:
-        L, R, m = apply_block(L, R, voice["insertion1" if blk == "A" else "insertion2"], fxdir)
+        ins = dict(voice["insertion1" if blk == "A" else "insertion2"])
+        ins["_tempo"] = voice.get("arp_tempo", 120)
+        L, R, m = apply_block(L, R, ins, fxdir)
         msgs.append("%s: %s" % (blk, m))
     return L, R, " → ".join(msgs)
 

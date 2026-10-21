@@ -288,7 +288,7 @@ int main(int argc, char **argv)
 			}
 		buf L(l.begin(), l.end()), R(r.begin(), r.end());
 		if (use_ins)
-			insertion(L, R, ia, ib, geti(fxline, "connect"), sw, fxdir + "/fxd");
+			insertion(L, R, ia, ib, geti(fxline, "connect"), sw, fxdir + "/fxd", geti(fxline, "tempo", 120));
 		buf oL(L), oR(R);
 		if (use_rev)
 			reverb(L, R, rv, fxdir + "/fx", oL, oR, L.size());

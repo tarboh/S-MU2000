@@ -2,7 +2,7 @@
 サンプリング方式の芯（src/motif/sampler_render）で鳴らす「パッチ」の文字ファイルを作る。使うサンプルは .smpx に直して置く。
   python mr_patch.py 音色.json サンプルの置き場 出力の置き場
 
-パッチ: 頭にエフェクトの行（fx reverb=… chorus=… insa=… insb=… connect=…）、エレメントごとに 1 行（element 欄=値 …）、
+パッチ: 頭にエフェクトの行（fx reverb=… chorus=… insa=… insb=… connect=… tempo=…）、エレメントごとに 1 行（element 欄=値 …）、
 その下に区間ごとの行（zone key_lo=… key_hi=… vel_lo=… vel_hi=… file=…）。
 .smpx: 1 行目が「SMPX key=… loop_start=… loop_length=… stretch=… frames=…」、そのあと float32 の左右を交互に frames 組。
 欄の値は Data List の値のまま（コースチューン・ファインチューンだけ 64 を引く）。録音を読むだけで、実機には何も送らない。"""
@@ -22,6 +22,16 @@ def pack(npz, out, key):
     with open(out, "wb") as f:
         f.write(head.encode("ascii"))
         f.write(np.stack([L, R], axis=1).astype("<f4").tobytes())
+
+
+def voice_tempo(json_path):
+    """音色のアルペジオのテンポ（ダンプの 40 70 00 の 0x28 から 2 バイト）。voice_json/<名前>.json の隣の voice/<名前>.syx から読む。無ければ 120"""
+    import mr_voice
+    syx = os.path.join(os.path.dirname(json_path), "..", "voice", os.path.basename(json_path).replace(".json", ".syx"))
+    if not os.path.exists(syx):
+        return 120
+    x = mr_voice.blocks(syx).get((0x40, 0x70, 0x00))
+    return (x[0x28] << 7 | x[0x29]) if x and len(x) > 0x29 else 120
 
 
 def main():
@@ -48,6 +58,7 @@ def main():
             vals += [b.get("return", 96), v["common"].get("%s_send" % key, 0)]
         fx[key] = ",".join(str(x) for x in vals)
     fx["connect"] = v.get("insertion_connect", {}).get("insertion_connect_type", 0)
+    fx["tempo"] = voice_tempo(vpath)
     lines.append("fx " + " ".join("%s=%s" % kv for kv in fx.items()))
     missing = []
     for e in v["elements"]:
