@@ -10,7 +10,7 @@
 コーラス（Chorus 1〜5・Celeste 1〜4 の型、05 00〜05 18）: 遅れの線 1 本を左右に置き、遅れ =
 Delay Offset（表 2）+ 0.176ms × LFO Depth ×（三角波 0〜1）、速さは LFO Speed（表 1）、左右は逆の向き（mr_fx.py --train → mr_fx_chorus.py で測った）。
 線の高さ 2.06（エネルギーの増え方から）× Return / 96 × 送り / 127。フィードバック・EQ・コーラスからリバーブへの送りは入れていない。
-インサーション（apply_insertion）: 3 Band EQ（0F 00）と 2 Band EQ（0F 01、eq2_response）と Compressor（0A 00、compressor）。低・高は 1 次の棚（角は表 3 × √2・表 3 / √2）、中は「上げるときは分子だけ、
+インサーション（apply_insertion）: 3 Band EQ（0F 00）と 2 Band EQ（0F 01、eq2_response）と Compressor（0A 00、compressor）と歪み系（Amp Simulator 09 30・31、Distortion 09 00、V-Distortion 09 10、distortion）。低・高は 1 次の棚（角は表 3 × √2・表 3 / √2）、中は「上げるときは分子だけ、
 下げるときは分母だけに利きを入れる」山（Q = Mid Width / 10）、利きは 1 目盛り 1dB（mr_fx.py --block insa → mr_fx_eq.py で測った。
 21 本の格子と 0.1〜0.4dB で合う）。周波数ごとに応答を掛ける（FFT）。全部のエレメントが同じインサーションを通る音色のときだけ正しい。"""
 import json
@@ -225,23 +225,101 @@ def compressor(L, R, prm):
     return np.asarray(L) * k, np.asarray(R) * k
 
 
-def apply_insertion(L, R, voice):
-    ins = voice["insertion1"]
+# 歪み系（mr_fx_dist.py で当てはめた「線形の応答 h → 頭打ち → LPF」）。型ごとに測った組: (MSB, LSB) → [(アンプの型 or None, Drive, ファイル名)]
+DIST_SETS = {
+    (9, 48): [(1, 30, "insa_t9_48_lev16"), (0, 30, "insa_t9_48_amptype0_lev16"), (2, 30, "insa_t9_48_amptype2_lev16"),
+              (3, 30, "insa_t9_48_amptype3_lev16"), (1, 0, "insa_t9_48_drive0_lev16"), (1, 64, "insa_t9_48_drive64_lev16")],
+    (9, 49): [(None, None, "insa_t9_49_amp2def_lev16")],
+    (9, 0): [(None, None, "insa_t9_0_distdef_lev16")],
+    (9, 16): [(None, None, "insa_t9_16_vdistdef_lev16")],
+}
+DIST_DEFAULTS = {(9, 48): dict(drive=30, out=80), (9, 49): None, (9, 0): None, (9, 16): None}
+DRIVE_GAIN_DB = [(0, 0.9), (30, 17.3), (64, 28.8), (127, 28.8 + 0.34 * 63)]   # Amp Simulator（Stack）の 130Hz の小さい音の上げ幅
+
+
+def drive_gain_db(drive):
+    xs = [d for d, _ in DRIVE_GAIN_DB]
+    return float(np.interp(drive, xs, [g for _, g in DRIVE_GAIN_DB]))
+
+
+def distortion(L, R, prm, t, fxdir, default_prm):
+    """歪み系の後処理。Amp Simulator は アンプの型・Drive の近い組を選び、Drive の差は頭打ちの前の上げ幅（DRIVE_GAIN_DB を dB で補間）で直す。
+    ほかの型は既定のパラメーターで測った 1 組だけ（Drive の差は Amp Simulator と同じ割合で直す）。出力は既定からの比で 40·log10、
+    Dry/Wet（パラメーター 10、1〜127、127 が wet だけ）は wet の割合 (値 − 1) / 126 で混ぜる（どちらも確かめていない）"""
+    sets = DIST_SETS[t]
+    if t == (9, 48):
+        amp, drive = prm["param2"], prm["param1"]
+        cand = sorted(sets, key=lambda e: (e[0] != amp, abs(e[1] - drive)))
+        amp_s, drive_s, name = cand[0]
+    else:
+        amp_s, drive_s, name = sets[0]
+        drive, drive_s = prm["param1"], default_prm.get("param1", prm["param1"])
+    z = np.load(os.path.join(fxdir, name + "_dist.npz"))
+    hL, hR, c, p, fc = z["hL"].astype(np.float64), z["hR"].astype(np.float64), float(z["c"]), float(z["p"]), float(z["fc"])
+    lpf_param = {(9, 48): "param3", (9, 49): "param3"}.get(t)
+    if lpf_param and prm.get(lpf_param):
+        fc = T3[min(60, prm[lpf_param])]                # パラメーターの LPF Cutoff（表 3）。測ったときの 5kHz は既定の値 48
+    k = 10 ** ((drive_gain_db(drive) - drive_gain_db(drive_s)) / 20)
+    x = (np.asarray(L) + np.asarray(R)) / 2
+    outs = []
+    for h in (hL, hR):
+        n = len(x) + len(h)
+        N = 1 << int(np.ceil(np.log2(n)))
+        u = np.fft.irfft(np.fft.rfft(x, N) * np.fft.rfft(h, N), N)[:len(x)] * k
+        u = u / (1 + np.abs(u / c) ** p) ** (1 / p)
+        f = np.fft.rfftfreq(N, 1 / FS)
+        Hl = 1 / (1 + 1j * (f / fc) / 1.6 - (f / fc) ** 2)          # 山のある 2 次（Q 1.6）。h からは測ったときの LPF を割り戻してある
+        outs.append(np.fft.irfft(np.fft.rfft(u, N) * Hl, N)[:len(x)])
+    og = 1.0
+    if default_prm and "param4" in prm and t == (9, 48):
+        og = 10 ** (40 * np.log10(max(1, prm["param4"]) / max(1, default_prm.get("out", 80))) / 20)
+    wmix = (max(1, prm.get("param10", 127)) - 1) / 126.0
+    return [(1 - wmix) * np.asarray(src) + wmix * o * og for src, o in zip((L, R), outs)], name
+
+
+def apply_block(L, R, ins, fxdir=None):
+    """インサーション 1 つ（A か B）を掛ける。まだの型はそのまま返す"""
     t = (ins["type"] >> 7, ins["type"] & 0x7F)
+    if t == (0, 0):
+        return L, R, "なし"
+    if t in DIST_SETS:
+        fxdir = fxdir or os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../roms/motif-rack-es/capture/fxd")
+        dflt = dict(param1=30, out=80) if t == (9, 48) else {}
+        if t != (9, 48):
+            js = os.path.join(fxdir, DIST_SETS[t][0][2] + ".json")
+            if os.path.exists(js):
+                dflt = json.load(open(js))
+        (oL, oR), name = distortion(L, R, ins, t, fxdir, dflt)
+        return oL, oR, "歪み系 %d:%d（%s）" % (t[0], t[1], name)
     if t == (10, 0):
         oL, oR = compressor(L, R, ins)
         return oL, oR, "Compressor（%ddB・%.1f:1）" % (ins["param3"] - 127, COMP_RATIO[min(7, ins["param4"])])
-    if t not in ((15, 0), (15, 1)):
-        return L, R, "インサーション A の型 %d:%d はまだ" % t
-    n = len(L) + FS
-    N = 1 << int(np.ceil(np.log2(n)))
-    f = np.fft.rfftfreq(N, 1 / FS)
-    H = eq3_response(ins, f) if t == (15, 0) else eq2_response(ins, f)
-    if t == (15, 1):
+    if t in ((15, 0), (15, 1)):
+        n = len(L) + FS
+        N = 1 << int(np.ceil(np.log2(n)))
+        f = np.fft.rfftfreq(N, 1 / FS)
+        H = eq3_response(ins, f) if t == (15, 0) else eq2_response(ins, f)
         out = [np.fft.irfft(np.fft.rfft(x, N) * H, N)[:len(x)] for x in (np.asarray(L), np.asarray(R))]
-        return out[0], out[1], "2 Band EQ（%+d / %+d dB）" % (ins["param2"] - 64, ins["param4"] - 64)
-    out = [np.fft.irfft(np.fft.rfft(x, N) * H, N)[:len(x)] for x in (np.asarray(L), np.asarray(R))]
-    return out[0], out[1], "3 Band EQ（%+d / %+d / %+d dB）" % (ins["param1"] - 64, ins["param3"] - 64, ins["param5"] - 64)
+        if t == (15, 1):
+            return out[0], out[1], "2 Band EQ（%+d / %+d dB）" % (ins["param2"] - 64, ins["param4"] - 64)
+        return out[0], out[1], "3 Band EQ（%+d / %+d / %+d dB）" % (ins["param1"] - 64, ins["param3"] - 64, ins["param5"] - 64)
+    return L, R, "型 %d:%d はまだ（通さない）" % t
+
+
+def apply_insertion(L, R, voice, fxdir=None):
+    """エレメントのインサーションのスイッチ（全部のエレメントで同じとする）とつなぎ方（40 00 40）に合わせて A・B を掛ける。
+    つなぎ方 0 = 並列（スイッチ 1 は A、2 は B）、1 = A → B（スイッチ 1 は A → B、2 は B）、2 = B → A（スイッチ 2 は B → A、1 は A）"""
+    sw = [e["oscillator"]["insertion_effect_switch"] for e in voice["elements"] if e["oscillator"]["element_switch"]]
+    sw = max(set(sw), key=sw.count) if sw else 0
+    con = voice.get("insertion_connect", {}).get("insertion_connect_type", 0)
+    if sw == 0:
+        return L, R, "インサーションを通さない"
+    chain = {(0, 1): "A", (0, 2): "B", (1, 1): "AB", (1, 2): "B", (2, 1): "A", (2, 2): "BA"}[(con, sw)]
+    msgs = []
+    for blk in chain:
+        L, R, m = apply_block(L, R, voice["insertion1" if blk == "A" else "insertion2"], fxdir)
+        msgs.append("%s: %s" % (blk, m))
+    return L, R, " → ".join(msgs)
 
 
 def write_wav(path, L, R):

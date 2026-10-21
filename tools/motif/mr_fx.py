@@ -1,5 +1,5 @@
 """MOTIF-RACK ES のエフェクト（ボイスのリバーブ・コーラス）を測る録音。
-  python mr_fx.py --dir 置き場 [--block reverb|chorus|insa] [--types 1:0,1:2,…] [--tail 8] [--set p1=30,ret=64] [--send 127] [--cc 127] [--tag 名前] [--train 6]
+  python mr_fx.py --dir 置き場 [--block reverb|chorus|insa] [--types 1:0,1:2,…] [--tail 8] [--set p1=30,ret=64] [--send 127] [--cc 127] [--tag 名前] [--train 6] [--level 127]
 
 ノイズの波形 705 を 50ms ほどの短い音にして鳴らし、エフェクトへの送りを 0 にした録音（_dry）と 127 にした録音（_wet）を 1 本ずつ録る。
 2 本の比から、エフェクトのインパルス応答を逆畳み込みで出す（mr_fx_fit.py）。
@@ -83,6 +83,7 @@ def main():
         r.el(0, 0x41, 0x2A, 0)
         r.el(0, 0x41, 0x2B, 0)
         r.el(0, 0x41, 0x27, 0)
+        r.el(0, 0x41, 0x20, int(mr_ref.opt(a, "--level", "127")))   # エレメントの音量（歪み系の小さい音での応答に）
         for e in range(4):
             r.el(e, 0x41, 0x16, 0)                  # インサーションを通さない
         common(0x00, 0x0B, 0)

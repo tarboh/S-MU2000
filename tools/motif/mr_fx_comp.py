@@ -1,11 +1,12 @@
 """MOTIF-RACK ES のインサーションの Compressor（0A 00）を測る録音と読み取り。
-  python mr_fx_comp.py --dir 置き場 [--set p3=103,p4=3,…] [--tag 名前] [--analyze] [--step-only]
+  python mr_fx_comp.py --dir 置き場 [--set p3=103,p4=3,…] [--tag 名前] [--analyze] [--step-only] [--type 9:48] [--key 48]
 
 正弦波の波形 704・鍵 60 をインサーション A に通す（つなぎ方は並列）。パラメーター: 01 Attack（表 8: 0〜19 → 1〜40ms）、02 Release（表 9: 0〜15 → 10〜680ms）、
 03 Threshold（79〜121 → −48〜−6dB）、04 Ratio（表 10: 0〜7 → 1.0・1.5・2.0・3.0・5.0・7.0・10・20）、05 Output Level（0〜127）。
   static : エレメントの音量 127・112・96・80・64・48・32・16 で、スイッチを切った（dry）と入れた（wet）を 1 秒ずつ（cs<tag>_L???_dry/wet.wav）
   step   : AEG を「127 で 0.79 秒（アタックの値 64、高さ 127 → 127）、そのあと時間 0 で 64 へ」にして wet（cs<tag>_step.wav）。
            鳴り始めの効き方（アタック）と、下がったあとの戻り方（リリース）を見る
+--type でほかのインサーションの型（MSB:LSB）、--key で鳴らす鍵を変えられる（歪み系の静的な曲線に使う）。
 --analyze で読むだけ（入力 = dry の音量、出力 = wet の音量、どちらも 0.5〜0.9 秒の RMS、dBFS）。
 送るのはパラメーターチェンジ・ダンプの要求・ノートだけ（保存しない）。終わったらマルチへ戻す。"""
 import json
@@ -73,13 +74,15 @@ def main():
         k, v = kv.split("=")
         v = int(v)
         sets.append((0x02 + 2 * (int(k[1:]) - 1), (v >> 7, v & 0x7F)))
+    itype = tuple(int(v) for v in mr_ref.opt(a, "--type", "10:0").split(":"))
+    key = int(mr_ref.opt(a, "--key", "60"))
     os.makedirs(d, exist_ok=True)
     r = mr_ref.Ref(mr_ref.opt(a, "--midi", "MOTIF-RACK ES-1"), mr_ref.opt(a, "--rec", "../../build/rec.exe"), mr_ref.opt(a, "--dev", "0"), d)
     mi = mr_midi.MidiIn(mr_ref.opt(a, "--midi-in", "MOTIF-RACK ES-1"))
 
     def take(name, hold=1.0):
         if not os.path.exists(os.path.join(d, name + ".wav")):
-            r.record(name, 0.3 + hold + 0.3, [(0.3, lambda: r.note_on(60, 100)), (0.3 + hold, lambda: r.note_off(60))])
+            r.record(name, 0.3 + hold + 0.3, [(0.3, lambda: r.note_on(key, 100)), (0.3 + hold, lambda: r.note_off(key))])
 
     try:
         r.all_off()
@@ -94,7 +97,7 @@ def main():
         r.param(0x40, 0x00, 0x40, 0)                # つなぎ方を並列に
         for e in range(4):
             r.el(e, 0x41, 0x16, 0)
-        r.param(0x40, 0x03, 0x00, 10, 0)            # Compressor
+        r.param(0x40, 0x03, 0x00, *itype)           # 型（既定は Compressor）
         time.sleep(0.3)
         for off, v in sets:
             r.param(0x40, 0x03, off, *v)
