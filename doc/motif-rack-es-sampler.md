@@ -178,6 +178,15 @@ PRE1 の 1 番（Full Grand）の鍵 96（波形 1 のエレメント）で、�
 切り出しは ループ 9872・鳴らし切り 4617・xfade 1748・xnoise 546（raw は 0）。これを使う鳴り続ける音色（Ens Mix・Noble Pad・PWM Soft・TrncHook）と
 Crystal（波形 94）を実機で 8 秒押さえて比べると、秒ごとの音量の差は 1〜7 秒でおおむね ±1dB、大きい所で ±2.6dB（揺れの大きいパッド）
 
+### エフェクトを C++ の芯へ（2026-10-22）
+
+`tools/motif/mr_fx_apply.py`（Python の後処理）で確かめたエフェクトを、`src/motif/sampler_fx.h` に移した。
+`sampler_render 音色.patch 鍵 ベロシティ 秒 出力.wav --fx capture の置き場` で、パッチの fx の行（`mr_patch.py` が書く。リバーブ・コーラス・
+インサーション A/B・つなぎ方）と、エレメントのインサーションのスイッチに合わせて掛ける（`--no-ins`・`--no-reverb`・`--no-chorus` で外せる）。
+測った応答は `tools/motif/mr_fx_export.py` が C++ 用に書き出す（fx/reverb_<MSB>_<LSB>.irx、fxd/*.dsx）。
+6 つの音色（Compressor → Amp Simulator・Amp Simulator → 3 Band EQ・3 Band EQ・Compressor、リバーブ 4 型、コーラス）で、Python の後処理と
+最大値に対して 1e-6 以内で同じ出力（float32 の丸めの範囲）。畳み込みは FFT 1 回でまとめて行う（実時間ではない）。
+
 ## 足りないもの・確かめること
 
 * **ループの継ぎ目**: 録った鍵が元の鍵でないと、切り出したループの継ぎ目が完全には合わない（相関 0.9999）。元の鍵で録れれば継ぎ目は合うはず。元の鍵の見つけ方（音程のある波形）を考える

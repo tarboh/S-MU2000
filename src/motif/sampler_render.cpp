@@ -2,12 +2,16 @@
 // サンプリング方式の芯（sampler.h）で、パッチ（tools/motif/mr_patch.py が作る文字ファイル）の音を 1 つ鳴らして WAV に書く。
 //
 //   g++ -std=c++17 -O2 -o sampler_render src/motif/sampler_render.cpp
-//   sampler_render 音色.patch 鍵 ベロシティ 押さえる秒 出力.wav
+//   sampler_render 音色.patch 鍵 ベロシティ 押さえる秒 出力.wav [--fx capture の置き場] [--no-ins] [--no-reverb] [--no-chorus]
+//
+// --fx を付けると、パッチの fx の行のエフェクト（sampler_fx.h）を掛ける。置き場の fx/*.irx（リバーブ）と fxd/*.dsx（歪み系）を使う
+// （tools/motif/mr_fx_export.py が書く）。インサーションのスイッチは、鳴ったエレメントでいちばん多いもの。
 //
 // パッチのエレメントのうち、鍵とベロシティの範囲に入るものを全部鳴らす。サンプルは、そのエレメントの区間のうち
 // 鍵とベロシティを含むもの（無ければ鍵がいちばん近いもの）。出力は 44.1kHz・32bit float のステレオ。
 
 #include "sampler.h"
+#include "sampler_fx.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -119,6 +123,21 @@ int main(int argc, char **argv)
 	const double hold = std::atof(argv[4]);
 	const std::string dir = patch.substr(0, patch.find_last_of("/\\") + 1);
 
+	std::string fxdir;
+	bool use_ins = true, use_rev = true, use_cho = true;
+	for (int i = 6; i < argc; i++) {
+		if (!std::strcmp(argv[i], "--fx") && i + 1 < argc)
+			fxdir = argv[++i];
+		else if (!std::strcmp(argv[i], "--no-ins"))
+			use_ins = false;
+		else if (!std::strcmp(argv[i], "--no-reverb"))
+			use_rev = false;
+		else if (!std::strcmp(argv[i], "--no-chorus"))
+			use_cho = false;
+	}
+	kv fxline;
+	std::map<int, int> ins_count;
+
 	std::vector<element> els;
 	FILE *pf = std::fopen(patch.c_str(), "r");
 	if (!pf) {
@@ -127,7 +146,9 @@ int main(int argc, char **argv)
 	}
 	char line[4096];
 	while (std::fgets(line, sizeof line, pf)) {
-		if (!std::strncmp(line, "element ", 8))
+		if (!std::strncmp(line, "fx ", 3))
+			fxline = parse(line);
+		else if (!std::strncmp(line, "element ", 8))
 			els.push_back({ parse(line), {} });
 		else if (!std::strncmp(line, "zone ", 5) && !els.empty()) {
 			const kv m = parse(line);
@@ -241,6 +262,7 @@ int main(int argc, char **argv)
 		p.eq_g1 = geti(e.f, "eqg1", 0x40);
 		p.eq_f2 = geti(e.f, "eqf2", 200);
 		p.eq_g2 = geti(e.f, "eqg2", 0x40);
+		ins_count[geti(e.f, "ins")]++;
 		samples.push_back(std::move(s));
 		voices.emplace_back();
 		voices.back().start(*samples.back(), p, note, vel);
@@ -253,6 +275,29 @@ int main(int argc, char **argv)
 				v.release();
 		for (auto &v : voices)
 			v.render(l[i], r[i]);
+	}
+	if (!fxdir.empty() && !fxline.empty()) {
+		using namespace motif_fx;
+		auto get = [&](const char *k) { auto it = fxline.find(k); return it == fxline.end() ? block() : parse_block(it->second); };
+		const block rv = get("reverb"), ch = get("chorus"), ia = get("insa"), ib = get("insb");
+		int sw = 0, best = -1;
+		for (auto &kc : ins_count)
+			if (kc.second > best) {
+				best = kc.second;
+				sw = kc.first;
+			}
+		buf L(l.begin(), l.end()), R(r.begin(), r.end());
+		if (use_ins)
+			insertion(L, R, ia, ib, geti(fxline, "connect"), sw, fxdir + "/fxd");
+		buf oL(L), oR(R);
+		if (use_rev)
+			reverb(L, R, rv, fxdir + "/fx", oL, oR, L.size());
+		if (use_cho)
+			chorus(L, R, ch, oL, oR);
+		for (size_t i = 0; i < l.size(); i++) {
+			l[i] = float(oL[i]);
+			r[i] = float(oR[i]);
+		}
 	}
 	write_wav(argv[5], l, r);
 	std::printf("鳴らしたエレメント %zu\n", voices.size());

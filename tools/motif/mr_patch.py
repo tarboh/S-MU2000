@@ -2,7 +2,8 @@
 サンプリング方式の芯（src/motif/sampler_render）で鳴らす「パッチ」の文字ファイルを作る。使うサンプルは .smpx に直して置く。
   python mr_patch.py 音色.json サンプルの置き場 出力の置き場
 
-パッチ: エレメントごとに 1 行（element 欄=値 …）、その下に区間ごとの行（zone key_lo=… key_hi=… vel_lo=… vel_hi=… file=…）。
+パッチ: 頭にエフェクトの行（fx reverb=… chorus=… insa=… insb=… connect=…）、エレメントごとに 1 行（element 欄=値 …）、
+その下に区間ごとの行（zone key_lo=… key_hi=… vel_lo=… vel_hi=… file=…）。
 .smpx: 1 行目が「SMPX key=… loop_start=… loop_length=… stretch=… frames=…」、そのあと float32 の左右を交互に frames 組。
 欄の値は Data List の値のまま（コースチューン・ファインチューンだけ 64 を引く）。録音を読むだけで、実機には何も送らない。"""
 import csv
@@ -36,6 +37,18 @@ def main():
     for s in samples:
         by_wave.setdefault(int(s["wave"]), []).append(s)
     lines = ["# %s" % v.get("name", "")]
+    # エフェクト（芯の sampler_fx.h が読む）。各ブロックは「型,パラメーター 1〜16」、リバーブ・コーラスは後ろに Return と送り
+    fx = {}
+    for key, blk in (("reverb", "reverb"), ("chorus", "chorus"), ("insa", "insertion1"), ("insb", "insertion2")):
+        b = v.get(blk)
+        if not b:
+            continue
+        vals = [b["type"]] + [b.get("param%d" % i, 0) for i in range(1, 17)]
+        if key in ("reverb", "chorus"):
+            vals += [b.get("return", 96), v["common"].get("%s_send" % key, 0)]
+        fx[key] = ",".join(str(x) for x in vals)
+    fx["connect"] = v.get("insertion_connect", {}).get("insertion_connect_type", 0)
+    lines.append("fx " + " ".join("%s=%s" % kv for kv in fx.items()))
     missing = []
     for e in v["elements"]:
         osc, amp, pit, flt, eq, lfo = e["oscillator"], e["amplitude"], e["pitch"], e["filter"], e["eq"], e["lfo"]
@@ -43,7 +56,7 @@ def main():
             continue
         w = osc["wave_number"]
         f = {
-            "wave": w, "note_lo": osc["note_limit_low"], "note_hi": osc["note_limit_high"],
+            "wave": w, "ins": osc.get("insertion_effect_switch", 0), "note_lo": osc["note_limit_low"], "note_hi": osc["note_limit_high"],
             "vel_lo": osc["velocity_limit_low"], "vel_hi": osc["velocity_limit_high"], "pan": osc["pan"],
             "level": amp["element_level"], "release": amp["aeg_release_time"],
             "aegt": "%d,%d,%d,%d" % tuple(amp["aeg_%s_time" % n] for n in ("attack", "decay1", "decay2", "release")),
