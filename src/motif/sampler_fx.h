@@ -140,6 +140,8 @@ struct block {
 	int msb = 0, lsb = 0;
 	int p[17] = {0};          // p[1]..p[16]
 	int ret = 96, send = 0;
+	double pfine[17] = {0};   // Pitch Change 2 から Pitch Change 1 の模型へ渡す、小数の Fine
+	bool use_pfine = false;
 	bool is(int m, int l) const { return msb == m && lsb == l; }
 };
 
@@ -430,7 +432,25 @@ inline double edge_p(double e)
 	return std::exp(interp(xs, ys, 4, e));
 }
 
-inline bool dist_type(const block &b) { return b.is(9, 48) || b.is(9, 49) || b.is(9, 0) || b.is(9, 16); }
+inline bool dist_type(const block &b) { return b.is(9, 48) || b.is(9, 49) || b.is(9, 0) || b.is(9, 16) || b.is(9, 1) || b.is(9, 32); }
+
+// V-Distortion の中のディレイ（確かめていない）: 帰りの線（遅れ p8 × 0.1ms、帰り (p9 − 64) / 64、戻りに 1 次の LPF (1 − p12 / 10)²）から、
+// 左は p6・右は p7（× 0.1ms）で取り出し、Delay Mix（p11 / 127）で足す
+inline void vdist_delay(buf &y, const block &b, int ch)
+{
+	const size_t n = y.size();
+	const size_t dt = size_t(std::max(1, b.p[ch == 0 ? 6 : 7])) * FS / 10000, df = size_t(std::max(1, b.p[8])) * FS / 10000;
+	const double fb = (b.p[9] - 64) / 64.0, a = std::pow(1 - std::max(1, b.p[12]) / 10.0, 2), mix = b.p[11] / 127.0;
+	buf line(n, 0.0);
+	double lp = 0;
+	for (size_t t = 0; t < n; t++) {
+		const double back = t >= df ? line[t - df] : 0.0;
+		lp = (1 - a) * back + a * lp;
+		line[t] = y[t] + fb * lp;
+	}
+	for (size_t t = n; t-- > 0;)
+		y[t] += mix * (t >= dt ? line[t - dt] : 0.0);
+}
 
 inline void distortion(buf &L, buf &R, const block &b, const std::string &fxddir)
 {
@@ -457,7 +477,21 @@ inline void distortion(buf &L, buf &R, const block &b, const std::string &fxddir
 		name = b.is(9, 49) ? "insa_t9_49_amp2def_lev16" : b.is(9, 0) ? "insa_t9_0_distdef_lev16" : "insa_t9_16_vdistdef_lev16";
 		drive_s = -1;
 	}
-	stereo_ir ir = load_ir(fxddir + "/" + name + ".dsx");
+	// プリセットの組のまま録ったもの（tools/motif/mr_fx_dist_sets.py、fxds/<名前>.dsx）があれば、それをそのまま使う
+	bool per_set = false;
+	stereo_ir ir;
+	if (!b.is(9, 48)) {
+		std::string k = "t" + std::to_string(b.msb) + "_" + std::to_string(b.lsb);
+		for (int i = 1; i <= 16; i++)
+			k += "_" + std::to_string(i == 10 ? 127 : (i == 11 && b.is(9, 16)) ? 0 : b.p[i]);
+		ir = load_ir(fxddir + "/../fxds/" + k + ".dsx");
+		per_set = ir.ok;
+	}
+	if (!per_set) {
+		if (b.is(9, 1) || b.is(9, 32))
+			name = "insa_t9_0_distdef_lev16";        // 組の録音が無いときは Distortion の既定値の組で代える
+		ir = load_ir(fxddir + "/" + name + ".dsx");
+	}
 	if (!ir.ok)
 		return;
 	if (drive_s < 0)
@@ -471,7 +505,7 @@ inline void distortion(buf &L, buf &R, const block &b, const std::string &fxddir
 	double fc = std::atof(ir.head["fc"].c_str());
 	if ((b.is(9, 48) || b.is(9, 49)) && b.p[3] > 0)
 		fc = t3(b.p[3]);
-	const double k = std::pow(10.0, (drive_gain_db(b.p[1]) - drive_gain_db(drive_s)) / 20);
+	const double k = per_set ? 1.0 : std::pow(10.0, (drive_gain_db(b.p[1]) - drive_gain_db(drive_s)) / 20);
 	double og = 1.0;
 	if (b.is(9, 48))
 		og = std::pow(10.0, 40 * std::log10(std::max(1, b.p[4]) / 80.0) / 20);
@@ -486,7 +520,9 @@ inline void distortion(buf &L, buf &R, const block &b, const std::string &fxddir
 			v *= k;
 			v = v / std::pow(1 + std::pow(std::fabs(v / c), p), 1 / p);
 		}
-		const buf y = filter_freq(u, n, [fc](double f) { return 1.0 / cplx(1 - (f / fc) * (f / fc), (f / fc) / 1.6); });
+		buf y = filter_freq(u, n, [fc](double f) { return 1.0 / cplx(1 - (f / fc) * (f / fc), (f / fc) / 1.6); });
+		if (b.is(9, 16) && b.p[11] > 0)
+			vdist_delay(y, b, ch);
 		buf &o = ch == 0 ? L : R;
 		for (size_t i = 0; i < n; i++)
 			o[i] = (1 - wmix) * o[i] + wmix * y[i] * og;
@@ -709,11 +745,12 @@ inline void pitch_change(buf &L, buf &R, const block &b)
 	};
 	const int semi = b.p[1] - 64;
 	for (int c = 0; c < 2; c++) {
-		const int fine = b.p[c == 0 ? 3 : 4] - 64, pan = std::max(1, b.p[c == 0 ? 11 : 13]), lvl = b.p[c == 0 ? 12 : 14];
+		const double fine = b.use_pfine ? b.pfine[c == 0 ? 3 : 4] - 64 : b.p[c == 0 ? 3 : 4] - 64;
+		const int pan = std::max(1, b.p[c == 0 ? 11 : 13]), lvl = b.p[c == 0 ? 12 : 14];
 		const double ph0 = c == 0 ? 0.0 : 0.5, cents = 100.0 * semi + interp(fx, fy, 15, fine), rate = 1 - std::exp2(cents / 1200.0);
 		double lo, span;
 		if (semi == 0) {
-			const double af = std::min(50.0, std::max(3.0, double(std::abs(fine))));
+			const double af = std::min(50.0, std::max(3.0, std::fabs(fine)));
 			lo = interp(gx, glo, 4, af) / 1000 * FS;
 			span = interp(gx, gsp, 4, af) / 1000 * FS;
 		} else {
@@ -742,8 +779,368 @@ inline void pitch_change(buf &L, buf &R, const block &b)
 	}
 }
 
+// 時間で変わらない型（ディレイ類・ER・ゲート・Karaoke・インサーションのリバーブ・Ambience）は、プリセットの組のまま録った 2×2 の応答
+// （tools/motif/mr_fx_lti.py、fxlti/<名前>.lti）で畳み込む。名前は型と 16 個のパラメーター（テンポに合わせる型はテンポも）
+inline bool lti_type(const block &b)
+{
+	static const int t[][2] = {{2, 0x00}, {2, 0x10}, {2, 0x18}, {2, 0x20}, {2, 0x40}, {2, 0x48}, {2, 0x50}, {2, 0x58}, {1, 0x00}, {1, 0x01}, {1, 0x10},
+		{1, 0x11}, {1, 0x12}, {1, 0x20}, {1, 0x21}, {1, 0x30}, {1, 0x40}, {1, 0x41}, {1, 0x42}, {1, 0x43}, {1, 0x02}, {1, 0x13}, {1, 0x31}, {1, 0x08},
+		{1, 0x09}, {1, 0x18}, {1, 0x19}, {1, 0x38}, {3, 0x00}, {3, 0x01}, {3, 0x10}, {3, 0x20}, {4, 0x00}, {4, 0x01}, {4, 0x02}, {15, 0x30}, {14, 0x40}};
+	for (auto &x : t)
+		if (b.is(x[0], x[1]))
+			return true;
+	return false;
+}
+
+inline bool lti(buf &L, buf &R, const block &b, const std::string &ltidir, int tempo)
+{
+	if (!b.is(14, 0x40) && b.p[10] <= 1)          // Dry/Wet 1 は素通し（Isolator は Dry/Wet の欄が無い）
+		return true;
+	std::string k = "t" + std::to_string(b.msb) + "_" + std::to_string(b.lsb);
+	for (int i = 1; i <= 16; i++)
+		k += "_" + std::to_string(b.p[i]);
+	k += "_" + std::to_string(b.is(2, 0x50) || b.is(2, 0x58) ? tempo : 0);
+	FILE *f = std::fopen((ltidir + "/" + k + ".lti").c_str(), "rb");
+	if (!f)
+		return false;
+	char head[128];
+	if (!std::fgets(head, sizeof head, f)) {
+		std::fclose(f);
+		return false;
+	}
+	size_t frames = 0;
+	std::sscanf(head, "LTI frames=%zu", &frames);
+	std::vector<float> raw(frames * 4);
+	frames = std::fread(raw.data(), sizeof(float) * 4, frames, f);
+	std::fclose(f);
+	buf h[4];
+	for (int c = 0; c < 4; c++) {
+		h[c].resize(frames);
+		for (size_t i = 0; i < frames; i++)
+			h[c][i] = raw[i * 4 + c];
+	}
+	const size_t n = L.size();
+	const buf a = convolve(L, h[0], n), bb = convolve(R, h[2], n), c = convolve(L, h[1], n), d = convolve(R, h[3], n);
+	for (size_t i = 0; i < n; i++) {
+		L[i] = a[i] + bb[i];
+		R[i] = c[i] + d[i];
+	}
+	return true;
+}
+
+// 音量や遅れを周期的に揺らす型（Tremolo・Auto Pan・Rotary・Dual Rotor・Slice）は、プリセットの組のまま録った A(t)・d(t)
+// （tools/motif/mr_fx_mod.py、fxmod/<名前>.mod）を、1kHz で分けた 2 つの帯に掛ける
+inline bool mod_type(const block &b)
+{
+	static const int t[][2] = {{8, 0x00}, {8, 0x10}, {8, 0x11}, {8, 0x50}, {8, 0x51}, {8, 0x52}, {8, 0x53}, {8, 0x60}, {8, 0x61}, {8, 0x62},
+		{8, 0x63}, {8, 0x70}, {8, 0x71}, {8, 0x72}, {14, 0x50}};
+	for (auto &x : t)
+		if (b.is(x[0], x[1]))
+			return true;
+	return false;
+}
+
+inline bool modfx(buf &L, buf &R, const block &b, const std::string &moddir, int tempo)
+{
+	std::string k = "t" + std::to_string(b.msb) + "_" + std::to_string(b.lsb);
+	for (int i = 1; i <= 16; i++)
+		k += "_" + std::to_string(b.p[i]);
+	k += "_" + std::to_string(b.is(14, 0x50) ? tempo : 0);
+	FILE *f = std::fopen((moddir + "/" + k + ".mod").c_str(), "rb");
+	if (!f)
+		return false;
+	char head[128];
+	if (!std::fgets(head, sizeof head, f)) {
+		std::fclose(f);
+		return false;
+	}
+	int rate = 1000, frames = 0, period = 0;
+	std::sscanf(head, "MOD rate=%d frames=%d period=%d", &rate, &frames, &period);
+	std::vector<float> raw(size_t(frames) * 8);
+	frames = int(std::fread(raw.data(), sizeof(float) * 8, size_t(frames), f));
+	std::fclose(f);
+	if (frames < 2)
+		return false;
+	const size_t n = L.size();
+	buf x(n);
+	for (size_t i = 0; i < n; i++)
+		x[i] = (L[i] + R[i]) / 2;
+	// 1kHz で 2 つに分ける（2 次のバターワースを 2 回）
+	auto band = [&](bool low) {
+		return filter_freq(x, n, [low](double fq) {
+			const cplx s(0, std::tan(PI * std::min(fq, FS * 0.4999) / FS) / std::tan(PI * 1000.0 / FS));
+			const cplx den = s * s + std::sqrt(2.0) * s + 1.0;
+			const cplx h = low ? 1.0 / den : s * s / den;
+			return h * h;
+		});
+	};
+	const buf xb[2] = {band(true), band(false)};
+	auto series = [&](int col, double tt) {
+		const double m = frames;
+		double u = tt / FS * rate;
+		if (period > 0 && u >= m - 1)
+			u = (m - 1 - period) + std::fmod(u - (m - 1 - period), double(period));
+		else if (u > m - 1)
+			u = m - 1;
+		const int i = int(u);
+		const double fr = u - i;
+		const float a0 = raw[size_t(i) * 8 + col], a1 = raw[size_t(std::min(i + 1, frames - 1)) * 8 + col];
+		return a0 + (a1 - a0) * fr;
+	};
+	for (size_t t = 0; t < n; t++) {
+		double o[2] = {0, 0};
+		for (int bd = 0; bd < 2; bd++)
+			for (int ch = 0; ch < 2; ch++) {
+				const double A = series(bd * 4 + ch * 2, double(t)), d = series(bd * 4 + ch * 2 + 1, double(t));
+				const double pos = double(t) - d;
+				if (pos < 0)
+					continue;
+				const size_t k0 = size_t(pos);
+				const double fr = pos - double(k0);
+				const double v = k0 + 1 < n ? xb[bd][k0] + (xb[bd][k0 + 1] - xb[bd][k0]) * fr : (k0 < n ? xb[bd][k0] : 0.0);
+				o[ch] += A * v;
+			}
+		L[t] = o[0];
+		R[t] = o[1];
+	}
+	return true;
+}
+
+// 揺れながら周波数ごとに違う動きをする型（フェイザー類・V-Flanger・Vintage Flanger・Tempo Flanger・Flanger 3・Symphonic・Auto Wah など）は、
+// プリセットの組のまま録った時間ごとの周波数応答（tools/motif/mr_fx_ltv.py、fxltv/<名前>.ltv）を、窓 4096・ずらし 1024 の STFT で掛ける
+inline bool ltv_type(const block &b)
+{
+	static const int t[][2] = {{7, 0x00}, {7, 0x08}, {7, 0x20}, {7, 0x21}, {7, 0x30}, {7, 0x31}, {7, 0x50}, {6, 0x08}, {6, 0x10}, {6, 0x20},
+		{6, 0x21}, {6, 0x22}, {6, 0x50}, {5, 0x20}, {12, 0x00}, {12, 0x20}, {12, 0x21}, {14, 0x30}, {15, 0x40}, {14, 0x20},
+		{12, 0x10}, {12, 0x11}, {12, 0x12}, {12, 0x30}, {12, 0x31}, {15, 0x78}, {6, 0x60}, {7, 0x60}, {10, 0x50}, {10, 0x51}, {14, 0x10}, {12, 0x01}, {12, 0x02}, {12, 0x40}, {12, 0x41}, {10, 0x40},
+		{10, 0x41}, {13, 0x10}, {13, 0x20}, {13, 0x30}};
+	for (auto &x : t)
+		if (b.is(x[0], x[1]))
+			return true;
+	return false;
+}
+
+inline bool ltvfx(buf &L, buf &R, const block &b, const std::string &ltvdir, int tempo)
+{
+	std::string k = "t" + std::to_string(b.msb) + "_" + std::to_string(b.lsb);
+	for (int i = 1; i <= 16; i++)
+		k += "_" + std::to_string(b.p[i]);
+	k += "_" + std::to_string(b.is(7, 0x50) || b.is(6, 0x50) || b.is(14, 0x30) ? tempo : 0);
+	FILE *f = std::fopen((ltvdir + "/" + k + ".ltv").c_str(), "rb");
+	if (!f)
+		return false;
+	char head[160];
+	if (!std::fgets(head, sizeof head, f)) {
+		std::fclose(f);
+		return false;
+	}
+	int NW = 4096, HOP = 1024, F = 0, per = 0;
+	std::sscanf(head, "LTV n=%d hop=%d frames=%d period=%d", &NW, &HOP, &F, &per);
+	const int NB = NW / 2 + 1;
+	std::vector<float> raw(size_t(F) * 2 * NB * 2);
+	F = int(std::fread(raw.data(), sizeof(float) * 2 * NB * 2, size_t(F), f));
+	std::fclose(f);
+	if (F < 1)
+		return false;
+	const size_t n = L.size();
+	buf x(n + NW, 0.0);
+	for (size_t i = 0; i < n; i++)
+		x[i] = (L[i] + R[i]) / 2;
+	std::vector<double> w(NW);
+	for (int i = 0; i < NW; i++)
+		w[i] = 0.5 - 0.5 * std::cos(2 * PI * i / NW);
+	buf out[2] = {buf(n + 2 * NW, 0.0), buf(n + 2 * NW, 0.0)}, norm(n + 2 * NW, 0.0);
+	const int nf = 1 + int((x.size() - NW) / HOP);
+	std::vector<cplx> X(NW), Y(NW);
+	for (int i = 0; i < nf; i++) {
+		int j = i;
+		if (i >= F && per > 0)
+			j = (F - 1 - per) + (i - (F - 1 - per)) % per;
+		j = std::min(j, F - 1);
+		for (int q = 0; q < NW; q++)
+			X[q] = x[size_t(i) * HOP + q] * w[q];
+		fft(X, false);
+		for (int ch = 0; ch < 2; ch++) {
+			const float *h = &raw[((size_t(j) * 2 + ch) * NB) * 2];
+			for (int q = 0; q < NB; q++) {
+				const cplx hq(h[q * 2], h[q * 2 + 1]);
+				Y[q] = X[q] * hq;
+				if (q > 0 && q < NW / 2)
+					Y[NW - q] = std::conj(Y[q]);
+			}
+			fft(Y, true);
+			for (int q = 0; q < NW; q++)
+				out[ch][size_t(i) * HOP + q] += Y[q].real() * w[q];
+		}
+		for (int q = 0; q < NW; q++)
+			norm[size_t(i) * HOP + q] += w[q] * w[q];
+	}
+	for (size_t t = 0; t < n; t++) {
+		const double nn = norm[t] > 1e-9 ? norm[t] : 1.0;
+		L[t] = out[0][t] / nn;
+		R[t] = out[1][t] / nn;
+	}
+	return true;
+}
+
+// Lo-Fi（0D 00）: 入口の 1 次の HPF（20.5Hz）→ Pre-LPF（双一次変換の 2 次、角は表 3[p4]、Q = p6 / 10）→ 標本化の間引き（p1 + 1 サンプルごとに持ち替え）
+// → 語長（1 サンプルの動きの上限）→ Filter Type（p5、録った応答 fxlf/lofi_type<n>.ir）→ Output Gain（(p3 − 6) dB）。元の音 cos・wet sin（確かめていない）
+inline void lofi(buf &L, buf &R, const block &b, const std::string &lfdir)
+{
+	buf xs[2];
+	input_mode(L, R, b, xs);
+	const size_t n = L.size();
+	const double fc = std::min(t3(b.p[4]), FS * 0.49), q = std::max(1, b.p[6]) / 10.0;
+	buf h;
+	if (b.p[5] >= 1 && b.p[5] <= 5) {
+		FILE *f = std::fopen((lfdir + "/lofi_type" + std::to_string(b.p[5]) + ".ir").c_str(), "rb");
+		if (f) {
+			std::vector<float> raw(4096);
+			const size_t m = std::fread(raw.data(), sizeof(float), raw.size(), f);
+			std::fclose(f);
+			for (size_t i = 0; i < m; i++)          // 山を 64 点目に置いて切ってある。山より前にもエネルギーがあるので頭は落とさない
+				h.push_back(raw[i]);
+		}
+	}
+	const double g = std::pow(10.0, (b.p[3] - 6) / 20.0);
+	const int k = b.p[1] + 1;
+	buf out[2];
+	for (int c = 0; c < 2; c++) {
+		buf y = filter_freq(xs[c], n, [&](double f) {
+			const double ff = std::min(f, FS * 0.4999);
+			const cplx sh(0, std::tan(PI * ff / FS) / std::tan(PI * 20.5 / FS)), sl(0, std::tan(PI * ff / FS) / std::tan(PI * fc / FS));
+			return (sh / (sh + 1.0)) / (sl * sl + sl / q + 1.0);
+		});
+		if (k > 1)
+			for (size_t i = 0; i < n; i++)
+				y[i] = y[i - i % size_t(k)];
+		if (b.p[2] < 127) {
+			// 語長: 1 サンプルの動きを ±s に切る（s は測った表を対数で補間し、Bit Assign p7 で 2^p7 倍）。Emphasis p8 は前後に 1 次の強調と戻し（係数 0.88）
+			static const double wx[8] = {1, 2, 4, 8, 16, 32, 64, 96}, wy[8] = {0.00209, 0.00222, 0.00248, 0.00300, 0.00405, 0.00614, 0.01279, 0.02606};
+			double ly[8];
+			for (int i = 0; i < 8; i++)
+				ly[i] = std::log(wy[i]);
+			const double sl = std::exp(interp(wx, ly, 8, b.p[2])) * std::exp2(b.p[7]);
+			const double a = b.p[8] ? 0.88 : 0.0;
+			double prev = 0, v = 0, acc = 0;
+			for (size_t i = 0; i < n; i++) {
+				double xi = y[i];
+				if (a) {
+					const double e = (xi - (i ? a * prev : 0.0)) / (1 - a);
+					prev = xi;
+					xi = e;
+				}
+				const double d = xi - v;
+				v += d > sl ? sl : (d < -sl ? -sl : d);
+				if (a) {
+					acc = (1 - a) * v + a * acc;
+					y[i] = acc;
+				} else
+					y[i] = v;
+			}
+		}
+		if (!h.empty())
+			y = convolve(y, h, n);
+		for (auto &v : y)
+			v *= g;
+		out[c] = y;
+	}
+	const int v = std::max(1, b.p[10]);
+	const double gd = std::cos(PI / 2 * (v - 1) / 126.0), gw = std::sin(PI / 2 * (v - 1) / 126.0);
+	for (size_t i = 0; i < n; i++) {
+		L[i] = gd * L[i] + gw * out[0][i];
+		R[i] = gd * R[i] + gw * out[1][i];
+	}
+}
+
+// Ring Modulator（0F 70）: 入口に 1 次の HPF（表 3[p6]）・LPF（表 3[p7]）、搬送波（正弦、振幅 1.07）との掛け算、EQ（p13〜16）、元の音 cos・wet sin。
+// 搬送波 = 表 19[p1] + 1.70Hz × p2。LFO（p3 形 0 = 2 値・1 = 正弦、p4 深さ、p5 速さ）は搬送波を 2^(±0.35 × 深さ / 64) 倍に動かす（近似）
+static const double TABLE19[128] = {0.5, 1.5, 2.0, 2.5, 3.5, 4.0, 4.5, 5.5, 6.0, 6.5, 7.5, 8.0, 8.5, 8.9, 9.4, 10.0,
+	10.6, 11.2, 11.8, 12.5, 13.2, 13.9, 14.7, 15.6, 16.5, 17.4, 18.4, 19.4, 20.6, 21.7, 23.0, 24.3,
+	25.7, 27.1, 28.7, 30.3, 32.0, 33.9, 35.8, 37.8, 40.0, 42.3, 44.7, 47.3, 49.9, 52.8, 55.8, 59.0,
+	62.4, 65.9, 69.7, 73.7, 77.9, 82.3, 87.0, 92.0, 97.2, 103.0, 109.0, 115.0, 121.0, 128.0, 136.0, 143.0,
+	152.0, 160.0, 169.0, 179.0, 189.0, 200.0, 211.0, 224.0, 236.0, 250.0, 264.0, 279.0, 295.0, 312.0, 330.0, 348.0,
+	368.0, 389.0, 412.0, 435.0, 460.0, 486.0, 514.0, 543.0, 574.0, 607.0, 642.0, 678.0, 717.0, 758.0, 801.0, 847.0,
+	895.0, 946.0, 1000.0, 1050.0, 1110.0, 1180.0, 1240.0, 1320.0, 1390.0, 1470.0, 1550.0, 1640.0, 1740.0, 1840.0, 1940.0, 2050.0,
+	2170.0, 2290.0, 2430.0, 2560.0, 2710.0, 2870.0, 3030.0, 3200.0, 3390.0, 3580.0, 3790.0, 4000.0, 4230.0, 4470.0, 4730.0, 5000.0};
+
+inline void ring_mod(buf &L, buf &R, const block &b)
+{
+	const int v = std::max(1, b.p[10]);
+	if (v <= 1)
+		return;
+	const double gd = std::cos(PI / 2 * (v - 1) / 126.0), gw = std::sin(PI / 2 * (v - 1) / 126.0);
+	const double f0 = TABLE19[std::min(127, b.p[1])] + 1.70 * b.p[2], hz = LFO_HZ[std::min(127, b.p[5])];
+	const size_t n = L.size();
+	buf car(n);
+	double acc = 0;
+	for (size_t i = 0; i < n; i++) {
+		const double ph = std::fmod(double(i) / FS * hz, 1.0);
+		const double m = b.p[3] == 1 ? std::sin(2 * PI * ph) : (ph < 0.5 ? 1.0 : -1.0);
+		acc += f0 * std::exp2(0.35 * b.p[4] / 64.0 * m);
+		car[i] = 1.07 * std::cos(2 * PI * acc / FS);
+	}
+	const double fh = t3(b.p[6]), fl = std::min(t3(b.p[7]), FS * 0.49);
+	buf o[2];
+	for (int c = 0; c < 2; c++) {
+		o[c] = filter_freq(c == 0 ? L : R, n, [&](double f) {
+			const double z = std::tan(PI * std::min(f, FS * 0.4999) / FS);
+			const cplx hp(0, z / std::tan(PI * fh / FS)), lp(0, z / std::tan(PI * fl / FS));
+			return (hp / (hp + 1.0)) / (lp + 1.0);
+		});
+		for (size_t i = 0; i < n; i++)
+			o[c][i] *= car[i];
+	}
+	fx_eq(o[0], o[1], b, 13);
+	for (size_t i = 0; i < n; i++) {
+		L[i] = gd * L[i] + gw * o[0][i];
+		R[i] = gd * R[i] + gw * o[1][i];
+	}
+}
+
 inline void apply_block(buf &L, buf &R, const block &b, const std::string &fxddir, int tempo = 120)
 {
+	if (b.is(15, 0x70)) {
+		ring_mod(L, R, b);
+		return;
+	}
+	if (b.is(13, 0)) {
+		lofi(L, R, b, fxddir + "/../fxlf");
+		return;
+	}
+	if (b.is(11, 1)) {
+		// Pitch Change 2: Fine 1・2 がセントそのもの。Pitch Change 1 の表を逆に引いて、そのセントになる Fine の値で同じ模型を通す（確かめていない）
+		static const double fx[15] = {-50, -10, -3, 0, 3, 5, 6, 7, 8, 10, 15, 20, 30, 40, 50},
+				    fy[15] = {-26.2, -10.79, -5.51, 0.0, 2.48, 5.13, 5.47, 7.88, 7.58, 10.59, 10.22, 10.06, 18.26, 23.77, 26.15};
+		block q = b;
+		for (int c = 3; c <= 4; c++) {
+			std::vector<std::pair<double, double>> pr;
+			for (int i = 0; i < 15; i++)
+				pr.push_back({fy[i], fx[i]});
+			std::stable_sort(pr.begin(), pr.end(), [](const auto &a2, const auto &b2) { return a2.first < b2.first; });
+			std::vector<double> ys, xs2;
+			for (auto &e : pr) {
+				ys.push_back(e.first);
+				xs2.push_back(e.second);
+			}
+			q.pfine[c] = 64 + interp(ys.data(), xs2.data(), 15, b.p[c] - 64);
+		}
+		q.use_pfine = true;
+		pitch_change(L, R, q);
+		return;
+	}
+	if (ltv_type(b)) {
+		ltvfx(L, R, b, fxddir + "/../fxltv", tempo);
+		return;
+	}
+	if (mod_type(b)) {
+		modfx(L, R, b, fxddir + "/../fxmod", tempo);
+		return;
+	}
+	if (lti_type(b)) {
+		lti(L, R, b, fxddir + "/../fxlti", tempo);
+		return;
+	}
 	if (b.is(11, 0)) {
 		pitch_change(L, R, b);
 		return;
@@ -776,7 +1173,7 @@ inline void apply_block(buf &L, buf &R, const block &b, const std::string &fxddi
 		const bool three = b.is(15, 0);
 		L = filter_freq(L, L.size(), [&](double f) { return three ? eq3(b, f) : eq2(b, f); });
 		R = filter_freq(R, R.size(), [&](double f) { return three ? eq3(b, f) : eq2(b, f); });
-	} else if (b.is(10, 0)) {
+	} else if (b.is(10, 0) || b.is(10, 8)) {          // 0A 08 は表に無いが、値の並びがコンプなので同じ模型
 		compressor(L, R, b);
 	} else if (dist_type(b)) {
 		distortion(L, R, b, fxddir);

@@ -850,6 +850,45 @@ Beauty DX は実機の側が鍵で −8.7〜+2.4dB と振れ（減衰の速い�
 
 芯（C++）のインサーションのスイッチは、鍵で鳴らないエレメントも含めた多数決にそろえた（前は鳴るエレメントだけで数えていて、TX802 で A と B が入れ替わっていた）
 
+### 残りの型をまとめて（2026-10-22 夜〜）
+
+プリセットでまだの型は 70 型・379 か所あった。1 型ずつ式を作るのでなく、型の性質で 4 つに分け、**プリセットが使うパラメーターの組のまま実機で録って**
+芯がそれを再生する形を基本にした（サンプリングの考え方をエフェクトにも使う）。どれも `mr_fx_*.py list | record | analyze`、録音は capture/ の下（配らない）。
+型の番号は 16 進（たとえば (6,33) は 06 21 = Vintage Flanger 2）。
+
+**ノイズの波形 705 は、鳴らし始めから毎回同じ並び**: 0.1 秒おきの短い音どうしで相関 1.000（ずれ 0）。dry と wet の入口は音の頭でそろえれば同じなので、
+wet ÷ dry で応答をそのまま読める（録音の頭は 1 本ごとに ±4ms ほど揺れるので、頭はデータでそろえる）。
+
+1. **時間で変わらない型**（`mr_fx_lti.py`、55 組 + Isolator）: ディレイ類（02 00〜02 58）・Echo・ER・Gate / Reverse Gate・Karaoke・インサーションのリバーブ・Ambience・Isolator。
+   エレメントのパンを 1（左だけ）と 127（右だけ）にして dry / wet を録り、2×2（左右の入口 → 左右の出口）の応答にする。Dry/Wet が 127 の組は、元の音の線で
+   時刻をそろえるために 126 で録り、その線を差し引く。帰りの長いディレイは前の録音の響きが効果の中に残るので（Delay L,R 3.7 秒・帰り +20 で、
+   鳴らす前から −5.6dB で鳴っていた）、録る前に型をいったん「なし」にする（`mr_fx.py --flush`）。録った dry をこの応答に通すと、wet と左右とも 0.00dB で合う。
+   Dry/Wet 1 の組は素通し（Isolator は Dry/Wet の欄が無い）
+2. **歪み系**（`mr_fx_dist_sets.py`、88 組）: Distortion・Comp Distortion・V-Distortion・Overdrive・Amp Simulator 2。組ごとに小さいノイズと正弦波 8 段を録り、
+   Wiener 型（`mr_fx_dist.py`）を当てはめる（Dry/Wet は 127 で録って芯で混ぜる）。V-Distortion はディレイを切って録り、ディレイは式で足す（確かめていない）。
+   Amp Simulator（09 30）は前からの式のまま
+3. **音量や遅れを周期的に揺らす型**（`mr_fx_mod.py`、83 組）: Tremolo・Auto Pan・Auto Pan 2・Rotary・Dual Rotor・Slice。正弦波 220Hz と 2093Hz を 8 秒ずつ通し、
+   解析信号で左右の A(t)（振幅の倍率）と d(t)（遅れ）を 1ms ごとに読む。芯は 1kHz で 2 つの帯に分け（Linkwitz-Riley）、低い帯に 220Hz の、高い帯に 2093Hz の A・d を掛ける。
+   8 秒より長いときは最後の 1 周を繰り返す
+4. **揺れながら周波数ごとに違う動きをする型**（`mr_fx_ltv.py`、139 組）: フェイザー類・V-Flanger・Vintage Flanger・Tempo Flanger・Flanger 3・Symphonic・Auto Wah・
+   Vintage Auto Wah・Tech Mod・Jump・Talking Mod。ノイズを 8 秒通し、窓 4096・ずらし 1024 の STFT で H(t, f) = W·conj(X) / |X|² を左右ごとに持つ。
+   **入口の大きさで効き方が変わる型**（Touch Wah・Dynamic Filter / Flanger / Phaser・Multi Band Comp・Auto Synth）と、歪みや雑音を含む組み合わせ
+   （Auto Wah + Dist / Odrv、Wah + Dist / Odrv + Delay、Comp + Dist / Odrv + Delay、LoRes・Noisy・Attack LoFi）も、ノイズ（音量 100）で録った「その大きさでの姿」で代える（近似）
+
+式を作った型:
+* **Lo-Fi（0D 00）**: 入口に 1 次の HPF（20.5Hz）→ **Pre-LPF は双一次変換の 2 次**（角は表 3、Q = Resonance / 10。4 通りで 0.06〜0.31dB）→
+  **標本化の間引き**（表 13 = 44100 / (値 + 1)、値 + 1 サンプルごとに持ち替え）→ **語長はスルーレートの制限**（1 サンプルの動きを ±s に切る。
+  正弦波が三角波（3・5・7 倍が −18・−27・−33dB）になり、三角波の振幅は入口の大きさによらない。s は WL 1・2・4・8・16・32・64・96 で
+  0.00209・0.00222・0.00248・0.00300・0.00405・0.00614・0.01279・0.02606、32 までは 0.00196 + 0.000130 × WL。127 は制限なし。
+  **Bit Assign が 1 増えるごとに s が 2 倍**、4 以上で効かない。**Emphasis** は前後に 1 次の強調と戻し（係数 0.88、三角波の角が丸くなる）→
+  **Filter Type 1〜5** は録った応答（4096 点）→ **Output Gain は (値 − 6) dB** → **元の音 cos・wet sin**。`mr_fx_check.py` で、線形の部分・型 2〜5・利き・間引き・
+  Dry/Wet が 0.15dB 以内（型 1 Power Bass だけ +1dB）。WL 64 の 1 本だけ、入口を下げても三角波のままだった（録音を疑う。語長の追加の録音を並べてある）
+* **Ring Modulator（0F 70）**: 搬送波は **表 19 + 1.70Hz × Fine**（25.6・151.4・895・5002Hz、Fine 32・64・127 で +53.9・+108.4・+216.1Hz）。上下の山が同じ大きさの
+  **純粋な掛け算**（搬送波の振幅 1.07）。**HPF は 1 次で掛け算の前**（2kHz で 440Hz が −13.7dB、式 −13.4dB）。**元の音 cos・wet sin**（Dry/Wet 64 で山 −5dB、式 −5.4dB）。
+  LFO の「tri」（値 0）は 2 つの値を行き来する形で、深さ 64 で 895Hz → 685 / 1105Hz。芯は 2^(±0.35 × 深さ / 64) で近似。プリセットの 18 音色のうち 8 音色は Dry/Wet 1
+* **Pitch Change 2（0B 01）**: Fine がセントそのもの（Data List の注）なので、Pitch Change 1 の表を逆に引いて同じ模型を通す（確かめていない）
+* **(10, 8)**（0A 08）は Data List の表に無いが、値の並び（Attack・Release・Threshold・Ratio・Output）がコンプなので Compressor の模型。Dynamic Ring Mod の 3 音色は Dry/Wet 1
+
 ### Dry Level の測り直し（2026-10-18。録音は `capture/dry/`）
 
 マルチのパート 1 で、Reverb Send 0・Chorus Send 0・Voice Pan off にして、候補の音色を 3 回ずつ鳴らし、いちばん揺れない音色を選んだ

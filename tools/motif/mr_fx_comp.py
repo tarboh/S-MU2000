@@ -7,6 +7,7 @@
   step   : AEG を「127 で 0.79 秒（アタックの値 64、高さ 127 → 127）、そのあと時間 0 で 64 へ」にして wet（cs<tag>_step.wav）。
            鳴り始めの効き方（アタック）と、下がったあとの戻り方（リリース）を見る
 --type でほかのインサーションの型（MSB:LSB）、--key で鳴らす鍵を変えられる（歪み系の静的な曲線に使う）。
+--wave 波形（既定 704 = 正弦波、705 = ノイズ）。--long 秒 は、音量 --level（既定 100）で dry と wet を 1 本ずつ長く録るだけ（cs<tag>_long_dry/wet.wav）。
 --analyze で読むだけ（入力 = dry の音量、出力 = wet の音量、どちらも 0.5〜0.9 秒の RMS、dBFS）。
 送るのはパラメーターチェンジ・ダンプの要求・ノートだけ（保存しない）。終わったらマルチへ戻す。"""
 import json
@@ -88,7 +89,7 @@ def main():
         r.all_off()
         r.mode(0)
         r.program(63, 0, 0)
-        r.template(704)
+        r.template(int(mr_ref.opt(a, "--wave", "704")))     # 既定は正弦波。705 はノイズ（鳴らし始めから毎回同じ並び）
         r.el(0, 0x43, 0x00, 21)
         r.el(0, 0x43, 0x01, 1, 127)
         r.el(0, 0x43, 0x22, 64)
@@ -107,6 +108,16 @@ def main():
             if m[7:10] == bytes([0x40, 0x03, 0x00]):
                 info = mr_params.decode_rows(mr_params.COMMON_BLOCKS[(0x40, 0x03, 0x00)], list(m[10:-2]))
                 json.dump(info, open(os.path.join(d, "cs%s.json" % tag), "w"), indent=1)
+        longs = mr_ref.opt(a, "--long")
+        if longs:                                   # 決まった音量で長く 1 本ずつ（揺れる型の倍率と遅れを読む）
+            r.el(0, 0x41, 0x20, int(mr_ref.opt(a, "--level", "100")))
+            r.el(0, 0x41, 0x16, 0)
+            time.sleep(0.05)
+            take("cs%s_long_dry" % tag, float(longs))
+            r.el(0, 0x41, 0x16, 1)
+            time.sleep(0.05)
+            take("cs%s_long_wet" % tag, float(longs))
+            return
         for L in (() if "--step-only" in a else LEVELS):
             r.el(0, 0x41, 0x20, L)
             r.el(0, 0x41, 0x16, 0)

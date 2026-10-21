@@ -252,7 +252,12 @@ def distortion(L, R, prm, t, fxdir, default_prm):
     """歪み系の後処理。Amp Simulator は アンプの型・Drive の近い組を選び、Drive の差は頭打ちの前の上げ幅（DRIVE_GAIN_DB を dB で補間）で直す。
     ほかの型は既定のパラメーターで測った 1 組だけ（Drive の差は Amp Simulator と同じ割合で直す）。出力は既定からの比で 40·log10、
     Dry/Wet（パラメーター 10、1〜127、127 が wet だけ）は wet の割合 (値 − 1) / 126 で混ぜる（どちらも確かめていない）"""
-    sets = DIST_SETS[t]
+    if t != (9, 48):
+        import mr_fx_dist_sets
+        z = os.path.join(os.path.dirname(fxdir), "fxds", "insa_%s_dist.npz" % mr_fx_dist_sets.key_of(prm))
+        if os.path.exists(z):
+            return per_set_distortion(L, R, prm, t, z)
+    sets = DIST_SETS.get(t, DIST_SETS[(9, 0)])     # Comp Distortion・Overdrive は組の録音が無いとき Distortion の既定値の組で代える
     if t == (9, 48):
         amp, drive = prm["param2"], prm["param1"]
         cand = sorted(sets, key=lambda e: (e[0] != amp, abs(e[1] - drive)))
@@ -286,6 +291,45 @@ def distortion(L, R, prm, t, fxdir, default_prm):
         og = 10 ** (40 * np.log10(max(1, prm["param4"]) / max(1, default_prm.get("out", 80))) / 20)
     wmix = (max(1, prm.get("param10", 127)) - 1) / 126.0
     return [(1 - wmix) * np.asarray(src) + wmix * o * og for src, o in zip((L, R), outs)], name
+
+
+def vdist_delay(y, prm, ch):
+    """V-Distortion の中のディレイ（確かめていない）: 帰りの線（遅れ 08 × 0.1ms、帰り (09 − 64) / 64、戻りに 1 次の LPF (1 − 12 / 10)²）から、
+    左は 06・右は 07（× 0.1ms）で取り出し、Delay Mix（11 / 127）で足す"""
+    n = len(y)
+    dt = max(1, prm["param6" if ch == 0 else "param7"]) * FS // 10000
+    df = max(1, prm["param8"]) * FS // 10000
+    fb = (prm["param9"] - 64) / 64.0
+    a = (1 - max(1, prm["param12"]) / 10.0) ** 2
+    line = np.zeros(n)
+    lp = 0.0
+    for t in range(n):
+        back = line[t - df] if t >= df else 0.0
+        lp = (1 - a) * back + a * lp
+        line[t] = y[t] + fb * lp
+    out = y.copy()
+    out[dt:] += prm["param11"] / 127.0 * line[:n - dt]
+    return out
+
+
+def per_set_distortion(L, R, prm, t, z):
+    """プリセットの組のまま録って当てはめた Wiener 型（mr_fx_dist_sets.py）。Dry/Wet は (値 − 1) / 126 で混ぜる（確かめていない）"""
+    d = np.load(z)
+    hL, hR, c, p, fc = d["hL"].astype(np.float64), d["hR"].astype(np.float64), float(d["c"]), float(d["p"]), float(d["fc"])
+    x = (np.asarray(L) + np.asarray(R)) / 2
+    outs = []
+    for ch, h in enumerate((hL, hR)):
+        n = len(x) + len(h)
+        N = 1 << int(np.ceil(np.log2(n)))
+        u = np.fft.irfft(np.fft.rfft(x, N) * np.fft.rfft(h, N), N)[:len(x)]
+        u = u / (1 + np.abs(u / c) ** p) ** (1 / p)
+        f = np.fft.rfftfreq(N, 1 / FS)
+        y = np.fft.irfft(np.fft.rfft(u, N) / (1 + 1j * (f / fc) / 1.6 - (f / fc) ** 2), N)[:len(x)]
+        if t == (9, 16) and prm["param11"] > 0:
+            y = vdist_delay(y, prm, ch)
+        outs.append(y)
+    wmix = (max(1, prm.get("param10", 127)) - 1) / 126.0
+    return [(1 - wmix) * np.asarray(src) + wmix * o for src, o in zip((L, R), outs)], "組の録音"
 
 
 TABLE14_Q = [1 / 12, 3 / 32, 1 / 8, 1 / 6, 3 / 16, 1 / 4, 1 / 3, 3 / 8, 1 / 2, 2 / 3, 3 / 4, 1, 4 / 3, 3 / 2, 2, 8 / 3, 3, 4, 5, 6]   # 表 14（4 分音符 = 1）
@@ -525,21 +569,139 @@ def pitch_change(L, R, prm):
     return gd * np.asarray(L) + gw * oL, gd * np.asarray(R) + gw * oR
 
 
+# Lo-Fi の Word Length（02）→ 1 サンプルで動ける量の上限（正弦波 440Hz・振幅 0.42 で、出口の傾きの 99.5% 点）。127 は制限なし
+LOFI_SLEW = [(1, 0.00209), (2, 0.00222), (4, 0.00248), (8, 0.00300), (16, 0.00405), (32, 0.00614), (64, 0.01279), (96, 0.02606)]
+LOFI_EMPH = 0.88     # Emphasis（08）: 前で (x − a·x[−1]) / (1 − a)、後で 1 次の LPF（係数 a、直流で 1）。正弦波の三角波の倍音（−22・−34dB）から
+
+
+def lofi_quant(x, prm):
+    """Lo-Fi の語長: 1 サンプルあたりの動きを ±s に切る（スルーレートの制限。語長を下げると正弦波が三角波になり、三角波の振幅は
+    入口の大きさによらない）。s は LOFI_SLEW を対数で補間し、Bit Assign（07）が 1 増えるごとに 2 倍（4 以上では制限が効かない）"""
+    wl = prm["param2"]
+    if wl >= 127:
+        return x
+    s = float(np.exp(np.interp(wl, [a for a, _ in LOFI_SLEW], [np.log(b) for _, b in LOFI_SLEW]))) * 2 ** prm.get("param7", 0)
+    a = LOFI_EMPH if prm.get("param8", 0) else 0.0
+    if a:
+        x = np.append(x[0], x[1:] - a * x[:-1]) / (1 - a)
+    y = np.empty(len(x))
+    v = 0.0
+    for i, xi in enumerate(x.tolist()):
+        d = xi - v
+        v += s if d > s else (-s if d < -s else d)
+        y[i] = v
+    if a:
+        out = np.empty(len(y))
+        acc = 0.0
+        for i, yi in enumerate(y.tolist()):
+            acc = (1 - a) * yi + a * acc
+            out[i] = acc
+        y = out
+    return y
+
+
+def lofi(L, R, prm, fxdir=None):
+    """Lo-Fi（0D 00）。入口の 1 次の HPF（20.5Hz）→ Pre-LPF（双一次変換の 2 次、角は表 3[04]、Q = 06 / 10）→ 標本化の間引き
+    （表 13 = 44100 / (01 + 1)、01 + 1 サンプルごとに値を持ち替える）→ 語長（lofi_quant）→ Filter Type（05、録った応答 fxlf/lofi_type<n>.ir）→ Output Gain（(03 − 6) dB）。
+    Dry/Wet（10）は元の音 cos・wet sin とした（確かめていない）"""
+    fxdir = fxdir or os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../roms/motif-rack-es/capture/fxd")
+    xs = input_mode(L, R, prm)
+    outs = []
+    for x in xs:
+        n = len(x)
+        N = 1 << int(np.ceil(np.log2(n + 1)))
+        f = np.fft.rfftfreq(N, 1 / FS)
+        sh = 1j * np.tan(np.pi * np.minimum(f, FS * 0.4999) / FS) / np.tan(np.pi * 20.5 / FS)
+        fc = T3[min(60, max(0, prm["param4"]))]
+        sl = 1j * np.tan(np.pi * np.minimum(f, FS * 0.4999) / FS) / np.tan(np.pi * min(fc, FS * 0.49) / FS)
+        q = max(1, prm["param6"]) / 10.0
+        H = (sh / (sh + 1)) / (sl * sl + sl / q + 1)
+        y = np.fft.irfft(np.fft.rfft(x, N) * H, N)[:n]
+        k = prm["param1"] + 1
+        if k > 1:
+            y = np.repeat(y[::k], k)[:n]
+        y = lofi_quant(y, prm)
+        ft = prm["param5"]
+        if 1 <= ft <= 5:
+            p = os.path.join(os.path.dirname(fxdir), "fxlf", "lofi_type%d.ir" % ft)
+            if os.path.exists(p):
+                h = np.fromfile(p, dtype="<f4").astype(np.float64)
+                # 山を 64 点目に置いて切ってある。山より前にもエネルギーがあるので（電話の型で 2dB）、頭は落とさない（1.4ms 遅れる）
+                M = 1 << int(np.ceil(np.log2(n + len(h))))
+                y = np.fft.irfft(np.fft.rfft(y, M) * np.fft.rfft(h, M), M)[:n]
+        outs.append(y * 10 ** ((prm["param3"] - 6) / 20.0))
+    v = max(1, prm.get("param10", 127))
+    gd, gw = np.cos(np.pi / 2 * (v - 1) / 126.0), np.sin(np.pi / 2 * (v - 1) / 126.0)
+    return gd * np.asarray(L) + gw * outs[0], gd * np.asarray(R) + gw * outs[1]
+
+
+def pitch_change2(L, R, prm):
+    """Pitch Change 2（0B 01）: Pitch Change 1 と同じ形で、Fine 1・2（03・04）がセントそのもの（Data List の注）。確かめていない"""
+    q = dict(prm)
+    for k in ("param3", "param4"):
+        c = prm[k] - 64
+        # Pitch Change 1 の表を逆に引いて、そのセントになる Fine の値にする
+        fx, fy = [a for a, _ in PC_FINE], [b for _, b in PC_FINE]
+        order = np.argsort(fy)
+        q[k] = 64 + float(np.interp(c, np.array(fy)[order], np.array(fx)[order]))
+    return pitch_change(L, R, q)
+
+
+# Data List の表 19（Ring Mod の搬送波、Hz）
+TABLE19 = [0.5, 1.5, 2.0, 2.5, 3.5, 4.0, 4.5, 5.5, 6.0, 6.5, 7.5, 8.0, 8.5, 8.9, 9.4, 10.0, 10.6, 11.2, 11.8, 12.5, 13.2, 13.9, 14.7, 15.6,
+           16.5, 17.4, 18.4, 19.4, 20.6, 21.7, 23.0, 24.3, 25.7, 27.1, 28.7, 30.3, 32.0, 33.9, 35.8, 37.8, 40.0, 42.3, 44.7, 47.3, 49.9,
+           52.8, 55.8, 59.0, 62.4, 65.9, 69.7, 73.7, 77.9, 82.3, 87.0, 92.0, 97.2, 103, 109, 115, 121, 128, 136, 143, 152, 160, 169, 179,
+           189, 200, 211, 224, 236, 250, 264, 279, 295, 312, 330, 348, 368, 389, 412, 435, 460, 486, 514, 543, 574, 607, 642, 678, 717,
+           758, 801, 847, 895, 946, 1000, 1050, 1110, 1180, 1240, 1320, 1390, 1470, 1550, 1640, 1740, 1840, 1940, 2050, 2170, 2290,
+           2430, 2560, 2710, 2870, 3030, 3200, 3390, 3580, 3790, 4000, 4230, 4470, 4730, 5000]
+
+
+def ring_mod(L, R, prm):
+    """Ring Modulator（0F 70）。入口に 1 次の HPF（表 3[06]）と LPF（表 3[07]）、搬送波（正弦、振幅 1.07）との掛け算、EQ（13〜16）、
+    元の音 cos・wet sin。搬送波 = 表 19[01] + 1.70Hz × Fine（02）（Coarse 64 で 32・64・127 を確かめた）。
+    LFO（03 形 0 = 2 つの値を行き来・1 = 正弦、04 深さ、05 速さ 表 1）は搬送波を 2^(±0.35 × 深さ / 64) 倍に動かす（深さ 64 で 685 / 1105Hz を確かめた。近似）"""
+    v = max(1, prm.get("param10", 64))
+    gd, gw = np.cos(np.pi / 2 * (v - 1) / 126.0), np.sin(np.pi / 2 * (v - 1) / 126.0)
+    if v <= 1:
+        return np.asarray(L), np.asarray(R)
+    f0 = TABLE19[min(127, prm["param1"])] + 1.70 * prm["param2"]
+    n = len(L)
+    t = np.arange(n) / FS
+    hz = LFO_HZ[min(127, prm["param5"])]
+    ph = (t * hz) % 1.0
+    m = np.sin(2 * np.pi * ph) if prm["param3"] == 1 else np.where(ph < 0.5, 1.0, -1.0)
+    fi = f0 * 2 ** (0.35 * prm["param4"] / 64.0 * m)
+    car = 1.07 * np.cos(2 * np.pi * np.cumsum(fi) / FS)
+    outs = []
+    for x in (np.asarray(L, dtype=np.float64), np.asarray(R, dtype=np.float64)):
+        N = 1 << int(np.ceil(np.log2(n + 1)))
+        f = np.fft.rfftfreq(N, 1 / FS)
+        z = 1j * np.tan(np.pi * np.minimum(f, FS * 0.4999) / FS)
+        hp = z / np.tan(np.pi * T3[min(60, prm["param6"])] / FS)
+        lp = z / np.tan(np.pi * min(T3[min(60, prm["param7"])], FS * 0.49) / FS)
+        y = np.fft.irfft(np.fft.rfft(x, N) * (hp / (hp + 1)) / (lp + 1), N)[:n]
+        outs.append(y * car)
+    outs = fx_eq(outs[0], outs[1], prm, 13)
+    return gd * np.asarray(L) + gw * outs[0], gd * np.asarray(R) + gw * outs[1]
+
+
 def apply_block(L, R, ins, fxdir=None):
     """インサーション 1 つ（A か B）を掛ける。まだの型はそのまま返す"""
     t = (ins["type"] >> 7, ins["type"] & 0x7F)
     if t == (0, 0):
         return L, R, "なし"
-    if t in DIST_SETS:
+    if t in DIST_SETS or t in ((9, 1), (9, 32)):
         fxdir = fxdir or os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../roms/motif-rack-es/capture/fxd")
         dflt = dict(param1=30, out=80) if t == (9, 48) else {}
         if t != (9, 48):
-            js = os.path.join(fxdir, DIST_SETS[t][0][2] + ".json")
+            js = os.path.join(fxdir, DIST_SETS.get(t, DIST_SETS[(9, 0)])[0][2] + ".json")
             if os.path.exists(js):
                 dflt = json.load(open(js))
         (oL, oR), name = distortion(L, R, ins, t, fxdir, dflt)
         return oL, oR, "歪み系 %d:%d（%s）" % (t[0], t[1], name)
-    if t == (10, 0):
+    if t == (15, 0x71) and ins.get("param10", 64) <= 1:
+        return L, R, "Dynamic Ring Mod（Dry/Wet 1 で素通し）"
+    if t in ((10, 0), (10, 8)):                     # 0A 08 は表に無いが、値の並び（Attack・Release・Threshold・Ratio・Output）がコンプなので同じ模型
         oL, oR = compressor(L, R, ins)
         return oL, oR, "Compressor（%ddB・%.1f:1）" % (ins["param3"] - 127, COMP_RATIO[min(7, ins["param4"])])
     if t in CHORUS_TYPES:
@@ -548,6 +710,15 @@ def apply_block(L, R, ins, fxdir=None):
     if t == (5, 0x30):
         oL, oR = ensemble_detune(L, R, ins)
         return oL, oR, "Ensemble Detune（%+d セント・Dry/Wet %d）" % (ins["param1"] - 64, ins.get("param10", 64))
+    if t == (15, 0x70):
+        oL, oR = ring_mod(L, R, ins)
+        return oL, oR, "Ring Mod（%.0fHz・Dry/Wet %d）" % (TABLE19[min(127, ins["param1"])] + 1.70 * ins["param2"], ins.get("param10", 64))
+    if t == (13, 0):
+        oL, oR = lofi(L, R, ins, fxdir)
+        return oL, oR, "Lo-Fi（%.0fHz・語長 %d）" % (FS / (ins["param1"] + 1), ins["param2"])
+    if t == (11, 1):
+        oL, oR = pitch_change2(L, R, ins)
+        return oL, oR, "Pitch Change 2（%+d 半音・Fine %+d / %+d セント）" % (ins["param1"] - 64, ins["param3"] - 64, ins["param4"] - 64)
     if t == (11, 0):
         oL, oR = pitch_change(L, R, ins)
         return oL, oR, "Pitch Change 1（%+d 半音・Fine %+d / %+d・Dry/Wet %d）" % (ins["param1"] - 64, ins["param3"] - 64, ins["param4"] - 64, ins.get("param10", 64))
@@ -573,6 +744,21 @@ def apply_block(L, R, ins, fxdir=None):
         if t == (15, 1):
             return out[0], out[1], "2 Band EQ（%+d / %+d dB）" % (ins["param2"] - 64, ins["param4"] - 64)
         return out[0], out[1], "3 Band EQ（%+d / %+d / %+d dB）" % (ins["param1"] - 64, ins["param3"] - 64, ins["param5"] - 64)
+    import mr_fx_ltv
+    if t in mr_fx_ltv.TYPES:
+        r = mr_fx_ltv.apply(L, R, ins, ins.get("_tempo", 120))
+        if r is not None:
+            return r[0], r[1], "録った揺れる応答 %d:%d" % t
+    import mr_fx_mod
+    if t in mr_fx_mod.TYPES:
+        r = mr_fx_mod.apply(L, R, ins, ins.get("_tempo", 120))
+        if r is not None:
+            return r[0], r[1], "録った揺れ %d:%d" % t
+    import mr_fx_lti
+    if t in mr_fx_lti.LTI_TYPES:
+        r = mr_fx_lti.apply(L, R, ins, ins.get("_tempo", 120))
+        if r is not None:
+            return r[0], r[1], "録った応答 %d:%d" % t
     return L, R, "型 %d:%d はまだ（通さない）" % t
 
 

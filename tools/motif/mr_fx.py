@@ -1,5 +1,5 @@
 """MOTIF-RACK ES のエフェクト（ボイスのリバーブ・コーラス）を測る録音。
-  python mr_fx.py --dir 置き場 [--block reverb|chorus|insa] [--types 1:0,1:2,…] [--tail 8] [--set p1=30,ret=64] [--send 127] [--cc 127] [--tag 名前] [--train 6] [--level 127] [--tempo 120]
+  python mr_fx.py --dir 置き場 [--block reverb|chorus|insa] [--types 1:0,1:2,…] [--tail 8] [--set p1=30,ret=64] [--send 127] [--cc 127] [--tag 名前] [--train 6] [--level 127] [--tempo 120] [--pan 64] [--flush]
 
 ノイズの波形 705 を 50ms ほどの短い音にして鳴らし、エフェクトへの送りを 0 にした録音（_dry）と 127 にした録音（_wet）を 1 本ずつ録る。
 2 本の比から、エフェクトのインパルス応答を逆畳み込みで出す（mr_fx_fit.py）。
@@ -84,6 +84,7 @@ def main():
         r.el(0, 0x41, 0x2B, 0)
         r.el(0, 0x41, 0x27, 0)
         r.el(0, 0x41, 0x20, int(mr_ref.opt(a, "--level", "127")))   # エレメントの音量（歪み系の小さい音での応答に）
+        r.el(0, 0x41, 0x08, int(mr_ref.opt(a, "--pan", "64")))     # エレメントのパン（1 = 左だけ、127 = 右だけ。左右の入力を分けて測る）
         for e in range(4):
             r.el(e, 0x41, 0x16, 0)                  # インサーションを通さない
         common(0x00, 0x0B, 0)
@@ -95,8 +96,12 @@ def main():
         if block == "insa":
             common(0x00, 0x40, 0)                   # インサーションのつなぎ方を並列に（雛形の Full Grand は A → B で、B の EQ を通ってしまう）
         time.sleep(0.1)
+        flush = "--flush" in a
         for msb, lsb, name in types:
             n = "%s_%s%s" % (block, name, "_" + tag if tag else "")
+            if flush:                               # 前の録音の響きが効果の中に残らないよう、いったん型を「なし」にしてから入れ直す
+                common(am, 0x00, 0, 0)
+                time.sleep(0.5)
             common(am, 0x00, msb, lsb)
             time.sleep(0.3)
             for off, v in sets:
