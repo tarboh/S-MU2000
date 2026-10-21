@@ -10,7 +10,9 @@
 コーラス（Chorus 1〜5・Celeste 1〜4 の型、05 00〜05 18）: 遅れの線 1 本を左右に置き、遅れ =
 Delay Offset（表 2）+ 0.176ms × LFO Depth ×（三角波 0〜1）、速さは LFO Speed（表 1）、左右は逆の向き（mr_fx.py --train → mr_fx_chorus.py で測った）。
 線の高さ 2.06（エネルギーの増え方から）× Return / 96 × 送り / 127。フィードバック・EQ・コーラスからリバーブへの送りは入れていない。
-インサーションはまだ。"""
+インサーション（apply_insertion）: 3 Band EQ（0F 00）だけ。低・高は 1 次の棚（角は表 3 × √2・表 3 / √2）、中は「上げるときは分子だけ、
+下げるときは分母だけに利きを入れる」山（Q = Mid Width / 10）、利きは 1 目盛り 1dB（mr_fx.py --block insa → mr_fx_eq.py で測った。
+21 本の格子と 0.1〜0.4dB で合う）。周波数ごとに応答を掛ける（FFT）。全部のエレメントが同じインサーションを通る音色のときだけ正しい。"""
 import json
 import os
 import sys
@@ -121,6 +123,56 @@ def apply_chorus(L, R, voice):
         out.append(np.interp(t - d, t, x, left=0.0) * g)
     return np.asarray(L) + out[0], np.asarray(R) + out[1], "コーラス 型 %d:%d（%.2fHz・%.1f〜%.1fms・高さ %.2f）" % (
         msb, lsb, hz, off / FS * 1000, (off + depth) / FS * 1000, g)
+
+
+T3 = [20, 22, 25, 28, 32, 36, 40, 45, 50, 56, 63, 70, 80, 90, 100, 110, 125, 140, 160, 180, 200, 225, 250, 280, 315, 355, 400, 450,
+      500, 560, 630, 700, 800, 900, 1000, 1100, 1200, 1400, 1600, 1800, 2000, 2200, 2500, 2800, 3200, 3600, 4000, 4500, 5000, 5600,
+      6300, 7000, 8000, 9000, 10000, 11000, 12000, 14000, 16000, 18000, 20000]     # Data List の表 3（EQ の周波数）
+
+
+def eq3_response(prm, f):
+    """3 Band EQ の周波数応答（複素数）"""
+    z = np.exp(-2j * np.pi * f / FS)
+    H = np.ones(len(f), dtype=complex)
+    for kind, gp, fp in (("low", "param1", "param6"), ("high", "param5", "param7")):
+        g = prm[gp] - 64
+        if g == 0:
+            continue
+        f0 = T3[min(60, prm[fp])] * (np.sqrt(2) if kind == "low" else 1 / np.sqrt(2))
+        A = 10 ** (g / 20)
+        K = np.tan(np.pi * min(f0, FS * 0.49) / FS)
+        r = np.sqrt(A)
+        if kind == "low":
+            b, a = (K * r + 1, K * r - 1), (K / r + 1, K / r - 1)
+        else:
+            b, a = (r + K, K - r), (1 / r + K, K - 1 / r)
+        H *= (b[0] + b[1] * z) / (a[0] + a[1] * z)
+    g = prm["param3"] - 64
+    if g != 0:
+        A = 10 ** (g / 20)
+        w = 2 * np.pi * T3[min(60, prm["param2"])] / FS
+        al = np.sin(w) / (2 * max(0.1, prm["param4"] / 10))
+        c = np.cos(w)
+        num, den = (1 + al, -2 * c, 1 - al), (1 + al, -2 * c, 1 - al)
+        if g > 0:
+            num = (1 + al * A, -2 * c, 1 - al * A)
+        else:
+            den = (1 + al / A, -2 * c, 1 - al / A)
+        H *= (num[0] + num[1] * z + num[2] * z * z) / (den[0] + den[1] * z + den[2] * z * z)
+    return H
+
+
+def apply_insertion(L, R, voice):
+    ins = voice["insertion1"]
+    t = (ins["type"] >> 7, ins["type"] & 0x7F)
+    if t != (15, 0):
+        return L, R, "インサーション A の型 %d:%d はまだ" % t
+    n = len(L) + FS
+    N = 1 << int(np.ceil(np.log2(n)))
+    f = np.fft.rfftfreq(N, 1 / FS)
+    H = eq3_response(ins, f)
+    out = [np.fft.irfft(np.fft.rfft(x, N) * H, N)[:len(x)] for x in (np.asarray(L), np.asarray(R))]
+    return out[0], out[1], "3 Band EQ（%+d / %+d / %+d dB）" % (ins["param1"] - 64, ins["param3"] - 64, ins["param5"] - 64)
 
 
 def write_wav(path, L, R):

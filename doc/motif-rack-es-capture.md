@@ -667,6 +667,33 @@ Reverb Pan、送りの量の曲線の小さい所
 左右の差の割合（広がり）は実機と芯で近い。持続音ではコーラスの線と元の音が干渉し、足し算の結果が位相で変わるので、±1〜2dB はこの方式の幅とみている。
 Chorus 1 以外の型は同じ形と仮定した（確かめていない）。インサーションはまだ
 
+### インサーションの 3 Band EQ（2026-10-21。`mr_fx.py --block insa` で録り `mr_fx_eq.py` で読んだ。録音は `capture/fxi/`）
+
+インサーションの型（Effect Type List の 2 ページ目。2 段組みが崩れているので、名前の並びと番号の並びを分けて読んで突き合わせた）:
+Distortion 09 00、Comp+Dist 09 01、V-Distortion 09 10、Overdrive 09 20、Amp Simulator 09 30・2 09 31、Dist+Delay 09 40、Odrv+Delay 09 41、
+Compressor 0A 00、Noise Gate 0A 20、Cmp+Dist+Dly 0A 40、Cmp+Odrv+Dly 0A 41、Multi Band Comp 1・2 0A 50・51、Pitch Change 1・2 0B 00・01、
+Auto Wah 系 0C 00〜0C 41、Lo-Fi 系 0D 00〜50、Tech 系 0E 00〜50、3 Band EQ 0F 00、2 Band EQ 0F 01、Enhancer 0F 10、Voice Cancel 0F 20、Ambience 0F 30、
+Talking Mod 0F 40、Beat Change 0F 50、Ring Mod 0F 70、Dynamic Ring Mod 0F 71、Dynamic Filter 0F 78（ほかにリバーブ・ディレイ・コーラス系の型も入る）。
+プリセットのインサーション A で多いのは 3 Band EQ（370）・型なし（147）・2 Band EQ（41）・Compressor（37）・Amp Simulator（24）・Enhancer（22）。
+
+**測り方**: エレメントのインサーションのスイッチ（41 ee 16）を 0 にした録音（dry）と 1（インサーション A）にした録音（wet）を比べる。
+**最初は 1kHz に −4dB の谷が、型なしでも出た**。雛形の音色（Full Grand）はつなぎ方が A → B で、B の EQ を通っていた。
+つなぎ方（40 00 40）を 0（並列）にすると、型なし・平らな 3 Band EQ とも ±0.1dB 以内で平らになった。
+
+3 Band EQ のパラメーター: 01 低の利き・03 中の利き・05 高の利き（52〜76 で −12〜+12dB）、02 中の周波数・06 低の周波数・07 高の周波数（表 3）、04 中の幅（Q 0.1〜12.0）。
+21 本の格子（帯ごとに周波数・利き・幅を変えた）から:
+* **利きは 1 目盛り 1dB**（中の 70 で +6.0、76・52 で ±12.0）
+* **低・高は 1 次の棚**（6dB/オクターブ）。双一次変換の 1 次の棚に当てはめると、**角は 低 = 表 3 × √2、高 = 表 3 / √2** で 0.2〜0.5dB
+  （高の 16kHz だけ 2.2dB）。2 次の RBJ の棚（S = 0.5）では 1.9dB ずれる
+* **中は、上げるときは分子だけ・下げるときは分母だけに利きを入れる山で、Q = 幅 / 10**（RBJ の山の分母と分子の両方に √A を入れる形ではない）。
+  8 本中 7 本が 0.07〜0.16dB（幅 120 は山が細すぎて 1/3 オクターブで拾いきれず 1.45dB）
+* 表 3 は 1/6 オクターブの並び（24 = 315Hz、34 = 1.0kHz、58 = 16kHz）
+
+**芯で掛ける**（`mr_fx_apply.apply_insertion`）: 3 Band EQ を使い、全部のエレメントがインサーション A を通る音色 5 つ（PizzEns・BlownBone・QuietBrass・Kemence・Aah Choir）を
+インサーションを残して録って比べた（`mr_preset_compare.py --ins`）。スペクトルの差は 0.1〜0.8dB（中を +12dB 上げている Kemence も 0.1〜0.3dB）。
+QuietBrass だけ 2.8〜4.9dB だが、インサーションなしでも 2.8〜4.4dB 違うので、EQ ではなく音色の側の差。
+まだのもの: 2 Band EQ・Compressor・Amp Simulator・Enhancer など、エレメントごとに違うインサーションを通る音色（芯はエレメントを足してから掛けている）
+
 ### Dry Level の測り直し（2026-10-18。録音は `capture/dry/`）
 
 マルチのパート 1 で、Reverb Send 0・Chorus Send 0・Voice Pan off にして、候補の音色を 3 回ずつ鳴らし、いちばん揺れない音色を選んだ
