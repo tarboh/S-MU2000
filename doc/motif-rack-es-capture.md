@@ -731,16 +731,22 @@ Amp Simulator のパラメーター: 01 Drive・02 Amp Type（off・stack・comb
   倍音が 2〜5dB 以内で合う（c = 0.15、p = 32 でほぼ折れ線）
 * **LPF は山のある 2 次（Q ≈ 1.6）**: LPF を 40（2kHz）と 58（16kHz）にした小さい音の応答の比で、1.6kHz に +3.9dB の山。
   測った応答 h には既定の LPF が入っているので割り戻し、頭打ちのあとでパラメーターの LPF を掛け直す
-* **Drive は頭打ちの前の上げ幅**: 130Hz の小さい音の上げ幅が Drive 0・30・64 で +0.9・+17.3・+28.8dB。頭打ちの大きさ c は Drive 30 から上でほぼ同じ（0.15〜0.17）、
-  Drive 0 では 0.6 とほとんど頭打ちしない。Drive 127 は小さい音でも頭打ちしていて読めない
+* **Drive は 2 段で効く**（Drive 0・5・10・15・20・30・64 を録った）:
+  * 0〜10: 小さい音の上げ幅は変わらず（+0.9dB）、**頭打ちの大きさ c が下がる**（0.62・0.43・0.17）。歪み始めが早くなる
+  * 15 から上: c はほぼ一定（0.15）で、**上げ幅が上がる**（15・20・30・64 で +6.7・+11.0・+17.3・+28.7dB）
+  * 応答の形は Drive 30 まで同じで、64 では中域（1kHz）が 6dB 持ち上がる。Drive 127 は小さい音でも頭打ちしていて読めない
+* **Edge は頭打ちの硬さだけ**（Drive 30 で 0・64・112・127 → p = 2・4・32・32。上げ幅も c も変わらない）。Drive 0 では Edge 127 で c = 0.91 と、
+  頭打ちの大きさにも効く（112 では 0.62）
 * アンプの型 0・2・3、Amp Simulator 2・Distortion・V-Distortion の既定も同じ形で当てはまる（8 段の音量 0.02〜0.59dB）。
   **鳴り続ける小さい正弦波の上げ幅は、50ms のノイズの音より 1〜3dB 大きく出る**（アンプの中に音量で動く所が少しあるのかもしれない）ので、正弦波に合わせた
 
-**芯で掛ける**（`mr_fx_apply.distortion`・`apply_insertion`）: 測った組から一番近いもの（Amp Simulator はアンプの型 → Drive の順）を選び、Drive の差は上げ幅を補間して直す。
+**芯で掛ける**（`mr_fx_apply.distortion`・`apply_insertion`、C++ は `sampler_fx.h`）: 測った組から一番近いもの（Amp Simulator はアンプの型 → Drive の順）の応答を使い、
+Drive の差は上げ幅を補間して直す。Amp Simulator の c は Drive の表、p は Edge の表（Drive 15 から上）から。
 出力は既定からの比で 40·log10、Dry/Wet は wet の割合 (値 − 1) / 126（どちらも確かめていない）。インサーションは A・B とつなぎ方（並列・A → B・B → A）に合わせて掛ける。
 * Mr. Klank（B に Amp Simulator 2）は Dry/Wet が 1 で効いておらず、あり・なしとも 0.1〜0.9dB
-* SuperClavi（Amp Simulator Drive 0・combo・Dry/Wet 44 → 3 Band EQ）は 1.3〜3.3dB、1968（Compressor → Amp Simulator Drive 0・stack）は 1.6〜4.5dB
-  （インサーションなしでは 0.2〜1.2dB）。1968 は 50〜200Hz で実機のほうが 4〜11dB 少ない。Drive の小さい所の形が合っていない
+* SuperClavi（Amp Simulator Drive 0・combo・Dry/Wet 44 → 3 Band EQ）は 1.3〜1.9dB（Drive・Edge を入れる前は 1.3〜3.3dB）、
+  1968（Compressor → Amp Simulator Drive 0・stack）は 1.6〜4.5dB（インサーションなしでは 0.2〜1.2dB）。1968 は 50〜200Hz で実機のほうが 4〜11dB 少ないが、
+  Drive 0 の応答の低い帯は既定と同じ形で、歪み系ではない所（前段の Compressor か）の差とみている
 まだのもの: Edge・アンプの型と Drive の組み合わせ、Comp+Dist などの組み合わせの型、Enhancer・ディレイ系・コーラス系のインサーション、
 エレメントごとに違うインサーションを通る音色（芯はエレメントを足してから掛けている）
 

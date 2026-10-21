@@ -399,15 +399,34 @@ inline void compressor(buf &L, buf &R, const block &b)
 
 struct dist_set { int amp, drive; const char *name; };
 
+inline double interp(const double *xs, const double *ys, int n, double x)
+{
+	if (x <= xs[0])
+		return ys[0];
+	for (int i = 0; i < n - 1; i++)
+		if (x <= xs[i + 1])
+			return ys[i] + (x - xs[i]) / (xs[i + 1] - xs[i]) * (ys[i + 1] - ys[i]);
+	return ys[n - 1];
+}
+
+// Amp Simulator（Stack）の 130Hz の小さい音の上げ幅（Drive 0〜10 は変わらず、15 から上がる。127 は 64 からの延ばし）
 inline double drive_gain_db(double d)
 {
-	static const double xs[4] = {0, 30, 64, 127}, ys[4] = {0.9, 17.3, 28.8, 28.8 + 0.34 * 63};
-	if (d <= xs[0])
-		return ys[0];
-	for (int i = 0; i < 3; i++)
-		if (d <= xs[i + 1])
-			return ys[i] + (d - xs[i]) / (xs[i + 1] - xs[i]) * (ys[i + 1] - ys[i]);
-	return ys[3];
+	static const double xs[7] = {0, 10, 15, 20, 30, 64, 127}, ys[7] = {0.9, 0.9, 6.7, 11.0, 17.3, 28.7, 28.7 + 0.34 * 63};
+	return interp(xs, ys, 7, d);
+}
+
+// 頭打ちの大きさ c（Drive 0〜10 で下がり、15 から上はほぼ一定）と、Edge による硬さ p（対数で補間）
+inline double drive_clip(double d)
+{
+	static const double xs[5] = {0, 5, 10, 15, 127}, ys[5] = {0.625, 0.429, 0.168, 0.153, 0.153};
+	return interp(xs, ys, 5, d);
+}
+
+inline double edge_p(double e)
+{
+	static const double xs[4] = {0, 64, 112, 127}, ys[4] = {std::log(2.0), std::log(4.0), std::log(32.0), std::log(32.0)};
+	return std::exp(interp(xs, ys, 4, e));
 }
 
 inline bool dist_type(const block &b) { return b.is(9, 48) || b.is(9, 49) || b.is(9, 0) || b.is(9, 16); }
@@ -415,13 +434,16 @@ inline bool dist_type(const block &b) { return b.is(9, 48) || b.is(9, 49) || b.i
 inline void distortion(buf &L, buf &R, const block &b, const std::string &fxddir)
 {
 	static const dist_set amp[] = {{1, 30, "insa_t9_48_lev16"}, {0, 30, "insa_t9_48_amptype0_lev16"}, {2, 30, "insa_t9_48_amptype2_lev16"},
-		{3, 30, "insa_t9_48_amptype3_lev16"}, {1, 0, "insa_t9_48_drive0_lev16"}, {1, 64, "insa_t9_48_drive64_lev16"}};
+		{3, 30, "insa_t9_48_amptype3_lev16"}, {1, 0, "insa_t9_48_drive0_lev16"}, {1, 64, "insa_t9_48_drive64_lev16"},
+		{1, 5, "insa_t9_48_drive5_lev16"}, {1, 10, "insa_t9_48_drive10_lev16"}, {1, 15, "insa_t9_48_drive15_lev16"},
+		{1, 20, "insa_t9_48_drive20_lev16"}};
+	const int NAMP = int(sizeof amp / sizeof amp[0]);
 	std::string name;
 	int drive_s;
 	if (b.is(9, 48)) {
 		int best = -1;
 		long key = 1L << 30;
-		for (int i = 0; i < 6; i++) {
+		for (int i = 0; i < NAMP; i++) {
 			const long k2 = (amp[i].amp != b.p[2]) * 1000L + std::abs(amp[i].drive - b.p[1]);
 			if (k2 < key) {
 				key = k2;
@@ -439,7 +461,12 @@ inline void distortion(buf &L, buf &R, const block &b, const std::string &fxddir
 		return;
 	if (drive_s < 0)
 		drive_s = std::atoi(ir.head["drive"].c_str());
-	const double c = std::atof(ir.head["c"].c_str()), p = std::atof(ir.head["p"].c_str());
+	double c = std::atof(ir.head["c"].c_str()), p = std::atof(ir.head["p"].c_str());
+	if (b.is(9, 48)) {
+		c = drive_clip(b.p[1]);
+		if (b.p[1] >= 15)
+			p = edge_p(b.p[11]);
+	}
 	double fc = std::atof(ir.head["fc"].c_str());
 	if ((b.is(9, 48) || b.is(9, 49)) && b.p[3] > 0)
 		fc = t3(b.p[3]);

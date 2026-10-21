@@ -228,13 +228,19 @@ def compressor(L, R, prm):
 # 歪み系（mr_fx_dist.py で当てはめた「線形の応答 h → 頭打ち → LPF」）。型ごとに測った組: (MSB, LSB) → [(アンプの型 or None, Drive, ファイル名)]
 DIST_SETS = {
     (9, 48): [(1, 30, "insa_t9_48_lev16"), (0, 30, "insa_t9_48_amptype0_lev16"), (2, 30, "insa_t9_48_amptype2_lev16"),
-              (3, 30, "insa_t9_48_amptype3_lev16"), (1, 0, "insa_t9_48_drive0_lev16"), (1, 64, "insa_t9_48_drive64_lev16")],
+              (3, 30, "insa_t9_48_amptype3_lev16"), (1, 0, "insa_t9_48_drive0_lev16"), (1, 64, "insa_t9_48_drive64_lev16"),
+              (1, 5, "insa_t9_48_drive5_lev16"), (1, 10, "insa_t9_48_drive10_lev16"), (1, 15, "insa_t9_48_drive15_lev16"),
+              (1, 20, "insa_t9_48_drive20_lev16")],
     (9, 49): [(None, None, "insa_t9_49_amp2def_lev16")],
     (9, 0): [(None, None, "insa_t9_0_distdef_lev16")],
     (9, 16): [(None, None, "insa_t9_16_vdistdef_lev16")],
 }
 DIST_DEFAULTS = {(9, 48): dict(drive=30, out=80), (9, 49): None, (9, 0): None, (9, 16): None}
-DRIVE_GAIN_DB = [(0, 0.9), (30, 17.3), (64, 28.8), (127, 28.8 + 0.34 * 63)]   # Amp Simulator（Stack）の 130Hz の小さい音の上げ幅
+# Amp Simulator（Stack）の 130Hz の小さい音の上げ幅（Drive 0〜10 は変わらず、15 から上がる。127 は 64 からの延ばし）
+DRIVE_GAIN_DB = [(0, 0.9), (10, 0.9), (15, 6.7), (20, 11.0), (30, 17.3), (64, 28.7), (127, 28.7 + 0.34 * 63)]
+# 頭打ちの大きさ c（Drive 0〜10 で下がり、15 から上はほぼ一定）と、Edge による硬さ p（Drive 15 から上で読んだ）
+DRIVE_CLIP = [(0, 0.625), (5, 0.429), (10, 0.168), (15, 0.153), (127, 0.153)]
+EDGE_P = [(0, 2.0), (64, 4.0), (112, 32.0), (127, 32.0)]
 
 
 def drive_gain_db(drive):
@@ -260,6 +266,11 @@ def distortion(L, R, prm, t, fxdir, default_prm):
     if lpf_param and prm.get(lpf_param):
         fc = T3[min(60, prm[lpf_param])]                # パラメーターの LPF Cutoff（表 3）。測ったときの 5kHz は既定の値 48
     k = 10 ** ((drive_gain_db(drive) - drive_gain_db(drive_s)) / 20)
+    if t == (9, 48):
+        # 頭打ちの大きさは Drive から、硬さは Edge から（Drive 10 以下は組の当てはめの硬さのまま）
+        c = float(np.interp(drive, [d for d, _ in DRIVE_CLIP], [v for _, v in DRIVE_CLIP]))
+        if drive >= 15:
+            p = float(np.exp(np.interp(prm.get("param11", 112), [e for e, _ in EDGE_P], [np.log(v) for _, v in EDGE_P])))
     x = (np.asarray(L) + np.asarray(R)) / 2
     outs = []
     for h in (hL, hR):
