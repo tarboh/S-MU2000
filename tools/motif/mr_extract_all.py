@@ -1,10 +1,12 @@
 """mr_capture.py で録った長い音を、まとめて「出だし + ループ」（または鳴らし切り）に切り出す。
-  python mr_extract_all.py 録った置き場 出力の置き場 [--redo-raw]
+  python mr_extract_all.py 録った置き場 出力の置き場 [--redo-raw] [--no-xfade]
 
 録った置き場の capture.csv を読み、まだ切り出していないものを順に処理する（もうある .npz は飛ばす）。
 * ループ: mr_extract.py と同じ（相関 0.998 以上をループとみなす。小さい音の高い鍵は 0.998〜0.999 に来る）
 * 鳴らし切り: 離す前に音が消える（最後の 0.3 秒が出だしの山より 70dB 以上小さい）なら、消えるまでをそのまま持つ
-* どちらでもない（揺れていてループが見つからない）ものは、離すまでをそのまま持ち、印を付ける
+* どちらでもない（揺れていてループが見つからない）ものは、離す直前をクロスフェードでつないだループにする（xfade_loop）。
+  相関 0.9 以上なら周期の整数倍の長さ（0.5 秒以上）で位相をそろえて直線につなぎ（xfade）、それより下は雑音として 0.5 秒をエネルギーを
+  保つ形でつなぐ（xnoise）。--no-xfade なら前のように、離すまでをそのまま持つ（raw）
 結果の一覧は出力の置き場の samples.csv に書く。録音を読むだけで、実機には何も送らない。"""
 import csv
 import os
@@ -19,7 +21,7 @@ FS = 44100
 HOLD = 6.0
 
 
-def process(path, hold=HOLD):
+def process(path, hold=HOLD, xfade=True):
     L, R = Z.read24(path)
     x = L + R
     on = int(np.argmax(np.abs(x) > 2e-4))
@@ -32,13 +34,50 @@ def process(path, hold=HOLD):
         above = np.nonzero(env > peak * 10 ** (-90 / 20))[0]
         end = on + (int(above[-1]) + 1 if len(above) else 0)
         return dict(kind="oneshot", L=L[on:end], R=R[on:end], loop_start=-1, loop_length=0, corr=0.0, stretch=1.0)
+    Lf = 0.0
     try:
         oL, oR, start, Li, Lf, rr, k = X.extract(L, R, hold_end=off)
     except Exception:
         rr = 0.0
     if rr >= 0.998:
         return dict(kind="loop", L=oL, R=oR, loop_start=start, loop_length=Li, corr=rr, stretch=k)
-    return dict(kind="raw", L=L[on:off], R=R[on:off], loop_start=-1, loop_length=0, corr=rr, stretch=1.0)
+    if not xfade:
+        return dict(kind="raw", L=L[on:off], R=R[on:off], loop_start=-1, loop_length=0, corr=rr, stretch=1.0)
+    # 相関が足りない: 離す直前の 0.5 秒以上をクロスフェードでつないだループにする
+    return xfade_loop(L, R, on, off, Lf if rr >= XF_PITCHED else 0.0, rr)
+
+
+XF_PITCHED = 0.9        # これ以上の相関なら、周期の整数倍の長さで位相をそろえてつなぐ（下は雑音として扱う）
+XF_SECONDS = 0.5        # ループの長さの下限
+XF_MAX = 0.15           # クロスフェードの長さの上限（秒。ループの 1/3 まで）
+
+
+def xfade_loop(L, R, on, off, Lf, rr):
+    """離す直前を、継ぎ目をクロスフェードで焼き込んだループにする。Lf（周期、サンプル）があれば、その整数倍の長さにして
+    伸び縮みで整数にそろえ、直線のクロスフェード（位相がそろうので打ち消し合わない）。無ければ 0.5 秒・エネルギーを保つクロスフェード"""
+    if Lf > 0:
+        Lm = Lf * int(np.ceil(XF_SECONDS * FS / Lf))
+    else:
+        Lm = XF_SECONDS * FS
+    Li = int(round(Lm))
+    k = Lm / Li
+    n = int((off - on) / k)
+    t = on + np.arange(n) * k
+    oL = np.interp(t, np.arange(len(L)), L)
+    oR = np.interp(t, np.arange(len(R)), R)
+    end = n - int(0.02 * FS)
+    X_ = min(Li // 3, int(XF_MAX * FS))
+    start = end - Li
+    if start < X_ + int(0.05 * FS):
+        return dict(kind="raw", L=L[on:off], R=R[on:off], loop_start=-1, loop_length=0, corr=rr, stretch=1.0)
+    a = np.linspace(0.0, 1.0, X_)
+    fa, fb = (1 - a, a) if Lf > 0 else (np.cos(a * np.pi / 2), np.sin(a * np.pi / 2))
+    for o in (oL, oR):
+        tail = o[start + Li - X_:start + Li].copy()
+        pre = o[start - X_:start]
+        o[start + Li - X_:start + Li] = tail * fa + pre * fb
+    return dict(kind="xfade" if Lf > 0 else "xnoise", L=oL[:start + Li], R=oR[:start + Li], loop_start=start, loop_length=Li,
+                corr=rr, stretch=k)
 
 
 def main():
@@ -77,7 +116,7 @@ def main():
                 continue
             extra = r.get(None) or []                       # 古い見出し（hold の欄が無い）のあとに足された行
             hold = r.get("hold") or (extra[0] if extra else None)
-            s = process(os.path.join(src, r["file"]), float(hold or HOLD))
+            s = process(os.path.join(src, r["file"]), float(hold or HOLD), "--no-xfade" not in sys.argv)
             np.savez_compressed(os.path.join(dst, name), L=s["L"].astype(np.float32), R=s["R"].astype(np.float32),
                                 loop_start=s["loop_start"], loop_length=s["loop_length"], stretch=s["stretch"])
             w.writerow([r["wave"], r["key_lo"], r["key_hi"], r["key"], r["vel_lo"], r["vel_hi"], r["vel"], name, s["kind"],
