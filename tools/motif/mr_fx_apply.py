@@ -10,7 +10,7 @@
 コーラス（Chorus 1〜5・Celeste 1〜4 の型、05 00〜05 18）: 遅れの線 1 本を左右に置き、遅れ =
 Delay Offset（表 2）+ 0.176ms × LFO Depth ×（三角波 0〜1）、速さは LFO Speed（表 1）、左右は逆の向き（mr_fx.py --train → mr_fx_chorus.py で測った）。
 線の高さ 2.06（エネルギーの増え方から）× Return / 96 × 送り / 127。フィードバック・EQ・コーラスからリバーブへの送りは入れていない。
-インサーション（apply_insertion）: 3 Band EQ（0F 00）だけ。低・高は 1 次の棚（角は表 3 × √2・表 3 / √2）、中は「上げるときは分子だけ、
+インサーション（apply_insertion）: 3 Band EQ（0F 00）と 2 Band EQ（0F 01、eq2_response）と Compressor（0A 00、compressor）。低・高は 1 次の棚（角は表 3 × √2・表 3 / √2）、中は「上げるときは分子だけ、
 下げるときは分母だけに利きを入れる」山（Q = Mid Width / 10）、利きは 1 目盛り 1dB（mr_fx.py --block insa → mr_fx_eq.py で測った。
 21 本の格子と 0.1〜0.4dB で合う）。周波数ごとに応答を掛ける（FFT）。全部のエレメントが同じインサーションを通る音色のときだけ正しい。"""
 import json
@@ -130,6 +130,34 @@ T3 = [20, 22, 25, 28, 32, 36, 40, 45, 50, 56, 63, 70, 80, 90, 100, 110, 125, 140
       6300, 7000, 8000, 9000, 10000, 11000, 12000, 14000, 16000, 18000, 20000]     # Data List の表 3（EQ の周波数）
 
 
+def shelf1(kind, f0, g, f):
+    """1 次の棚（双一次変換）。f0 は利きの半分（dB）になる所"""
+    z = np.exp(-2j * np.pi * f / FS)
+    A = 10 ** (g / 20)
+    K = np.tan(np.pi * min(f0, FS * 0.49) / FS)
+    r = np.sqrt(A)
+    if kind == "low":
+        b, a = (K * r + 1, K * r - 1), (K / r + 1, K / r - 1)
+    else:
+        b, a = (r + K, K - r), (1 / r + K, K - 1 / r)
+    return (b[0] + b[1] * z) / (a[0] + a[1] * z)
+
+
+def eq2_response(prm, f):
+    """2 Band EQ（0F 01）: 01 低の周波数・02 低の利き・03 高の周波数・04 高の利き。1 次の棚で、利きの半分になる所が
+    表 3 × √(利きの倍率)（低）・表 3 / √(利きの倍率)（高）。つまり棚が動き始める所（極）が表 3 の周波数。
+    利き ±6・±12dB の 5 本と 0.03〜0.18dB（3 Band EQ は利きによらず √2 倍で、決め方が違う）"""
+    H = np.ones(len(f), dtype=complex)
+    for kind, fp, gp in (("low", "param1", "param2"), ("high", "param3", "param4")):
+        g = prm[gp] - 64
+        if g == 0:
+            continue
+        r = np.sqrt(10 ** (abs(g) / 20))
+        f0 = T3[min(60, prm[fp])] * (r if kind == "low" else 1 / r)
+        H *= shelf1(kind, f0, g, f)
+    return H
+
+
 def eq3_response(prm, f):
     """3 Band EQ の周波数応答（複素数）"""
     z = np.exp(-2j * np.pi * f / FS)
@@ -162,15 +190,56 @@ def eq3_response(prm, f):
     return H
 
 
+COMP_ATTACK_MS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16, 18, 20, 23, 26, 30, 35, 40]           # 表 8
+COMP_RELEASE_MS = [10, 15, 25, 35, 45, 55, 65, 75, 85, 100, 115, 140, 170, 230, 340, 680]          # 表 9
+COMP_RATIO = [1.0, 1.5, 2.0, 3.0, 5.0, 7.0, 10.0, 20.0]                                             # 表 10
+
+
+def compressor(L, R, prm):
+    """Compressor（0A 00）。mr_fx_comp.py で測った形:
+    しきい値 = 値 − 127 dB を、左右の平均の RMS（5ms）の dBFS と比べる（正弦波で −24・−36 が −23.9・−35.9 に当てはまった）。
+    比率は表 10 で折れ線（膝はほぼ無い）。出力は 40·log10(Output Level / 64) dB 上げる（96 で +7.0dB）。
+    下げる量（dB）は、増えるときは時定数 1.6 × 表 8 の指数で（1・10・40ms で約 2・16・63ms）、
+    減るときは dB でまっすぐ 7.5dB / 表 9 の速さで戻る（45・100・680ms で 160・80・7.8 dB/秒）"""
+    x = (np.asarray(L) + np.asarray(R)) / 2
+    n = len(x)
+    win = int(0.005 * FS)
+    p = np.convolve(x * x, np.ones(win) / win, mode="full")[:n]
+    lev = 10 * np.log10(p + 1e-20)
+    T = prm["param3"] - 127
+    Rr = COMP_RATIO[min(7, prm["param4"])]
+    target = np.where(lev > T, (lev - T) * (1 - 1 / Rr), 0.0)
+    ka = np.exp(-1.0 / (1.6 * COMP_ATTACK_MS[min(19, prm["param1"])] / 1000 * FS))
+    rel = 7.5 / (COMP_RELEASE_MS[min(15, prm["param2"])] / 1000) / FS
+    gr = np.empty(n)
+    g = 0.0
+    for i in range(n):
+        t = target[i]
+        if t > g:
+            g = t + (g - t) * ka
+        else:
+            g = max(t, g - rel)
+        gr[i] = g
+    makeup = 40 * np.log10(max(1, prm["param5"]) / 64)
+    k = 10 ** ((makeup - gr) / 20)
+    return np.asarray(L) * k, np.asarray(R) * k
+
+
 def apply_insertion(L, R, voice):
     ins = voice["insertion1"]
     t = (ins["type"] >> 7, ins["type"] & 0x7F)
-    if t != (15, 0):
+    if t == (10, 0):
+        oL, oR = compressor(L, R, ins)
+        return oL, oR, "Compressor（%ddB・%.1f:1）" % (ins["param3"] - 127, COMP_RATIO[min(7, ins["param4"])])
+    if t not in ((15, 0), (15, 1)):
         return L, R, "インサーション A の型 %d:%d はまだ" % t
     n = len(L) + FS
     N = 1 << int(np.ceil(np.log2(n)))
     f = np.fft.rfftfreq(N, 1 / FS)
-    H = eq3_response(ins, f)
+    H = eq3_response(ins, f) if t == (15, 0) else eq2_response(ins, f)
+    if t == (15, 1):
+        out = [np.fft.irfft(np.fft.rfft(x, N) * H, N)[:len(x)] for x in (np.asarray(L), np.asarray(R))]
+        return out[0], out[1], "2 Band EQ（%+d / %+d dB）" % (ins["param2"] - 64, ins["param4"] - 64)
     out = [np.fft.irfft(np.fft.rfft(x, N) * H, N)[:len(x)] for x in (np.asarray(L), np.asarray(R))]
     return out[0], out[1], "3 Band EQ（%+d / %+d / %+d dB）" % (ins["param1"] - 64, ins["param3"] - 64, ins["param5"] - 64)
 
