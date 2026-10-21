@@ -538,13 +538,26 @@ inline void cross_delay(buf &L, buf &R, const block &b, int tempo = 0)
 	}
 }
 
-// 揺れる系のエフェクトの EQ（p6 低の周波数・p7 低の利き・p8 高の周波数・p9 高の利き）。2 Band EQ と同じ棚を、元の音も含めた出口に掛ける
-inline void fx_eq(buf &L, buf &R, const block &b)
+// コーラス系と Ensemble Detune の Input Mode（p15）: 0 = mono（左右を足して半分）、1 = stereo（左右それぞれ）
+inline void input_mode(const buf &L, const buf &R, const block &b, buf xs[2])
 {
-	if (b.p[7] == 64 && b.p[9] == 64)
+	if (b.p[15] == 1) {
+		xs[0] = L, xs[1] = R;
+		return;
+	}
+	xs[0].resize(L.size());
+	for (size_t i = 0; i < L.size(); i++)
+		xs[0][i] = (L[i] + R[i]) / 2;
+	xs[1] = xs[0];
+}
+
+// 揺れる系のエフェクトの EQ（p6 低の周波数・p7 低の利き・p8 高の周波数・p9 高の利き）。2 Band EQ と同じ棚を、元の音も含めた出口に掛ける
+inline void fx_eq(buf &L, buf &R, const block &b, int base = 6)
+{
+	if (b.p[base + 1] == 64 && b.p[base + 3] == 64)
 		return;
 	block q;
-	q.p[1] = b.p[6], q.p[2] = b.p[7], q.p[3] = b.p[8], q.p[4] = b.p[9];
+	q.p[1] = b.p[base], q.p[2] = b.p[base + 1], q.p[3] = b.p[base + 2], q.p[4] = b.p[base + 3];
 	L = filter_freq(L, L.size(), [&](double f) { return eq2(q, f); });
 	R = filter_freq(R, R.size(), [&](double f) { return eq2(q, f); });
 }
@@ -554,13 +567,12 @@ inline void fx_eq(buf &L, buf &R, const block &b)
 inline void insertion_chorus(buf &L, buf &R, const block &b)
 {
 	const int v = std::max(1, b.p[10]);
-	static const double xs[4] = {1, 32, 64, 127}, ys[4] = {0.0, 0.364, 0.838, 1.5};
-	const double gd = std::cos(PI / 2 * (v - 1) / 126.0), gw = std::sqrt(interp(xs, ys, 4, v));
+	static const double vx[4] = {1, 32, 64, 127}, vy[4] = {0.0, 0.364, 0.838, 1.5};
+	const double gd = std::cos(PI / 2 * (v - 1) / 126.0), gw = std::sqrt(interp(vx, vy, 4, v));
 	const double hz = LFO_HZ[std::min(127, b.p[1])], depth = 0.176 * b.p[2] / 1000 * FS, off = MOD_DELAY_MS[std::min(127, b.p[4])] / 1000 * FS;
 	const size_t n = L.size();
-	buf x(n);
-	for (size_t i = 0; i < n; i++)
-		x[i] = (L[i] + R[i]) / 2;
+	buf xs[2];
+	input_mode(L, R, b, xs);
 	for (size_t t = 0; t < n; t++) {
 		const double ph = std::fmod(double(t) * hz / FS, 1.0), tri = ph < 0.5 ? 2 * ph : 2 - 2 * ph;
 		double o[2] = {0, 0};
@@ -568,6 +580,7 @@ inline void insertion_chorus(buf &L, buf &R, const block &b)
 			const double pos = double(t) - (off + depth * (c == 0 ? tri : 1 - tri));
 			if (pos < 0)
 				continue;
+			const buf &x = xs[c];
 			const size_t i = size_t(pos);
 			const double fr = pos - double(i), a0 = x[i], a1 = i + 1 < n ? x[i + 1] : a0;
 			o[c] = a0 + (a1 - a0) * fr;
@@ -634,8 +647,52 @@ inline void enhancer(buf &L, buf &R, const block &b)
 	}
 }
 
+// Ensemble Detune（05 30）: 左は (p1 − 64) セント下げ、右は上げる遅れ線。遅れはのこぎり（1.485 秒で 1 周）で 0.25〜1.25 × 幅を回り
+// （幅 = 速さの差 × 1.485 秒）、最後の 1/4 で近い側から入る 2 本目へまっすぐ移る。左右は半周ずれる。p2・p3 Initial Delay（表 2）を足す。元の音 cos・wet sin。EQ はこの型では p11〜14
+inline void ensemble_detune(buf &L, buf &R, const block &b)
+{
+	const double hz = 1 / 1.485;
+	const int v = std::max(1, b.p[10]);
+	const double gd = std::cos(PI / 2 * (v - 1) / 126.0), gw = std::sin(PI / 2 * (v - 1) / 126.0);
+	const int cents = b.p[1] - 64;
+	const size_t n = L.size();
+	buf xs[2], w[2] = {buf(n), buf(n)};
+	input_mode(L, R, b, xs);
+	auto at = [&](const buf &x, double pos) {
+		if (pos < 0)
+			return 0.0;
+		const size_t k = size_t(pos);
+		const double fr = pos - double(k);
+		return k + 1 < n ? x[k] + (x[k + 1] - x[k]) * fr : (k < n ? x[k] : 0.0);
+	};
+	for (int c = 0; c < 2; c++) {
+		const double cc = c == 0 ? -cents : cents, ph0 = c == 0 ? 0.0 : 0.5;
+		const double init = MOD_DELAY_MS[std::min(127, b.p[c == 0 ? 2 : 3])] / 1000 * FS;
+		const double rate = 1 - std::exp2(cc / 1200.0), span = std::fabs(rate) / hz * FS;
+		for (size_t t = 0; t < n; t++) {
+			if (span < 1e-9) {
+				w[c][t] = at(xs[c], double(t) - init);
+				continue;
+			}
+			const double sw = std::fmod(double(t) * hz / FS + ph0, 1.0), s1 = rate > 0 ? sw : 1 - sw;
+			const double d1 = init + span * (0.25 + s1), d2 = rate > 0 ? init + span * (s1 - 0.75) : init + span * (s1 + 1.25);
+			const double u = std::min(1.0, std::max(0.0, (sw - 0.75) / 0.25));
+			w[c][t] = (1 - u) * at(xs[c], double(t) - d1) + u * at(xs[c], double(t) - d2);
+		}
+	}
+	for (size_t t = 0; t < n; t++) {
+		L[t] = gd * L[t] + gw * w[0][t];
+		R[t] = gd * R[t] + gw * w[1][t];
+	}
+	fx_eq(L, R, b, 11);
+}
+
 inline void apply_block(buf &L, buf &R, const block &b, const std::string &fxddir, int tempo = 120)
 {
+	if (b.is(5, 0x30)) {
+		ensemble_detune(L, R, b);
+		return;
+	}
 	if (b.is(15, 0x10)) {
 		enhancer(L, R, b);
 		return;

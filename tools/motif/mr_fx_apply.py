@@ -340,19 +340,19 @@ def cross_delay(L, R, prm, tempo=None):
 def insertion_chorus(L, R, prm):
     """インサーションのコーラス（Chorus 1〜5・Celeste 1〜4）。遅れの動きはシステムのコーラスと同じ（mr_fx.py --block insa --train で確かめた）。
     Dry/Wet（10）: 元の音 cos(π/2 (v − 1) / 126)、コーラスの線のエネルギー（元の音を 1 として）は 32・64・127 で 0.364・0.838・1.5 を補間。
-    EQ（6〜9）はフランジャーと同じ欄なので fx_eq を掛ける（コーラスでは確かめていない）。Feedback（3）と Input Mode（15）は入れていない"""
+    EQ（6〜9）はフランジャーと同じ欄なので fx_eq を掛ける（コーラスでは確かめていない）。Input Mode（15）は input_mode。Feedback（3）は入れていない"""
     v = max(1, prm.get("param10", 64))
     gd = np.cos(np.pi / 2 * (v - 1) / 126.0)
     gw = np.sqrt(np.interp(v, [1, 32, 64, 127], [0.0, 0.364, 0.838, 1.5]))
     hz = LFO_HZ[min(127, prm["param1"])]
     depth = 0.176 * prm["param2"] / 1000 * FS
     off = MOD_DELAY_MS[min(127, prm["param4"])] / 1000 * FS
-    x = (np.asarray(L) + np.asarray(R)) / 2
-    n = len(x)
+    xs = input_mode(L, R, prm)
+    n = len(xs[0])
     t = np.arange(n)
     ph = (t * hz / FS) % 1.0
     tri = np.where(ph < 0.5, 2 * ph, 2 - 2 * ph)
-    out = [np.interp(t - (off + depth * tr), t, x, left=0.0) for tr in (tri, 1 - tri)]
+    out = [np.interp(t - (off + depth * tr), t, x, left=0.0) for x, tr in zip(xs, (tri, 1 - tri))]
     return fx_eq(gd * np.asarray(L) + gw * out[0], gd * np.asarray(R) + gw * out[1], prm)
 
 
@@ -417,11 +417,12 @@ def enhancer(L, R, prm):
 FX_EQ_FORM = "eq2"
 
 
-def fx_eq(L, R, prm):
-    """揺れる系のエフェクトの EQ（6 低の周波数・7 低の利き・8 高の周波数・9 高の利き）を、出口（元の音も含む）に掛ける"""
-    if prm.get("param7", 64) == 64 and prm.get("param9", 64) == 64:
+def fx_eq(L, R, prm, base=6):
+    """揺れる系のエフェクトの EQ（6 低の周波数・7 低の利き・8 高の周波数・9 高の利き。Ensemble Detune は 11〜14）を、出口（元の音も含む）に掛ける"""
+    k = ["param%d" % (base + i) for i in range(4)]
+    if prm.get(k[1], 64) == 64 and prm.get(k[3], 64) == 64:
         return L, R
-    q = dict(param1=prm["param6"], param2=prm["param7"], param3=prm["param8"], param4=prm["param9"])
+    q = dict(param1=prm[k[0]], param2=prm[k[1]], param3=prm[k[2]], param4=prm[k[3]])
     N = 1 << int(np.ceil(np.log2(len(L) + 1)))
     f = np.fft.rfftfreq(N, 1 / FS)
     if FX_EQ_FORM == "eq2":
@@ -429,6 +430,49 @@ def fx_eq(L, R, prm):
     else:
         H = eq3_response(dict(param1=q["param2"], param2=34, param3=64, param4=10, param5=q["param4"], param6=q["param1"], param7=q["param3"]), f)
     return tuple(np.fft.irfft(np.fft.rfft(np.asarray(x), N) * H, N)[:len(x)] for x in (L, R))
+
+
+ENSEMBLE_HZ = 1 / 1.485      # のこぎりの回る速さ（Detune −10・+50 セントで同じ）
+
+
+def ensemble_detune(L, R, prm):
+    """Ensemble Detune（05 30）。左は Detune（01、(値 − 64) セント）だけ下げ、右は上げる、遅れ線の音程変え。
+    遅れはのこぎりで 0.25〜1.25 × 幅を回り（幅 = 速さの差 × 1.485 秒）、回りの最後の 1/4 で、近い側から入る 2 本目へまっすぐ（振幅の和が 1）移る。
+    左右はのこぎりが半周ずれる。02・03 Initial Delay（表 2）は遅れに足す（確かめていない）。Dry/Wet（10）は元の音 cos・wet sin（確かめた）"""
+    v = max(1, prm.get("param10", 64))
+    gd = np.cos(np.pi / 2 * (v - 1) / 126.0)
+    gw = np.sin(np.pi / 2 * (v - 1) / 126.0)
+    cents = prm["param1"] - 64
+    xs = input_mode(L, R, prm)
+    n = len(xs[0])
+    t = np.arange(n)
+    outs = []
+    for x, c, ph0, dp in ((xs[0], -cents, 0.0, "param2"), (xs[1], cents, 0.5, "param3")):
+        init = MOD_DELAY_MS[min(127, prm.get(dp, 0))] / 1000 * FS
+        rate = 1 - 2 ** (c / 1200.0)          # 遅れの伸びる速さ（下げるときに正）
+        span = abs(rate) / ENSEMBLE_HZ * FS
+        if span < 1e-9:
+            outs.append(np.interp(t - init, t, x, left=0.0))
+            continue
+        sw = (t * ENSEMBLE_HZ / FS + ph0) % 1.0
+        s1 = sw if rate > 0 else 1 - sw         # 主の線: 0.25 + s1（音程を上げるときは遅れが縮む向き）
+        d1 = init + span * (0.25 + s1)
+        d2 = init + span * (s1 - 0.75) if rate > 0 else init + span * (s1 + 1.25)
+        u = np.clip((sw - 0.75) / 0.25, 0, 1)
+        y1 = np.interp(t - d1, t, x, left=0.0)
+        y2 = np.interp(t - d2, t, x, left=0.0)
+        outs.append((1 - u) * y1 + u * y2)
+    oL, oR = gd * np.asarray(L) + gw * outs[0], gd * np.asarray(R) + gw * outs[1]
+    return fx_eq(oL, oR, prm, 11)
+
+
+def input_mode(L, R, prm):
+    """コーラス系と Ensemble Detune の Input Mode（15）: 0 = mono（左右を足して半分）、1 = stereo（左右それぞれ）。測った音は mono で、確かめていない"""
+    L, R = np.asarray(L, dtype=np.float64), np.asarray(R, dtype=np.float64)
+    if prm.get("param15", 0) == 1:
+        return L, R
+    x = (L + R) / 2
+    return x, x
 
 
 def apply_block(L, R, ins, fxdir=None):
@@ -451,6 +495,9 @@ def apply_block(L, R, ins, fxdir=None):
     if t in CHORUS_TYPES:
         oL, oR = insertion_chorus(L, R, ins)
         return oL, oR, "コーラス %d:%d（Dry/Wet %d）" % (t[0], t[1], ins.get("param10", 64))
+    if t == (5, 0x30):
+        oL, oR = ensemble_detune(L, R, ins)
+        return oL, oR, "Ensemble Detune（%+d セント・Dry/Wet %d）" % (ins["param1"] - 64, ins.get("param10", 64))
     if t == (15, 16):
         oL, oR = enhancer(L, R, ins)
         return oL, oR, "Enhancer（%.0fHz・Drive %d・Mix %d）" % (T3[min(60, ins["param1"])], ins["param2"], ins["param3"])
