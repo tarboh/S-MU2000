@@ -24,6 +24,10 @@ RATE = 1000
 TYPES = {(8, 0x00), (8, 0x10), (8, 0x11), (8, 0x50), (8, 0x51), (8, 0x52), (8, 0x53), (8, 0x60), (8, 0x61), (8, 0x62), (8, 0x63),
          (8, 0x70), (8, 0x71), (8, 0x72), (14, 0x50)}
 TEMPO_TYPES = {(14, 0x50)}
+# 歪みを中に持つ Rotary（Dist / Odrv / Amp + Rotary、08 51〜53・61〜63）は、音量で効き方が変わる（RotoGtr の組で、音量 50 は 100 より低い帯 +1.7dB・
+# 高い帯 +0.7dB）ので、音量 100・50・25 で録り、入口の包絡（50ms の RMS）で 3 つの出口を混ぜる。Dual Rotor は音量 50・100 で同じだった
+LEVEL_TYPES = {(8, 0x51), (8, 0x52), (8, 0x53), (8, 0x61), (8, 0x62), (8, 0x63)}
+LEVELS = (100, 25)          # 50 も録ったが、RotoGtr の組で 220Hz の遅れが半周期（逆の向き）ずれていて、混ぜると打ち消し合ったので使わない
 KEYS = ((57, 220.0), (96, 440.0 * 2 ** ((96 - 69) / 12)))
 
 
@@ -56,13 +60,18 @@ def record(only):
             continue
         t = (ins["type"] >> 7, ins["type"] & 0x7F)
         st = ",".join("p%d=%d" % (i, ins["param%d" % i]) for i in range(1, 17))
-        for key, _ in KEYS:
-            tag = "%s_k%d" % (k, key)
-            if os.path.exists(os.path.join(OUT, "cs%s_long_wet.wav" % tag)):
-                continue
-            cmd = [sys.executable, os.path.join(HERE, "mr_fx_comp.py"), "--dir", OUT, "--type", "%d:%d" % t, "--key", str(key),
-                   "--set", st, "--tag", tag, "--long", "8", "--level", "100"]
-            subprocess.run(cmd, check=True, cwd=HERE, stdout=subprocess.DEVNULL)
+        for lv in (LEVELS if t in LEVEL_TYPES else (100,)):
+            for key, _ in KEYS:
+                tag = "%s_k%d" % (k, key) + ("" if lv == 100 else "_L%d" % lv)
+                if os.path.exists(os.path.join(OUT, "cs%s_long_wet.wav" % tag)):
+                    continue
+                cmd = [sys.executable, os.path.join(HERE, "mr_fx_comp.py"), "--dir", OUT, "--type", "%d:%d" % t, "--key", str(key),
+                       "--set", st, "--tag", tag, "--long", "8", "--level", str(lv)]
+                subprocess.run(cmd, check=True, cwd=HERE, stdout=subprocess.DEVNULL)
+        if not os.path.exists(os.path.join(OUT, "cs%s_noise_long_wet.wav" % k)):
+            # 周波数の形（EQ・アンプの色・帯の分け方）を、ノイズの時間平均の応答で取る
+            subprocess.run([sys.executable, os.path.join(HERE, "mr_fx_comp.py"), "--dir", OUT, "--type", "%d:%d" % t, "--key", "60", "--wave", "705",
+                            "--set", st, "--tag", k + "_noise", "--long", "4", "--level", "100"], check=True, cwd=HERE, stdout=subprocess.DEVNULL)
         print(k, "録った（%s）" % ",".join(voices), flush=True)
 
 
@@ -120,22 +129,69 @@ def period_of(A):
     return i if ac[i] > 0.5 and i > lo else 4000  # 周期が見えない（範囲の端に当たったときも）ときは最後の 4 秒を繰り返す
 
 
+def dry_db(base):
+    """dry の正弦波の音量（RMS、dB）。音量ごとに録った組で、入口の包絡と比べる目盛り"""
+    sys.path.insert(0, HERE)
+    import mr_ref
+    d = np.asarray(mr_ref.read_wav(base + "_long_dry.wav")[0], dtype=np.float64)
+    od = int(np.argmax(np.abs(d) > 1e-4))
+    return 10 * np.log10(np.mean(d[od + FS:od + 7 * FS] ** 2) + 1e-20)
+
+
+NW = 4096
+
+
+def avg_response(k):
+    """ノイズの時間平均の応答の大きさ（左右、2049 点、1/6 オクターブで均す）"""
+    sys.path.insert(0, HERE)
+    import mr_ref
+    base = os.path.join(OUT, "cs%s_noise_long" % k)
+    dL, dR = mr_ref.read_wav(base + "_dry.wav")
+    wL, wR = mr_ref.read_wav(base + "_wet.wav")
+    d = (np.asarray(dL, dtype=np.float64) + np.asarray(dR, dtype=np.float64)) / 2
+    od = int(np.argmax(np.abs(d) > 1e-4))
+    w = np.hanning(NW + 1)[:NW]
+    a, b = od + int(0.5 * FS), od + int(3.8 * FS)
+    nf = (b - a - NW) // (NW // 4)
+    X = np.stack([np.fft.rfft(d[a + i * NW // 4:a + i * NW // 4 + NW] * w) for i in range(nf)])
+    Pxx = np.sum(np.abs(X) ** 2, axis=0)
+    f = np.fft.rfftfreq(NW, 1 / FS)
+    out = []
+    for wch in (wL, wR):
+        y = np.asarray(wch, dtype=np.float64)
+        Y = np.stack([np.fft.rfft(y[a + i * NW // 4:a + i * NW // 4 + NW] * w) for i in range(nf)])
+        Pyy = np.sum(np.abs(Y) ** 2, axis=0)
+        mag = np.sqrt(Pyy / (Pxx + 1e-9 * Pxx.max()))
+        sm = np.empty_like(mag)
+        for i, fi in enumerate(f):
+            lo, hi = fi / 2 ** (1 / 12), fi * 2 ** (1 / 12)
+            m = (f >= lo) & (f <= hi)
+            sm[i] = np.sqrt(np.mean(mag[m] ** 2)) if m.any() else mag[i]
+        out.append(sm)
+    return np.stack(out)
+
+
 def analyze():
     for k, (ins, tempo, voices) in needed().items():
-        bases = [os.path.join(OUT, "cs%s_k%d" % (k, key)) for key, _ in KEYS]
-        if not all(os.path.exists(b + "_long_wet.wav") for b in bases):
-            continue
-        bands = [read_pair(b, f0) for b, (_, f0) in zip(bases, KEYS)]
-        n = min(len(x) for band in bands for x in band)
-        cols = [x[:n] for band in bands for x in band]
-        P = period_of(cols[0]) or period_of(cols[2])      # Auto Pan は左右が逆に動いて足すと一定なので、片側ずつ見る
-        with open(os.path.join(OUT, k + ".mod"), "wb") as f:
-            f.write(("MOD rate=%d frames=%d period=%d\n" % (RATE, n, P)).encode("ascii"))
-            f.write(np.stack(cols, axis=1).astype("<f4").tobytes())
-        lo, hi = bands
-        print("%s（%s）: 周期 %d ms・低い帯 A 左 %.2f〜%.2f 右 %.2f〜%.2f・d 左 %.1f〜%.1f・高い帯 A 左 %.2f〜%.2f・d 左 %.1f〜%.1f サンプル" % (
-            k, ",".join(voices), P, lo[0][200:].min(), lo[0][200:].max(), lo[2][200:].min(), lo[2][200:].max(),
-            lo[1][200:].min(), lo[1][200:].max(), hi[0][200:].min(), hi[0][200:].max(), hi[1][200:].min(), hi[1][200:].max()), flush=True)
+        if os.path.exists(os.path.join(OUT, "cs%s_noise_long_wet.wav" % k)):
+            avg_response(k).astype("<f4").tofile(os.path.join(OUT, k + ".modeq"))
+        t = (ins["type"] >> 7, ins["type"] & 0x7F)
+        for lv in (LEVELS if t in LEVEL_TYPES else (100,)):
+            suf = "" if lv == 100 else "_L%d" % lv
+            bases = [os.path.join(OUT, "cs%s_k%d%s" % (k, key, suf)) for key, _ in KEYS]
+            if not all(os.path.exists(b + "_long_wet.wav") for b in bases):
+                continue
+            bands = [read_pair(b, f0) for b, (_, f0) in zip(bases, KEYS)]
+            n = min(len(x) for band in bands for x in band)
+            cols = [x[:n] for band in bands for x in band]
+            P = period_of(cols[0]) or period_of(cols[2])      # Auto Pan は左右が逆に動いて足すと一定なので、片側ずつ見る
+            with open(os.path.join(OUT, k + suf + ".mod"), "wb") as f:
+                f.write(("MOD rate=%d frames=%d period=%d indb=%.2f\n" % (RATE, n, P, dry_db(bases[0]))).encode("ascii"))
+                f.write(np.stack(cols, axis=1).astype("<f4").tobytes())
+            lo, hi = bands
+            print("%s（%s）: 周期 %d ms・低い帯 A 左 %.2f〜%.2f 右 %.2f〜%.2f・d 左 %.1f〜%.1f・高い帯 A 左 %.2f〜%.2f・d 左 %.1f〜%.1f サンプル" % (
+                k + suf, ",".join(voices), P, lo[0][200:].min(), lo[0][200:].max(), lo[2][200:].min(), lo[2][200:].max(),
+                lo[1][200:].min(), lo[1][200:].max(), hi[0][200:].min(), hi[0][200:].max(), hi[1][200:].min(), hi[1][200:].max()), flush=True)
 
 
 def split(x):
@@ -181,17 +237,58 @@ def eq_response(ins, f):
     return H
 
 
-def apply(L, R, ins, tempo, cache={}):
+def load_mod(path, cache={}):
+    if path not in cache:
+        with open(path, "rb") as f:
+            head = dict(kv.split("=") for kv in f.readline().decode("ascii").split()[1:])
+            cache[path] = (np.frombuffer(f.read(), dtype="<f4").reshape(-1, 8).astype(np.float64), int(head["period"]),
+                           float(head.get("indb", "nan")))
+    return cache[path]
+
+
+def shape_of(ins, tempo):
+    """周波数の形: ノイズで録った時間平均の応答（左右）があればそれ、無ければパラメーターの EQ（左右同じ）。(f の点 → 大きさ) を返す関数か None"""
+    k = key_of(ins, tempo)
+    p = os.path.join(OUT, k + ".modeq")
+    if os.path.exists(p):
+        m = np.fromfile(p, dtype="<f4").astype(np.float64).reshape(2, -1)
+        fg = np.fft.rfftfreq(NW, 1 / FS)
+        return lambda f, ch: np.interp(f, fg, m[ch])
+    def eqf(f, ch):
+        H = eq_response(ins, f)
+        return None if H is None else H
+    return eqf if eq_response(ins, np.array([1000.0])) is not None else None
+
+
+def _run(xs, ins, cols, P, shape=None):
+    n = len(xs[0])
+    t = np.arange(n)
+    out = [np.zeros(n), np.zeros(n)]
+    bl = [split(x) for x in xs]
+    for b in range(2):
+        for ch in range(2):
+            xb = bl[ch][b]
+            nb = 1.0 if shape is None else max(1e-3, float(np.abs(shape(np.array([KEYS[b][1]]), ch))[0]))
+            A = series(cols[:, b * 4 + ch * 2], P, n) / nb
+            d = series(cols[:, b * 4 + ch * 2 + 1], P, n)
+            out[ch] += A * np.interp(t - d, t, xb, left=0.0)
+    return out
+
+
+def env_db(x):
+    """入口の包絡: 50ms の RMS（dB）"""
+    w = int(0.05 * FS)
+    c = np.concatenate([[0.0], np.cumsum(x * x)])
+    i = np.arange(len(x))
+    lo, hi = np.maximum(0, i - w // 2), np.minimum(len(x), i + w // 2)
+    return 10 * np.log10((c[hi] - c[lo]) / w + 1e-20)
+
+
+def apply(L, R, ins, tempo):
     k = key_of(ins, tempo)
     p = os.path.join(OUT, k + ".mod")
     if not os.path.exists(p):
         return None
-    if k not in cache:
-        with open(p, "rb") as f:
-            head = f.readline().decode("ascii").split()
-            P = int(head[3].split("=")[1])
-            cache[k] = (np.frombuffer(f.read(), dtype="<f4").reshape(-1, 8).astype(np.float64), P)
-    cols, P = cache[k]
     # 左右を別々に通す（Tremolo・Slice が実機と 3〜4dB 合うようになった。49 音色の比べ）。Rotary・Dual Rotor はスピーカーへ足して送る形なので左右を足す
     t = (ins["type"] >> 7, ins["type"] & 0x7F)
     stereo = not (t[0] == 8 and 0x50 <= t[1] <= 0x72)
@@ -199,21 +296,29 @@ def apply(L, R, ins, tempo, cache={}):
     if not stereo:
         xs = [(xs[0] + xs[1]) / 2] * 2
     n = len(xs[0])
-    t = np.arange(n)
-    out = [np.zeros(n), np.zeros(n)]
-    bl = [split(x) for x in xs]
-    He = eq_response(ins, np.array([KEYS[0][1], KEYS[1][1]]))
-    norm = [1.0, 1.0] if He is None else [max(1e-3, abs(He[0])), max(1e-3, abs(He[1]))]
-    for b in range(2):
-        for ch in range(2):
-            xb = bl[ch][b]
-            A = series(cols[:, b * 4 + ch * 2], P, n) / norm[b]
-            d = series(cols[:, b * 4 + ch * 2 + 1], P, n)
-            out[ch] += A * np.interp(t - d, t, xb, left=0.0)
-    N = 1 << int(np.ceil(np.log2(n + 1)))
-    He = eq_response(ins, np.fft.rfftfreq(N, 1 / FS))
-    if He is not None:
-        out = [np.fft.irfft(np.fft.rfft(o, N) * He, N)[:n] for o in out]
+    files = [p] + [os.path.join(OUT, "%s_L%d.mod" % (k, lv)) for lv in LEVELS[1:]]
+    files = [f for f in files if os.path.exists(f)]
+    if t in LEVEL_TYPES and len(files) > 1:
+        sets = sorted((load_mod(f) for f in files), key=lambda z: z[2])
+        dbs = np.array([z[2] for z in sets])
+        shape = shape_of(ins, tempo)
+        outs = [_run(xs, ins, c, P, shape) for c, P, _ in sets]
+        e = env_db((xs[0] + xs[1]) / 2)
+        j = np.clip(np.searchsorted(dbs, e, side="right") - 1, 0, len(dbs) - 2)
+        u = np.clip((e - dbs[j]) / (dbs[j + 1] - dbs[j]), 0, 1)
+        out = [np.zeros(n), np.zeros(n)]
+        for i in range(len(dbs)):
+            wgt = np.where(j == i, 1 - u, 0.0) + np.where(j + 1 == i, u, 0.0)
+            for ch in range(2):
+                out[ch] += wgt * outs[i][ch]
+    else:
+        shape = shape_of(ins, tempo)
+        cols, P, _ = load_mod(p)
+        out = _run(xs, ins, cols, P, shape)
+    if shape is not None:
+        N = 1 << int(np.ceil(np.log2(n + 1)))
+        f = np.fft.rfftfreq(N, 1 / FS)
+        out = [np.fft.irfft(np.fft.rfft(o, N) * shape(f, ch), N)[:n] for ch, o in enumerate(out)]
     return out[0], out[1]
 
 

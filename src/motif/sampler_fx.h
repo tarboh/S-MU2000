@@ -871,26 +871,71 @@ inline cplx mod_eq(const block &b, double f, bool &has)
 	return H;
 }
 
+struct mod_file {
+	int rate = 1000, frames = 0, period = 0;
+	double indb = 0;
+	std::vector<float> raw;
+};
+
+inline bool load_mod(const std::string &path, mod_file &m)
+{
+	FILE *f = std::fopen(path.c_str(), "rb");
+	if (!f)
+		return false;
+	char head[160];
+	if (!std::fgets(head, sizeof head, f)) {
+		std::fclose(f);
+		return false;
+	}
+	m.indb = 0;
+	std::sscanf(head, "MOD rate=%d frames=%d period=%d indb=%lf", &m.rate, &m.frames, &m.period, &m.indb);
+	m.raw.resize(size_t(m.frames) * 8);
+	m.frames = int(std::fread(m.raw.data(), sizeof(float) * 8, size_t(m.frames), f));
+	std::fclose(f);
+	return m.frames >= 2;
+}
+
+// 揺れる型の芯: 1kHz で分けた 2 つの帯に、録った A(t)・d(t) を掛ける。nrm は帯ごとの周波数の形の大きさ（220Hz・2093Hz での値）で A を割る
+inline void mod_core(const buf xb2[2][2], const mod_file &m, const double nrm[2][2], buf out[2])
+{
+	const size_t n = xb2[0][0].size();
+	auto series = [&](int col, double tt) {
+		const double mm = m.frames;
+		double u = tt / FS * m.rate;
+		if (m.period > 0 && u >= mm - 1)
+			u = (mm - 1 - m.period) + std::fmod(u - (mm - 1 - m.period), double(m.period));
+		else if (u > mm - 1)
+			u = mm - 1;
+		const int i = int(u);
+		const double fr = u - i;
+		const float a0 = m.raw[size_t(i) * 8 + col], a1 = m.raw[size_t(std::min(i + 1, m.frames - 1)) * 8 + col];
+		return a0 + (a1 - a0) * fr;
+	};
+	out[0].assign(n, 0.0);
+	out[1].assign(n, 0.0);
+	for (size_t t = 0; t < n; t++)
+		for (int bd = 0; bd < 2; bd++)
+			for (int ch = 0; ch < 2; ch++) {
+				const double A = series(bd * 4 + ch * 2, double(t)) / nrm[bd][ch], d = series(bd * 4 + ch * 2 + 1, double(t));
+				const double pos = double(t) - d;
+				if (pos < 0)
+					continue;
+				const size_t k0 = size_t(pos);
+				const double fr = pos - double(k0);
+				const buf &xb = xb2[ch][bd];
+				const double v = k0 + 1 < n ? xb[k0] + (xb[k0 + 1] - xb[k0]) * fr : (k0 < n ? xb[k0] : 0.0);
+				out[ch][t] += A * v;
+			}
+}
+
 inline bool modfx(buf &L, buf &R, const block &b, const std::string &moddir, int tempo)
 {
 	std::string k = "t" + std::to_string(b.msb) + "_" + std::to_string(b.lsb);
 	for (int i = 1; i <= 16; i++)
 		k += "_" + std::to_string(b.p[i]);
 	k += "_" + std::to_string(b.is(14, 0x50) ? tempo : 0);
-	FILE *f = std::fopen((moddir + "/" + k + ".mod").c_str(), "rb");
-	if (!f)
-		return false;
-	char head[128];
-	if (!std::fgets(head, sizeof head, f)) {
-		std::fclose(f);
-		return false;
-	}
-	int rate = 1000, frames = 0, period = 0;
-	std::sscanf(head, "MOD rate=%d frames=%d period=%d", &rate, &frames, &period);
-	std::vector<float> raw(size_t(frames) * 8);
-	frames = int(std::fread(raw.data(), sizeof(float) * 8, size_t(frames), f));
-	std::fclose(f);
-	if (frames < 2)
+	mod_file m100;
+	if (!load_mod(moddir + "/" + k + ".mod", m100))
 		return false;
 	const size_t n = L.size();
 	// 左右を別々に通す（Rotary・Dual Rotor はスピーカーへ足して送る形なので左右を足す）
@@ -901,6 +946,36 @@ inline bool modfx(buf &L, buf &R, const block &b, const std::string &moddir, int
 			xs[0][i] = (L[i] + R[i]) / 2;
 		xs[1] = xs[0];
 	}
+	// 周波数の形: ノイズで録った時間平均の応答（fxmod/<名前>.modeq、左右 2049 点）があればそれ、無ければパラメーターの EQ
+	std::vector<float> eqm;
+	{
+		FILE *f = std::fopen((moddir + "/" + k + ".modeq").c_str(), "rb");
+		if (f) {
+			eqm.resize(2 * 2049);
+			if (std::fread(eqm.data(), sizeof(float), eqm.size(), f) != eqm.size())
+				eqm.clear();
+			std::fclose(f);
+		}
+	}
+	bool has_eq = false;
+	mod_eq(b, 1000.0, has_eq);
+	const bool has_shape = !eqm.empty() || has_eq;
+	auto shape = [&](double fq, int ch) -> cplx {
+		if (!eqm.empty()) {
+			const double x = fq / (FS / 4096.0);
+			const int i = std::max(0, std::min(2047, int(x)));
+			const double fr = std::max(0.0, std::min(1.0, x - i));
+			return eqm[ch * 2049 + i] + (eqm[ch * 2049 + i + 1] - eqm[ch * 2049 + i]) * fr;
+		}
+		bool h;
+		return mod_eq(b, fq, h);
+	};
+	double nrm[2][2] = {{1, 1}, {1, 1}};
+	if (has_shape)
+		for (int ch = 0; ch < 2; ch++) {
+			nrm[0][ch] = std::max(1e-3, std::abs(shape(220.0, ch)));
+			nrm[1][ch] = std::max(1e-3, std::abs(shape(440.0 * std::exp2(27 / 12.0), ch)));
+		}
 	// 1kHz で 2 つに分ける（2 次のバターワースを 2 回）
 	auto band = [&](const buf &x, bool low) {
 		return filter_freq(x, n, [low](double fq) {
@@ -911,41 +986,40 @@ inline bool modfx(buf &L, buf &R, const block &b, const std::string &moddir, int
 		});
 	};
 	const buf xb2[2][2] = {{band(xs[0], true), band(xs[0], false)}, {band(xs[1], true), band(xs[1], false)}};
-	bool has_eq = false;
-	const double nlo = std::max(1e-3, std::abs(mod_eq(b, 220.0, has_eq))), nhi = std::max(1e-3, std::abs(mod_eq(b, 440.0 * std::exp2(27 / 12.0), has_eq)));
-	const double nrm[2] = {has_eq ? nlo : 1.0, has_eq ? nhi : 1.0};
-	auto series = [&](int col, double tt) {
-		const double m = frames;
-		double u = tt / FS * rate;
-		if (period > 0 && u >= m - 1)
-			u = (m - 1 - period) + std::fmod(u - (m - 1 - period), double(period));
-		else if (u > m - 1)
-			u = m - 1;
-		const int i = int(u);
-		const double fr = u - i;
-		const float a0 = raw[size_t(i) * 8 + col], a1 = raw[size_t(std::min(i + 1, frames - 1)) * 8 + col];
-		return a0 + (a1 - a0) * fr;
-	};
-	for (size_t t = 0; t < n; t++) {
-		double o[2] = {0, 0};
-		for (int bd = 0; bd < 2; bd++)
-			for (int ch = 0; ch < 2; ch++) {
-				const double A = series(bd * 4 + ch * 2, double(t)) / nrm[bd], d = series(bd * 4 + ch * 2 + 1, double(t));
-				const double pos = double(t) - d;
-				if (pos < 0)
-					continue;
-				const size_t k0 = size_t(pos);
-				const double fr = pos - double(k0);
-				const buf &xb = xb2[ch][bd];
-				const double v = k0 + 1 < n ? xb[k0] + (xb[k0 + 1] - xb[k0]) * fr : (k0 < n ? xb[k0] : 0.0);
-				o[ch] += A * v;
-			}
-		L[t] = o[0];
-		R[t] = o[1];
-	}
-	if (has_eq) {
-		L = filter_freq(L, n, [&](double fq) { bool h; return mod_eq(b, fq, h); });
-		R = filter_freq(R, n, [&](double fq) { bool h; return mod_eq(b, fq, h); });
+	buf out[2];
+	// 歪みを中に持つ Rotary（08 51〜53・61〜63）は音量 100・25 で録った 2 つを、入口の包絡（50ms の RMS）で混ぜる
+	mod_file m25;
+	const bool lv = b.msb == 8 && ((b.lsb >= 0x51 && b.lsb <= 0x53) || (b.lsb >= 0x61 && b.lsb <= 0x63)) &&
+			load_mod(moddir + "/" + k + "_L25.mod", m25) && m25.indb != m100.indb;
+	if (lv) {
+		buf o100[2], o25[2];
+		mod_core(xb2, m100, nrm, o100);
+		mod_core(xb2, m25, nrm, o25);
+		const mod_file &lo = m25.indb < m100.indb ? m25 : m100;
+		const mod_file &hi = m25.indb < m100.indb ? m100 : m25;
+		const buf *olo = m25.indb < m100.indb ? o25 : o100, *ohi = m25.indb < m100.indb ? o100 : o25;
+		std::vector<double> c(n + 1, 0.0);
+		for (size_t i = 0; i < n; i++) {
+			const double mo = (xs[0][i] + xs[1][i]) / 2;
+			c[i + 1] = c[i] + mo * mo;
+		}
+		const size_t w = size_t(0.05 * FS);
+		out[0].assign(n, 0.0);
+		out[1].assign(n, 0.0);
+		for (size_t i = 0; i < n; i++) {
+			const size_t a = i >= w / 2 ? i - w / 2 : 0, z = std::min(n, i + w / 2);
+			const double e = 10 * std::log10((c[z] - c[a]) / double(w) + 1e-20);
+			const double u = std::max(0.0, std::min(1.0, (e - lo.indb) / (hi.indb - lo.indb)));
+			for (int ch = 0; ch < 2; ch++)
+				out[ch][i] = (1 - u) * olo[ch][i] + u * ohi[ch][i];
+		}
+	} else
+		mod_core(xb2, m100, nrm, out);
+	L = out[0];
+	R = out[1];
+	if (has_shape) {
+		L = filter_freq(L, n, [&](double fq) { return shape(fq, 0); });
+		R = filter_freq(R, n, [&](double fq) { return shape(fq, 1); });
 	}
 	return true;
 }
