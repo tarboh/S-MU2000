@@ -935,7 +935,11 @@ wet ÷ dry で応答をそのまま読める（録音の頭は 1 本ごとに ±
   * **歪みを中に持つ Rotary**（Amp + Rotary 2 の RotoGtr）は音量で効き方が変わる（音量 50 は 100 より低い帯 +1.7dB）。音量 100・25 で録り、入口の包絡（50ms の RMS）で
     出口を混ぜる。音量 50 も録ったが、220Hz の遅れが半周期ずれていて混ぜると打ち消し合ったので使わない。RotoGtr は −5.1 / −3.0 → −4.1 / −2.4dB
   * SlowSuckr の Lo-Fi（Pre-LPF Q 12・700Hz）は、その組のままノイズで比べると 2 つの音量で 0.4dB 以内。音色での −1.5 / −2.7dB は鋭い山と音色のスペクトルの重なりの差
-  * 残りの外れ: 歪みを中に持つ Rotary（Amp + Rotary の RotoGtr、Drive のある Dual Rotor の Slow Jam・Full/CVib。一つの音量で録った揺れでは歪みの効き方が合わない）、
+  * **歪み系の小さいノイズ（音量 16）**: 組によっては出口が −87dB と床に近い。当てはめの「上げ幅の直し」が ±3dB を超える 33 組を、音量 64・4 で録り直して試したが、
+    かえって悪くなった（直しの大きい組がさらに広がり、当てはめの 90% の点 0.37 → 1.48dB）ので元のまま（`mr_fx_dist_sets.py` の `_small_level.txt` で切り替えられる）。
+    Full/CVib の Amp（Type off・Drive 1）は、短いノイズの音の中で wet が終始 −7dB（ゲートの開き方のような動きは無い）なのに、130Hz の正弦波では −3.5dB。
+    ノイズと正弦波で周波数ごとの利きが違う非線形な振る舞いで、Wiener 型には収まらない
+  * 残りの外れ: Amp Simulator（Type off）→ Dual Rotor 2 の Full/CVib（+3.4 / +3.2dB）、Amp + Rotary の RotoGtr（−4.1 / −2.4dB）、
     Celeste 3 → Tempo Delay の J-Pop、LoRes の Step Dance、Talking Mod → Multi Band Comp の Griffin
 * Python と C++ は、どの道も 1e-6 前後で一致（03_012 などのディレイ、Ambience、Gate、Lo-Fi、Ring Mod、組ごとの歪み、揺れる型、揺れる周波数の型）
 * **(10, 8)**（0A 08）は Data List の表に無いが、値の並び（Attack・Release・Threshold・Ratio・Output）がコンプなので Compressor の模型。Dynamic Ring Mod の 3 音色は Dry/Wet 1

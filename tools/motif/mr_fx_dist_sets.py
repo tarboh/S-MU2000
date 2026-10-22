@@ -50,6 +50,16 @@ def params_of(k):
     return t, [int(x) for x in parts[2:18]]
 
 
+def small_levels():
+    """組ごとに小さいノイズを録り直す音量（fxds/_small_level.txt「名前 音量」）。音量 16 では、Drive の小さい組は出口が床（−87dB）に埋もれて
+    h の利きが正しく読めず（Full/CVib の組で 130Hz が 7dB 小さい）、Drive の大きい組はもう歪んでいる。当てはめの「上げ幅の直し」が +3dB より大きい組は 64、
+    −3dB より小さい組は 4 で録り直す"""
+    p = os.path.join(OUT, "_small_level.txt")
+    if not os.path.exists(p):
+        return {}
+    return dict((ln.split()[0], int(ln.split()[1])) for ln in open(p) if ln.strip())
+
+
 def record(only):
     os.makedirs(OUT, exist_ok=True)
     for k, (ins, voices) in needed().items():
@@ -63,6 +73,12 @@ def record(only):
                             "--set", st, "--level", "16", "--tail", "1", "--tag", "x"], check=True, cwd=HERE, stdout=subprocess.DEVNULL)
             for suf in ("_dry.wav", "_wet.wav", ".json"):
                 os.replace(os.path.join(OUT, "insa_t%d_%d_x%s" % (t[0], t[1], suf)), os.path.join(OUT, "insa_%s%s" % (k, suf)))
+        lv = small_levels().get(k)
+        if lv and not os.path.exists(os.path.join(OUT, "insa_%s_s%d_wet.wav" % (k, lv))):
+            subprocess.run([sys.executable, os.path.join(HERE, "mr_fx.py"), "--dir", OUT, "--block", "insa", "--types", "%d:%d" % t,
+                            "--set", st, "--level", str(lv), "--tail", "1", "--tag", "x"], check=True, cwd=HERE, stdout=subprocess.DEVNULL)
+            for suf in ("_dry.wav", "_wet.wav", ".json"):
+                os.replace(os.path.join(OUT, "insa_t%d_%d_x%s" % (t[0], t[1], suf)), os.path.join(OUT, "insa_%s_s%d%s" % (k, lv, suf)))
         if not os.path.exists(os.path.join(OUT, "cs%s_L016_wet.wav" % k)):
             subprocess.run([sys.executable, os.path.join(HERE, "mr_fx_comp.py"), "--dir", OUT, "--type", "%d:%d" % t, "--key", "48",
                             "--set", st, "--tag", k], check=True, cwd=HERE, stdout=subprocess.DEVNULL)
@@ -71,15 +87,26 @@ def record(only):
 
 def fit():
     for k, (ins, voices) in needed().items():
+        lv = small_levels().get(k)
+        if lv and not os.path.exists(os.path.join(OUT, "insa_%s_s%d_wet.wav" % (k, lv))):
+            subprocess.run([sys.executable, os.path.join(HERE, "mr_fx.py"), "--dir", OUT, "--block", "insa", "--types", "%d:%d" % t,
+                            "--set", st, "--level", str(lv), "--tail", "1", "--tag", "x"], check=True, cwd=HERE, stdout=subprocess.DEVNULL)
+            for suf in ("_dry.wav", "_wet.wav", ".json"):
+                os.replace(os.path.join(OUT, "insa_t%d_%d_x%s" % (t[0], t[1], suf)), os.path.join(OUT, "insa_%s_s%d%s" % (k, lv, suf)))
         if not os.path.exists(os.path.join(OUT, "cs%s_L016_wet.wav" % k)):
             continue
         t, ps = params_of(k)
         col = TYPES[t]
         fc = T3[min(60, ps[col - 1])] if col else 20000
-        r = subprocess.run([sys.executable, os.path.join(HERE, "mr_fx_dist.py"), os.path.join(OUT, "insa_" + k), OUT, k, str(fc)],
+        lv = small_levels().get(k)
+        small = os.path.join(OUT, "insa_%s_s%d" % (k, lv)) if lv and os.path.exists(os.path.join(OUT, "insa_%s_s%d_wet.wav" % (k, lv))) else os.path.join(OUT, "insa_" + k)
+        ref = 64 if lv == 64 and small.endswith("_s64") else 16
+        r = subprocess.run([sys.executable, os.path.join(HERE, "mr_fx_dist.py"), small, OUT, k, str(fc), str(ref)],
                            cwd=HERE, capture_output=True, text=True, encoding="utf-8", env=dict(os.environ, PYTHONIOENCODING="utf-8"))
         line = (r.stdout.strip().split("\n") or [""])[0]
         print("%s（%s）: %s" % (k, ",".join(voices), line), flush=True)
+        if small != os.path.join(OUT, "insa_" + k) and os.path.exists(small + "_dist.npz"):
+            os.replace(small + "_dist.npz", os.path.join(OUT, "insa_%s_dist.npz" % k))
         z = os.path.join(OUT, "insa_%s_dist.npz" % k)
         if os.path.exists(z):
             d = np.load(z)

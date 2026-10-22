@@ -71,6 +71,7 @@ def harmonics(x, f0):
 def main():
     small, sdir, tag = sys.argv[1], sys.argv[2], sys.argv[3]
     fc = float(sys.argv[4]) if len(sys.argv) > 4 else 5000.0
+    ref = int(sys.argv[5]) if len(sys.argv) > 5 else 16       # h の大きさを合わせる正弦波の段（小さいノイズを録った音量に近い段）
     hL, hR = linear_ir(small)
     hL, hR = unlpf(hL, fc), unlpf(hR, fc)          # 測った応答には LPF が入っているので割り戻し、頭打ちのあとで掛け直す
     takes = []
@@ -87,7 +88,8 @@ def main():
     f0 = 440.0 * 2 ** ((48 - 69) / 12)
     seg = slice(int(0.5 * FS), int(0.5 * FS) + 16384)
     pre = [np.convolve(d, hL)[:len(d)] for _, d, _ in takes]
-    small_gain = meas[-1] - rms(pre[-1])
+    ri = LEVELS.index(ref) if ref in LEVELS else len(LEVELS) - 1
+    small_gain = meas[ri] - rms(pre[ri])
     k = 10 ** (small_gain / 20)
     pre = [x * k for x in pre]
     best = None
