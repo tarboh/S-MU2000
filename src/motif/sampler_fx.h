@@ -434,13 +434,13 @@ inline double edge_p(double e)
 
 inline bool dist_type(const block &b) { return b.is(9, 48) || b.is(9, 49) || b.is(9, 0) || b.is(9, 16) || b.is(9, 1) || b.is(9, 32); }
 
-// V-Distortion の中のディレイ（確かめていない）: 帰りの線（遅れ p8 × 0.1ms、帰り (p9 − 64) / 64、戻りに 1 次の LPF (1 − p12 / 10)²）から、
-// 左は p6・右は p7（× 0.1ms）で取り出し、Delay Mix（p11 / 127）で足す
+// V-Distortion の中のディレイ（遅れ・帰り・大きさを 01_049・01_068 で確かめた）: 帰りの線（遅れ p8 × 0.1ms、帰り (p9 − 64) / 64、戻りに 1 次の LPF (1 − p12 / 10)²）から、
+// 左は p6・右は p7（× 0.1ms）で取り出し、Delay Mix（p11 / 95）で足す
 inline void vdist_delay(buf &y, const block &b, int ch)
 {
 	const size_t n = y.size();
 	const size_t dt = size_t(std::max(1, b.p[ch == 0 ? 6 : 7])) * FS / 10000, df = size_t(std::max(1, b.p[8])) * FS / 10000;
-	const double fb = (b.p[9] - 64) / 64.0, a = std::pow(1 - std::max(1, b.p[12]) / 10.0, 2), mix = b.p[11] / 127.0;
+	const double fb = (b.p[9] - 64) / 64.0, a = std::pow(1 - std::max(1, b.p[12]) / 10.0, 2), mix = b.p[11] / 95.0;   // Delay Mix 30 の 2 組で、こだまが元の音より −10dB
 	buf line(n, 0.0);
 	double lp = 0;
 	for (size_t t = 0; t < n; t++) {
@@ -509,7 +509,13 @@ inline void distortion(buf &L, buf &R, const block &b, const std::string &fxddir
 	double og = 1.0;
 	if (b.is(9, 48))
 		og = std::pow(10.0, 40 * std::log10(std::max(1, b.p[4]) / 80.0) / 20);
-	const double wmix = (std::max(1, b.p[10]) - 1) / 126.0;          // Dry/Wet（1〜127、127 が wet だけ）
+	const double ang = PI / 2 * (std::max(1, b.p[10]) - 1) / 126.0;  // Dry/Wet: 元の音 cos・wet sin（Dry/Wet 20・64 で確かめた）
+	size_t pk = 0;
+	for (size_t i = 0; i < ir.L.size(); i++)
+		if (std::fabs(ir.L[i]) > std::fabs(ir.L[pk]))
+			pk = i;
+	// ブロック全体（元の音の側も）が負の向きで出る組がある。元の音の向きを h の山の向きにそろえる
+	const double gdry = (ir.L.empty() || ir.L[pk] >= 0 ? 1.0 : -1.0) * std::cos(ang), gwet = std::sin(ang);
 	const size_t n = L.size();
 	buf x(n);
 	for (size_t i = 0; i < n; i++)
@@ -525,7 +531,7 @@ inline void distortion(buf &L, buf &R, const block &b, const std::string &fxddir
 			vdist_delay(y, b, ch);
 		buf &o = ch == 0 ? L : R;
 		for (size_t i = 0; i < n; i++)
-			o[i] = (1 - wmix) * o[i] + wmix * y[i] * og;
+			o[i] = gdry * o[i] + gwet * y[i] * og;
 	}
 }
 
@@ -840,6 +846,31 @@ inline bool mod_type(const block &b)
 	return false;
 }
 
+// 揺れる型の EQ（mr_fx_mod.eq_response と同じ）。has に有無を返す
+inline cplx mod_eq(const block &b, double f, bool &has)
+{
+	int base = 0;
+	bool mid = false;
+	if (b.is(8, 0x00) || b.is(8, 0x10) || b.is(8, 0x11) || b.is(8, 0x50) || b.is(8, 0x60))
+		base = 6, mid = true;
+	else if (b.is(8, 0x70) || b.is(8, 0x71) || b.is(8, 0x72))
+		base = 11;
+	else if (b.is(14, 0x50))
+		base = 13;
+	has = base != 0;
+	if (!has)
+		return 1.0;
+	block q;
+	q.p[1] = b.p[base], q.p[2] = b.p[base + 1], q.p[3] = b.p[base + 2], q.p[4] = b.p[base + 3];
+	cplx H = eq2(q, f);
+	if (mid) {
+		block m;
+		m.p[1] = 64, m.p[5] = 64, m.p[2] = b.p[11], m.p[3] = b.p[12], m.p[4] = b.p[13];
+		H *= eq3(m, f);
+	}
+	return H;
+}
+
 inline bool modfx(buf &L, buf &R, const block &b, const std::string &moddir, int tempo)
 {
 	std::string k = "t" + std::to_string(b.msb) + "_" + std::to_string(b.lsb);
@@ -880,6 +911,9 @@ inline bool modfx(buf &L, buf &R, const block &b, const std::string &moddir, int
 		});
 	};
 	const buf xb2[2][2] = {{band(xs[0], true), band(xs[0], false)}, {band(xs[1], true), band(xs[1], false)}};
+	bool has_eq = false;
+	const double nlo = std::max(1e-3, std::abs(mod_eq(b, 220.0, has_eq))), nhi = std::max(1e-3, std::abs(mod_eq(b, 440.0 * std::exp2(27 / 12.0), has_eq)));
+	const double nrm[2] = {has_eq ? nlo : 1.0, has_eq ? nhi : 1.0};
 	auto series = [&](int col, double tt) {
 		const double m = frames;
 		double u = tt / FS * rate;
@@ -896,7 +930,7 @@ inline bool modfx(buf &L, buf &R, const block &b, const std::string &moddir, int
 		double o[2] = {0, 0};
 		for (int bd = 0; bd < 2; bd++)
 			for (int ch = 0; ch < 2; ch++) {
-				const double A = series(bd * 4 + ch * 2, double(t)), d = series(bd * 4 + ch * 2 + 1, double(t));
+				const double A = series(bd * 4 + ch * 2, double(t)) / nrm[bd], d = series(bd * 4 + ch * 2 + 1, double(t));
 				const double pos = double(t) - d;
 				if (pos < 0)
 					continue;
@@ -908,6 +942,10 @@ inline bool modfx(buf &L, buf &R, const block &b, const std::string &moddir, int
 			}
 		L[t] = o[0];
 		R[t] = o[1];
+	}
+	if (has_eq) {
+		L = filter_freq(L, n, [&](double fq) { bool h; return mod_eq(b, fq, h); });
+		R = filter_freq(R, n, [&](double fq) { bool h; return mod_eq(b, fq, h); });
 	}
 	return true;
 }
@@ -1109,8 +1147,107 @@ inline void ring_mod(buf &L, buf &R, const block &b)
 	}
 }
 
+// 入口の大きさで効き方が変わる型のうち Touch Wah 系は、音量 4 段で録った応答
+// （tools/motif/mr_fx_dyn.py、fxdyn/<名前>.dyn）を、STFT の枠ごとに入口（左右を足して半分）の音量で補間して掛ける
+inline bool dyn_type(const block &b)
+{
+	static const int t[][2] = {{12, 0x10}, {12, 0x11}, {12, 0x12}, {12, 0x30}, {12, 0x31}};   // Touch Wah 系だけ（ほかは一つの音量の LTV の方が合った）
+	for (auto &x : t)
+		if (b.is(x[0], x[1]))
+			return true;
+	return false;
+}
+
+inline bool dynfx(buf &L, buf &R, const block &b, const std::string &dyndir)
+{
+	std::string k = "t" + std::to_string(b.msb) + "_" + std::to_string(b.lsb);
+	for (int i = 1; i <= 16; i++)
+		k += "_" + std::to_string(b.p[i]);
+	FILE *f = std::fopen((dyndir + "/" + k + ".dyn").c_str(), "rb");
+	if (!f)
+		return false;
+	char head[128];
+	if (!std::fgets(head, sizeof head, f)) {
+		std::fclose(f);
+		return false;
+	}
+	int NW = 4096, HOP = 1024, K = 0;
+	std::sscanf(head, "DYN n=%d hop=%d levels=%d", &NW, &HOP, &K);
+	const int NB = NW / 2 + 1;
+	std::vector<double> dbs(K);
+	std::vector<std::vector<cplx>> H(size_t(K) * 2, std::vector<cplx>(NB));
+	for (int j = 0; j < K; j++) {
+		float db = 0;
+		if (std::fread(&db, sizeof db, 1, f) != 1) {
+			std::fclose(f);
+			return false;
+		}
+		dbs[j] = db;
+		for (int ch = 0; ch < 2; ch++) {
+			std::vector<float> raw(size_t(NB) * 2);
+			if (std::fread(raw.data(), sizeof(float), raw.size(), f) != raw.size()) {
+				std::fclose(f);
+				return false;
+			}
+			for (int q = 0; q < NB; q++)
+				H[j * 2 + ch][q] = cplx(raw[q * 2], raw[q * 2 + 1]);
+		}
+	}
+	std::fclose(f);
+	if (K < 2)
+		return false;
+	const size_t n = L.size();
+	buf xs[2] = {buf(n + NW, 0.0), buf(n + NW, 0.0)}, mono(n + NW, 0.0);
+	for (size_t i = 0; i < n; i++) {
+		xs[0][i] = L[i];
+		xs[1][i] = R[i];
+		mono[i] = (L[i] + R[i]) / 2;
+	}
+	std::vector<double> w(NW);
+	for (int i = 0; i < NW; i++)
+		w[i] = 0.5 - 0.5 * std::cos(2 * PI * i / NW);
+	buf out[2] = {buf(n + 2 * NW, 0.0), buf(n + 2 * NW, 0.0)}, norm(n + 2 * NW, 0.0);
+	const int nf = 1 + int((mono.size() - NW) / HOP);
+	std::vector<cplx> X(NW), Y(NW);
+	for (int i = 0; i < nf; i++) {
+		for (int q = 0; q < NW; q++)
+			X[q] = mono[size_t(i) * HOP + q] * w[q];
+		fft(X, false);
+		double e = 0;
+		for (int q = 0; q < NB; q++)
+			e += std::norm(X[q]);
+		const double db = 10 * std::log10(e / NB + 1e-30);
+		int j = int(std::upper_bound(dbs.begin(), dbs.end(), db) - dbs.begin()) - 1;
+		j = std::max(0, std::min(K - 2, j));
+		const double u = std::max(0.0, std::min(1.0, (db - dbs[j]) / (dbs[j + 1] - dbs[j])));
+		for (int ch = 0; ch < 2; ch++) {
+			for (int q = 0; q < NW; q++)
+				X[q] = xs[ch][size_t(i) * HOP + q] * w[q];
+			fft(X, false);
+			for (int q = 0; q < NB; q++) {
+				Y[q] = X[q] * ((1 - u) * H[j * 2 + ch][q] + u * H[(j + 1) * 2 + ch][q]);
+				if (q > 0 && q < NW / 2)
+					Y[NW - q] = std::conj(Y[q]);
+			}
+			fft(Y, true);
+			for (int q = 0; q < NW; q++)
+				out[ch][size_t(i) * HOP + q] += Y[q].real() * w[q];
+		}
+		for (int q = 0; q < NW; q++)
+			norm[size_t(i) * HOP + q] += w[q] * w[q];
+	}
+	for (size_t t = 0; t < n; t++) {
+		const double nn = norm[t] > 1e-9 ? norm[t] : 1.0;
+		L[t] = out[0][t] / nn;
+		R[t] = out[1][t] / nn;
+	}
+	return true;
+}
+
 inline void apply_block(buf &L, buf &R, const block &b, const std::string &fxddir, int tempo = 120)
 {
+	if (dyn_type(b) && dynfx(L, R, b, fxddir + "/../fxdyn"))
+		return;
 	if (b.is(15, 0x70)) {
 		ring_mod(L, R, b);
 		return;

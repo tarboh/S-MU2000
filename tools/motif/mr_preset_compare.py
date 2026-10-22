@@ -6,7 +6,7 @@
 08〜0A = USR1〜3 → MSB 63・LSB 8〜10）、nn が番号。音色を選んだあと、エディットバッファ（0E 0F 00）を一括ダンプで受けて、
 名前が JSON と同じか確かめてから録る（違えば飛ばす）。
 録る前に、リバーブ・コーラスへの送り（CC91・CC93）を 0 にし、エレメント 1〜4 のインサーションのスイッチ（41 ee 16）を切る
-（エディットバッファを変えるだけで保存しない）。共通の音量やマスター EQ はそのまま。
+（エディットバッファを変えるだけで保存しない）。アルペジオ（40 70 16）も切る。共通の音量やマスター EQ はそのまま。
 実機の録音は <置き場>/<音色>_k<鍵>_v<ベロシティ>_hw.wav、芯で鳴らしたものは _sm.wav。
 --tweak を付けると、実機と芯の両方で部品を 1 つ切って録る（nofeg = FEG の深さ 0、noscale = カットオフのスケーリング 0、nofilter = フィルター THRU）。
 名前の後ろに _<tweak> が付く。--reverb は、実機の CC91 を音色の送りにして（リバーブを残して）録り、芯の側も mr_fx_apply.py で
@@ -120,6 +120,7 @@ def main():
                 if name != js["name"]:
                     print("%s: 名前が違う（実機 %r、JSON %r）ので飛ばす" % (v, name, js["name"]), flush=True)
                     continue
+                r.param(0x40, 0x70, 0x16, 0)                # アルペジオを切る（1 音で比べる。ARP Switch、エディットバッファだけ）
                 r.cc(91, js["common"].get("reverb_send", 0) if reverb else 0)
                 r.cc(93, js["common"].get("chorus_send", 0) if chorus else 0)
                 for e in range(4):

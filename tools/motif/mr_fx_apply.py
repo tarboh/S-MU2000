@@ -251,7 +251,7 @@ def drive_gain_db(drive):
 def distortion(L, R, prm, t, fxdir, default_prm):
     """歪み系の後処理。Amp Simulator は アンプの型・Drive の近い組を選び、Drive の差は頭打ちの前の上げ幅（DRIVE_GAIN_DB を dB で補間）で直す。
     ほかの型は既定のパラメーターで測った 1 組だけ（Drive の差は Amp Simulator と同じ割合で直す）。出力は既定からの比で 40·log10、
-    Dry/Wet（パラメーター 10、1〜127、127 が wet だけ）は wet の割合 (値 − 1) / 126 で混ぜる（どちらも確かめていない）"""
+    Dry/Wet（パラメーター 10）は元の音 cos・wet sin（確かめた）"""
     if t != (9, 48):
         import mr_fx_dist_sets
         z = os.path.join(os.path.dirname(fxdir), "fxds", "insa_%s_dist.npz" % mr_fx_dist_sets.key_of(prm))
@@ -290,13 +290,15 @@ def distortion(L, R, prm, t, fxdir, default_prm):
     og = 1.0
     if default_prm and "param4" in prm and t == (9, 48):
         og = 10 ** (40 * np.log10(max(1, prm["param4"]) / max(1, default_prm.get("out", 80))) / 20)
-    wmix = (max(1, prm.get("param10", 127)) - 1) / 126.0
-    return [(1 - wmix) * np.asarray(src) + wmix * o * og for src, o in zip((L, R), outs)], name
+    # Dry/Wet: 元の音 cos・wet sin（角 π/2 (v − 1) / 126）。Phaser Vin の Distortion の組で Dry/Wet 20・64 が +0.65・+0.25dB（式 +0.67・+0.28dB）
+    a = np.pi / 2 * (max(1, prm.get("param10", 127)) - 1) / 126.0
+    sg = 1.0 if hL[int(np.argmax(np.abs(hL)))] >= 0 else -1.0     # ブロック全体の向き（per_set_distortion を見よ）
+    return [sg * np.cos(a) * np.asarray(src) + np.sin(a) * o * og for src, o in zip((L, R), outs)], name
 
 
 def vdist_delay(y, prm, ch):
     """V-Distortion の中のディレイ（確かめていない）: 帰りの線（遅れ 08 × 0.1ms、帰り (09 − 64) / 64、戻りに 1 次の LPF (1 − 12 / 10)²）から、
-    左は 06・右は 07（× 0.1ms）で取り出し、Delay Mix（11 / 127）で足す"""
+    左は 06・右は 07（× 0.1ms）で取り出し、Delay Mix（11 / 95）で足す。遅れと帰りは実機で確かめた（01_049・01_068）"""
     n = len(y)
     dt = max(1, prm["param6" if ch == 0 else "param7"]) * FS // 10000
     df = max(1, prm["param8"]) * FS // 10000
@@ -309,12 +311,12 @@ def vdist_delay(y, prm, ch):
         lp = (1 - a) * back + a * lp
         line[t] = y[t] + fb * lp
     out = y.copy()
-    out[dt:] += prm["param11"] / 127.0 * line[:n - dt]
+    out[dt:] += prm["param11"] / 95.0 * line[:n - dt]      # Delay Mix 30 の 2 組で、こだまが元の音より −10dB（/127 では −13dB）
     return out
 
 
 def per_set_distortion(L, R, prm, t, z):
-    """プリセットの組のまま録って当てはめた Wiener 型（mr_fx_dist_sets.py）。Dry/Wet は (値 − 1) / 126 で混ぜる（確かめていない）"""
+    """プリセットの組のまま録って当てはめた Wiener 型（mr_fx_dist_sets.py）。Dry/Wet は元の音 cos・wet sin"""
     d = np.load(z)
     hL, hR, c, p, fc = d["hL"].astype(np.float64), d["hR"].astype(np.float64), float(d["c"]), float(d["p"]), float(d["fc"])
     stereo = False      # 歪み系は左右を足す（別々に通しても 49 音色の比べは変わらなかった）
@@ -331,8 +333,11 @@ def per_set_distortion(L, R, prm, t, z):
         if t == (9, 16) and prm["param11"] > 0:
             y = vdist_delay(y, prm, ch)
         outs.append(y)
-    wmix = (max(1, prm.get("param10", 127)) - 1) / 126.0
-    return [(1 - wmix) * np.asarray(src) + wmix * o for src, o in zip((L, R), outs)], "組の録音"
+    a = np.pi / 2 * (max(1, prm.get("param10", 127)) - 1) / 126.0      # 元の音 cos・wet sin（distortion と同じ）
+    # インサーションのブロック全体（元の音の側も）が負の向きで出る組がある（Phaser Vin の Distortion、Drive 0 で h が −0.55。
+    # Dry/Wet 64 の正弦波は元の音と同じ向きに足されて +0.25dB）。元の音の向きを h の山の向きにそろえる
+    sg = 1.0 if hL[int(np.argmax(np.abs(hL)))] >= 0 else -1.0
+    return [sg * np.cos(a) * np.asarray(src) + np.sin(a) * o for src, o in zip((L, R), outs)], "組の録音"
 
 
 TABLE14_Q = [1 / 12, 3 / 32, 1 / 8, 1 / 6, 3 / 16, 1 / 4, 1 / 3, 3 / 8, 1 / 2, 2 / 3, 3 / 4, 1, 4 / 3, 3 / 2, 2, 8 / 3, 3, 4, 5, 6]   # 表 14（4 分音符 = 1）
@@ -747,6 +752,11 @@ def apply_block(L, R, ins, fxdir=None):
         if t == (15, 1):
             return out[0], out[1], "2 Band EQ（%+d / %+d dB）" % (ins["param2"] - 64, ins["param4"] - 64)
         return out[0], out[1], "3 Band EQ（%+d / %+d / %+d dB）" % (ins["param1"] - 64, ins["param3"] - 64, ins["param5"] - 64)
+    import mr_fx_dyn
+    if t in mr_fx_dyn.TYPES:
+        r = mr_fx_dyn.apply(L, R, ins)
+        if r is not None:
+            return r[0], r[1], "音量ごとに録った応答 %d:%d" % t
     import mr_fx_ltv
     if t in mr_fx_ltv.TYPES:
         r = mr_fx_ltv.apply(L, R, ins, ins.get("_tempo", 120))

@@ -3,7 +3,7 @@ Auto Wah・Vintage Auto Wah・Jump・Talking Modulator など）を、プリセ�
   python mr_fx_ltv.py list | record [--only 名前,…] | analyze
 録り方: mr_fx_comp.py --wave 705 --long 8（ノイズ、音量 100、鍵 60）で dry と wet を 1 本ずつ。ノイズの波形は鳴らし始めから毎回同じ並びなので、
 音の頭でそろえれば dry と wet の入口は同じ（0.1 秒おきの短い音どうしで相関 1.000 を確かめた）。テンポに合わせる型は音色のテンポを入れる。
-読み方: 窓 4096 点（Hann）・ずらし 1024 点の STFT で、H = W·conj(X) / (|X|² + 小さい値) を左右の出口ごとに出し、前後 1 枠ずつで均す。
+読み方: 窓 4096 点（Hann）・ずらし 1024 点の STFT で、左右の出口ごとに、大きさ √(|W|² / |X|²)・位相は W·conj(X) の H を出す（どれも前後 1 枠ずつで均す）。
 8 秒より長く鳴らすときは、最後の 1 周（|H| の動きの自己相関の山）を繰り返す。結果は capture/fxltv/<名前>.ltv
 （1 行目「LTV n=4096 hop=1024 frames=F period=P」、そのあと complex64（float32 の実部・虚部）の HL・HR を 2049 点ずつ、枠ごとに）。
 芯は入口の STFT に H を掛けて重ね足しで戻す（入口は左右を足して半分）。送るのはパラメーターチェンジ・ダンプの要求・ノートだけ（保存しない）。"""
@@ -28,6 +28,10 @@ TYPES = {(7, 0x00), (7, 0x08), (7, 0x20), (7, 0x21), (7, 0x30), (7, 0x31), (7, 0
          # 歪みや雑音を含む組み合わせ（Auto Wah + Dist / Odrv、Wah + Dist / Odrv + Delay、Comp + Dist / Odrv + Delay、LoRes・Noisy・Attack LoFi）も同じ近似
          (12, 0x01), (12, 0x02), (12, 0x40), (12, 0x41), (10, 0x40), (10, 0x41), (13, 0x10), (13, 0x20), (13, 0x30)}
 TEMPO_TYPES = {(7, 0x50), (6, 0x50), (14, 0x30)}
+# 入口の大きさで効き方が変わる型・歪みや雑音を含む組み合わせ（近似の組）は、相互スペクトルの平均で H を出し、較正もしない
+# （エネルギーの比にすると歪みの倍音まで線形の利きに数え、Crying で +2.4dB、The Ripper で +6.7dB 大きく出た）
+APPROX_TYPES = {(12, 0x10), (12, 0x11), (12, 0x12), (12, 0x30), (12, 0x31), (15, 0x78), (6, 0x60), (7, 0x60), (10, 0x50), (10, 0x51), (14, 0x10),
+                (12, 0x01), (12, 0x02), (12, 0x40), (12, 0x41), (10, 0x40), (10, 0x41), (13, 0x10), (13, 0x20), (13, 0x30)}
 
 
 def key_of(ins, tempo):
@@ -101,7 +105,14 @@ def analyze():
             # 前後 1 枠ずつで均す（分子と分母を別々に）
             nums = np.apply_along_axis(lambda c: np.convolve(c, ker, "same"), 0, num)
             dens = np.apply_along_axis(lambda c: np.convolve(c, ker, "same"), 0, P)
-            Hs.append(nums / (dens + 1e-6 * dens.max()))
+            pyy = np.apply_along_axis(lambda c: np.convolve(c, ker, "same"), 0, np.abs(Y) ** 2)
+            # 大きさは出力と入力のエネルギーの比、位相は相互スペクトルから。W·conj(X) の平均だけだと、遅れが揺れる型（Symphonic）で
+            # 位相のずれた分を取りこぼし、自分の録音でも 3.5dB 小さく戻った
+            if (ins["type"] >> 7, ins["type"] & 0x7F) in APPROX_TYPES:
+                Hs.append(nums / (dens + 1e-6 * dens.max()))
+            else:
+                mag = np.sqrt(pyy / (dens + 1e-6 * dens.max()))
+                Hs.append(mag * np.exp(1j * np.angle(nums)))
         mag = np.abs(Hs[0]).mean(1) + np.abs(Hs[1]).mean(1)
         a = mag[4:] - mag[4:].mean()
         per = 0
@@ -111,13 +122,34 @@ def analyze():
             i = 8 + int(np.argmax(ac[8:len(ac) // 2]))
             per = i if ac[i] > 0.5 else 0
         F = Hs[0].shape[0]
+        # 自分の録音で較正: 録った dry を模型に通し、wet との音量の比を左右ごとに H に掛ける（重なった枠どうしの位相の打ち消しの分。
+        # Symphonic で 1.4dB）
+        n2 = min(m, int(7.5 * FS))
+        ins2 = dict(ins)
+        oL, oR = _apply_H([dL_[od:od + n2] for dL_ in (np.asarray(dL, dtype=np.float64), np.asarray(dR, dtype=np.float64))], Hs, 0, ins2)
+        corr = []
+        for o, w in ((oL, wL), (oR, wR)):
+            a2, b2 = int(1.0 * FS), n2 - int(1.0 * FS)
+            e1 = np.mean(o[a2:b2] ** 2)
+            e2 = np.mean(w[a2:b2] ** 2)
+            corr.append(np.sqrt(e2 / e1) if e1 > 1e-20 else 1.0)
+        if (ins["type"] >> 7, ins["type"] & 0x7F) in APPROX_TYPES:
+            corr = [1.0, 1.0]
+        Hs = [H * c for H, c in zip(Hs, corr)]
         with open(os.path.join(OUT, k + ".ltv"), "wb") as f:
             f.write(("LTV n=%d hop=%d frames=%d period=%d\n" % (NW, HOP, F, per)).encode("ascii"))
             for i in range(F):
                 for H in Hs:
                     f.write(np.stack([H[i].real, H[i].imag], axis=1).astype("<f4").tobytes())
         g = 20 * np.log10(np.sqrt(np.mean(np.abs(Hs[0]) ** 2)) + 1e-12)
-        print("%s（%s）: 枠 %d・周期 %d 枠（%.2f 秒）・平均の利き %.1f dB" % (k, ",".join(voices), F, per, per * HOP / FS, g), flush=True)
+        print("%s（%s）: 枠 %d・周期 %d 枠（%.2f 秒）・平均の利き %.1f dB・較正 %+.2f / %+.2f dB" % (k, ",".join(voices), F, per, per * HOP / FS, g,
+              20 * np.log10(corr[0]), 20 * np.log10(corr[1])), flush=True)
+
+
+def _apply_H(xs_in, Hs, per, ins):
+    """H の並び（左右）を入口に掛ける（apply と同じ計算。較正に使う）"""
+    H = np.stack(Hs, axis=1)
+    return _run(xs_in[0], xs_in[1], H, per, ins)
 
 
 def apply(L, R, ins, tempo, cache={}):
@@ -132,6 +164,10 @@ def apply(L, R, ins, tempo, cache={}):
             raw = np.frombuffer(f.read(), dtype="<f4").reshape(F, 2, NW // 2 + 1, 2)
             cache[k] = (raw[..., 0] + 1j * raw[..., 1], per)
     H, per = cache[k]
+    return _run(L, R, H, per, ins)
+
+
+def _run(L, R, H, per, ins):
     F = H.shape[0]
     # 左右を別々に通す（フェイザー類・Symphonic 系の 7 音色で、左右を足すより実機に 2〜4dB 近い。49 音色の比べ）。Dynamic Filter だけは足す方が合う
     t = (ins["type"] >> 7, ins["type"] & 0x7F)

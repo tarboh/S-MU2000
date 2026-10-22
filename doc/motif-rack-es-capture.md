@@ -904,6 +904,24 @@ wet ÷ dry で応答をそのまま読める（録音の頭は 1 本ごとに ±
     Rotary・Dual Rotor（スピーカーへ足して送る形）と Dynamic Filter は足す方が合う。歪み系はどちらでも変わらないので足す
   * 残りの外れ（芯が 2〜9dB 小さい）は、前に歪みやコンプがある鎖（Phaser Vin・Early 70's・Slow Jam・SomeHair・RotoGtr）、入口の大きさで効き方が変わる型の近似
     （Touch Wah の Early Fusn・TouchWah、LoRes の Step Dance）、音色の側（Aggressor は鍵によって芯が鳴らない）
+* **続けて調べて直したこと**（2026-10-22 夜）。アルペジオの 3 音色を除く 92 か所で、差の中央値 1.05 → 0.76dB、1dB 以内 49 → 58、2dB 以内 69 → 75:
+  * **歪み系の Dry/Wet も元の音 cos・wet sin**（Phaser Vin の Distortion の組で、Dry/Wet 20・64・127 の正弦波が +0.65・+0.25・−6.70dB、式 +0.67・+0.28・−6.72dB。
+    前のまっすぐな混ぜ方では 64 で −2.73dB）。**ブロック全体が負の向きで出る組がある**（Drive 0 の Distortion で h の山が −0.55）ので、元の音の向きを h の山の向きにそろえた
+    （歪み系 179 組のうち 4 組）。Amp Simulator（Full/CVib の組、Amp Type off）も Dry/Wet 89・127 で 0.3dB 以内
+  * **アルペジオの入った音色**（音色の共通の 0x16 = ARP Switch、1280 音色中 38）は、1 音を鳴らしても実機がパターンを弾く。比べる道具で ARP Switch を 0 にした
+    （Aggressor の鍵 60 がインサーションなしで中央値 0.7dB にそろう）
+  * **揺れる型の EQ**: 220Hz・2093Hz の 2 本では EQ の中域の山を拾えない（Phaser Vin の Auto Pan 2、中 +6dB）。録った A を 2 点の EQ の大きさで割り戻し、
+    出口に EQ 全体を掛ける（Tremolo・Auto Pan・Auto Pan 2・Rotary は 6〜9 と 11〜13、Dual Rotor は 11〜14、Slice は 13〜16）。Auto Pan 2 の周波数応答をノイズで録ると、
+    この EQ の形と全帯域で 0.1dB 以内
+  * **揺れる周波数の型の大きさ**: W·conj(X) の平均だけだと、遅れが揺れる型（Symphonic）で位相のずれた分を取りこぼし、自分の録音でも 3.5dB 小さく戻った。
+    大きさを √(|W|² / |X|²) にし（−1.4dB まで）、さらに自分の録音で左右ごとに較正（中央値 +0.03dB、最大 +1.69dB）。歪みや入口の大きさによる近似の組は、
+    エネルギーの比だと倍音まで線形の利きに数えるので、前の形のまま
+  * **Touch Wah 系は音量 4 段で録る**（`mr_fx_dyn.py`）。STFT の枠ごとに入口の音量で応答を補間する（Early Fusn −7.4 / −8.8 → −2.4 / −0.6dB、TouchWah −5.6 → −1.8dB）。
+    Dynamic Filter / Flanger / Phaser・Multi Band Comp も録ったが、この形では一つの音量のときより離れたので使わない
+  * **V-Distortion の中のディレイ**: 遅れ（左 300・右 400ms、帰り 400ms ごと）と帰り（1 回で −12dB）は式どおり。こだまの大きさは Delay Mix / 95（/127 では 3dB 小さかった）
+  * 3 Band EQ は、外れた音色の組（StrMachine・RotoGtr）でも実機と 0.6dB 以内。外れは後ろのブロックの側
+  * 残りの外れ: 歪みを中に持つ Rotary（Amp + Rotary の RotoGtr、Drive のある Dual Rotor の Slow Jam・Full/CVib。一つの音量で録った揺れでは歪みの効き方が合わない）、
+    Celeste 3 → Tempo Delay の J-Pop、LoRes の Step Dance、Talking Mod → Multi Band Comp の Griffin
 * Python と C++ は、どの道も 1e-6 前後で一致（03_012 などのディレイ、Ambience、Gate、Lo-Fi、Ring Mod、組ごとの歪み、揺れる型、揺れる周波数の型）
 * **(10, 8)**（0A 08）は Data List の表に無いが、値の並び（Attack・Release・Threshold・Ratio・Output）がコンプなので Compressor の模型。Dynamic Ring Mod の 3 音色は Dry/Wet 1
 

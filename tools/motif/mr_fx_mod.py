@@ -160,6 +160,27 @@ def series(col, P, n):
     return np.interp(t, np.arange(m), col)
 
 
+def eq_response(ins, f):
+    """揺れる型の EQ。録った A には 220Hz・2093Hz での EQ の大きさが入っているので、割り戻してから出口に EQ 全体を掛ける
+    （Phaser Vin の Auto Pan 2 で、中域の +6dB を 2 点では拾えず 5dB 小さく出た）。
+    Tremolo・Auto Pan・Auto Pan 2・Rotary: 6〜9 低・高（2 Band EQ の形）と 11〜13 中。Dual Rotor: 11〜14 低・高。Slice: 13〜16 低・高。ほかは無し"""
+    import mr_fx_apply as A
+    t = (ins["type"] >> 7, ins["type"] & 0x7F)
+    if t in ((8, 0x00), (8, 0x10), (8, 0x11), (8, 0x50), (8, 0x60)):
+        base, mid = 6, True
+    elif t in ((8, 0x70), (8, 0x71), (8, 0x72)):
+        base, mid = 11, False
+    elif t == (14, 0x50):
+        base, mid = 13, False
+    else:
+        return None
+    q = dict(param1=ins["param%d" % base], param2=ins["param%d" % (base + 1)], param3=ins["param%d" % (base + 2)], param4=ins["param%d" % (base + 3)])
+    H = A.eq2_response(q, f)
+    if mid:
+        H = H * A.eq3_response(dict(param1=64, param5=64, param6=0, param7=0, param2=ins["param11"], param3=ins["param12"], param4=ins["param13"]), f)
+    return H
+
+
 def apply(L, R, ins, tempo, cache={}):
     k = key_of(ins, tempo)
     p = os.path.join(OUT, k + ".mod")
@@ -181,12 +202,18 @@ def apply(L, R, ins, tempo, cache={}):
     t = np.arange(n)
     out = [np.zeros(n), np.zeros(n)]
     bl = [split(x) for x in xs]
+    He = eq_response(ins, np.array([KEYS[0][1], KEYS[1][1]]))
+    norm = [1.0, 1.0] if He is None else [max(1e-3, abs(He[0])), max(1e-3, abs(He[1]))]
     for b in range(2):
         for ch in range(2):
             xb = bl[ch][b]
-            A = series(cols[:, b * 4 + ch * 2], P, n)
+            A = series(cols[:, b * 4 + ch * 2], P, n) / norm[b]
             d = series(cols[:, b * 4 + ch * 2 + 1], P, n)
             out[ch] += A * np.interp(t - d, t, xb, left=0.0)
+    N = 1 << int(np.ceil(np.log2(n + 1)))
+    He = eq_response(ins, np.fft.rfftfreq(N, 1 / FS))
+    if He is not None:
+        out = [np.fft.irfft(np.fft.rfft(o, N) * He, N)[:n] for o in out]
     return out[0], out[1]
 
 
