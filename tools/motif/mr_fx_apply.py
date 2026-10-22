@@ -252,7 +252,7 @@ def distortion(L, R, prm, t, fxdir, default_prm):
     """歪み系の後処理。Amp Simulator は アンプの型・Drive の近い組を選び、Drive の差は頭打ちの前の上げ幅（DRIVE_GAIN_DB を dB で補間）で直す。
     ほかの型は既定のパラメーターで測った 1 組だけ（Drive の差は Amp Simulator と同じ割合で直す）。出力は既定からの比で 40·log10、
     Dry/Wet（パラメーター 10）は元の音 cos・wet sin（確かめた）"""
-    if t != (9, 48):
+    if t != (9, 48):    # Amp Simulator は組のまま録ったものより式の方が 3 音色で少し合った（差の平均 2.2 対 2.45dB）ので式のまま
         import mr_fx_dist_sets
         z = os.path.join(os.path.dirname(fxdir), "fxds", "insa_%s_dist.npz" % mr_fx_dist_sets.key_of(prm))
         if os.path.exists(z):
@@ -698,6 +698,11 @@ def apply_block(L, R, ins, fxdir=None):
     t = (ins["type"] >> 7, ins["type"] & 0x7F)
     if t == (0, 0):
         return L, R, "なし"
+    import mr_fx_ltv
+    if t in mr_fx_ltv.EXTRA_TYPES:                  # 式のある揺れる型も、組のまま録ったものがあれば優先する
+        r = mr_fx_ltv.apply(L, R, ins, ins.get("_tempo", 120))
+        if r is not None:
+            return r[0], r[1], "録った揺れる応答 %d:%d" % t
     if t in DIST_SETS or t in ((9, 1), (9, 32)):
         fxdir = fxdir or os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../roms/motif-rack-es/capture/fxd")
         dflt = dict(param1=30, out=80) if t == (9, 48) else {}

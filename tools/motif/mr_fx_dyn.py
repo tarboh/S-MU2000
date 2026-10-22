@@ -126,11 +126,11 @@ def apply(L, R, ins, cache={}):
     xs = [np.asarray(L, dtype=np.float64), np.asarray(R, dtype=np.float64)]
     n = len(xs[0])
     mono = (xs[0] + xs[1]) / 2
-    xps = [np.concatenate([x, np.zeros(NW)]) for x in xs]
-    mp = np.concatenate([mono, np.zeros(NW)])
+    xps = [np.concatenate([np.zeros(NW), x, np.zeros(NW)]) for x in xs]      # 頭に窓 1 枚ぶんの無音（mr_fx_ltv と同じ理由）
+    mp = np.concatenate([np.zeros(NW), mono, np.zeros(NW)])
     w = np.hanning(NW + 1)[:NW]
-    out = np.zeros((2, n + 2 * NW))
-    norm = np.zeros(n + 2 * NW)
+    out = np.zeros((2, n + 3 * NW))
+    norm = np.zeros(n + 3 * NW)
     nf = 1 + (len(mp) - NW) // HOP
     for i in range(nf):
         Xm = np.fft.rfft(mp[i * HOP:i * HOP + NW] * w)
@@ -144,7 +144,7 @@ def apply(L, R, ins, cache={}):
             out[ch, i * HOP:i * HOP + NW] += np.fft.irfft(X * H[ch], NW) * w
         norm[i * HOP:i * HOP + NW] += w * w
     norm = np.where(norm > 1e-9, norm, 1)
-    return out[0, :n] / norm[:n], out[1, :n] / norm[:n]
+    return out[0, NW:NW + n] / norm[NW:NW + n], out[1, NW:NW + n] / norm[NW:NW + n]
 
 
 def main():

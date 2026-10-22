@@ -27,11 +27,16 @@ TYPES = {(7, 0x00), (7, 0x08), (7, 0x20), (7, 0x21), (7, 0x30), (7, 0x31), (7, 0
          (12, 0x10), (12, 0x11), (12, 0x12), (12, 0x30), (12, 0x31), (15, 0x78), (6, 0x60), (7, 0x60), (10, 0x50), (10, 0x51), (14, 0x10),
          # 歪みや雑音を含む組み合わせ（Auto Wah + Dist / Odrv、Wah + Dist / Odrv + Delay、Comp + Dist / Odrv + Delay、LoRes・Noisy・Attack LoFi）も同じ近似
          (12, 0x01), (12, 0x02), (12, 0x40), (12, 0x41), (10, 0x40), (10, 0x41), (13, 0x10), (13, 0x20), (13, 0x30)}
+# 式のある型（Chorus 1〜5・Celeste 1〜4・Flanger 1・2）も、組のまま録ったものがあればそれを優先する（式は Chorus 1・Flanger 1 で測ったもの）
+EXTRA_TYPES = {(5, 0x00), (5, 0x01), (5, 0x02), (5, 0x08), (5, 0x09), (5, 0x10), (5, 0x11), (5, 0x12), (5, 0x18), (6, 0x00), (6, 0x01)}
+TYPES = TYPES | EXTRA_TYPES
 TEMPO_TYPES = {(7, 0x50), (6, 0x50), (14, 0x30)}
 # 入口の大きさで効き方が変わる型・歪みや雑音を含む組み合わせ（近似の組）は、相互スペクトルの平均で H を出し、較正もしない
 # （エネルギーの比にすると歪みの倍音まで線形の利きに数え、Crying で +2.4dB、The Ripper で +6.7dB 大きく出た）
 APPROX_TYPES = {(12, 0x10), (12, 0x11), (12, 0x12), (12, 0x30), (12, 0x31), (15, 0x78), (6, 0x60), (7, 0x60), (10, 0x50), (10, 0x51), (14, 0x10),
-                (12, 0x01), (12, 0x02), (12, 0x40), (12, 0x41), (10, 0x40), (10, 0x41), (13, 0x10), (13, 0x20), (13, 0x30)}
+                (12, 0x01), (12, 0x02), (12, 0x40), (12, 0x41), (10, 0x40), (10, 0x41)}
+# LoRes・Noisy・Attack LoFi（0D 10〜30）は、間引きの折り返しや雑音が入口と相関しないので、相互スペクトルでは取りこぼす（Step Dance で −9.8dB）。
+# エネルギーの比と較正の側に置く（スペクトルの形は近似、音量は合う）
 
 
 def key_of(ins, tempo):
@@ -50,7 +55,7 @@ def needed():
         for blk in ("insertion1", "insertion2"):
             ins = js[blk]
             t = (ins["type"] >> 7, ins["type"] & 0x7F)
-            if t in TYPES:
+            if t in TYPES and (t not in EXTRA_TYPES or ins["param10"] > 1):
                 tempo = mr_patch.voice_tempo(p) if t in TEMPO_TYPES else 0
                 sets.setdefault(key_of(ins, tempo), (ins, tempo, []))[2].append(v)
     return sets
@@ -111,8 +116,14 @@ def analyze():
             if (ins["type"] >> 7, ins["type"] & 0x7F) in APPROX_TYPES:
                 Hs.append(nums / (dens + 1e-6 * dens.max()))
             else:
+                coh = nums / (dens + 1e-6 * dens.max())
                 mag = np.sqrt(pyy / (dens + 1e-6 * dens.max()))
-                Hs.append(mag * np.exp(1j * np.angle(nums)))
+                # 入口のエネルギーがほとんど無いビン（ノイズの波形の低い端など）では、出口の雑音を割って大きくなりすぎる（J-Pop の弦の低域が +34dB）。
+                # 枠の中央値の 1/1000 より小さいビンは相互スペクトルの値を使う
+                low = dens < 1e-3 * np.median(dens, axis=1, keepdims=True)
+                # ある枠だけ入口の小さいビンで比が尖る（Celeste 3 で 4kHz より上に +34dB）ので、相互スペクトルの大きさの 4 倍（+12dB）で頭打ち
+                mag = np.minimum(mag, 4 * np.abs(coh))
+                Hs.append(np.where(low, coh, mag * np.exp(1j * np.angle(nums))))
         mag = np.abs(Hs[0]).mean(1) + np.abs(Hs[1]).mean(1)
         a = mag[4:] - mag[4:].mean()
         per = 0
@@ -121,6 +132,13 @@ def analyze():
             ac /= ac[0]
             i = 8 + int(np.argmax(ac[8:len(ac) // 2]))
             per = i if ac[i] > 0.5 else 0
+        # ビンごとに、時間方向の中央値の 4 倍（+12dB）で頭打ち（ある枠だけ尖る所がある。Celeste 3 で 4kHz より上に +34dB）
+        clipped = []
+        for H in Hs:
+            lim = 4 * np.median(np.abs(H), axis=0, keepdims=True) + 1e-9
+            a_ = np.abs(H)
+            clipped.append(np.where(a_ > lim, H * (lim / np.maximum(a_, 1e-12)), H))
+        Hs = clipped
         F = Hs[0].shape[0]
         # 自分の録音で較正: 録った dry を模型に通し、wet との音量の比を左右ごとに H に掛ける（重なった枠どうしの位相の打ち消しの分。
         # Symphonic で 1.4dB）
@@ -171,16 +189,18 @@ def _run(L, R, H, per, ins):
     F = H.shape[0]
     # 左右を別々に通す（フェイザー類・Symphonic 系の 7 音色で、左右を足すより実機に 2〜4dB 近い。49 音色の比べ）。Dynamic Filter だけは足す方が合う
     t = (ins["type"] >> 7, ins["type"] & 0x7F)
-    stereo = t != (15, 0x78)
+    stereo = t != (15, 0x78) and not (t in EXTRA_TYPES and t[0] == 5 and ins.get("param15", 1) == 0)    # コーラス系は Input Mode（15）が 0 なら mono
     xs = [np.asarray(L, dtype=np.float64), np.asarray(R, dtype=np.float64)]
     if not stereo:
         xs = [(xs[0] + xs[1]) / 2] * 2
     n = len(xs[0])
-    xps = [np.concatenate([x, np.zeros(NW)]) for x in xs]
+    # 頭の前に窓 1 枚ぶんの無音を足す（最初の枠では窓の重なりの合計がほぼ 0 で、割り算が暴れる。芯の音は 0 サンプル目から鳴るので、
+    # J-Pop で頭の 0.1 秒が +14dB・最大値 207 になった）。出口はその分ずらして取る
+    xps = [np.concatenate([np.zeros(NW), x, np.zeros(NW)]) for x in xs]
     xp = xps[0]
     w = np.hanning(NW + 1)[:NW]
-    out = np.zeros((2, n + 2 * NW))
-    norm = np.zeros(n + 2 * NW)
+    out = np.zeros((2, n + 3 * NW))
+    norm = np.zeros(n + 3 * NW)
     nf = 1 + (len(xp) - NW) // HOP
     for i in range(nf):
         j = i if i < F or per <= 0 else (F - 1 - per) + (i - (F - 1 - per)) % per
@@ -190,7 +210,7 @@ def _run(L, R, H, per, ins):
             out[ch, i * HOP:i * HOP + NW] += np.fft.irfft(X * H[j, ch], NW) * w
         norm[i * HOP:i * HOP + NW] += w * w
     norm = np.where(norm > 1e-9, norm, 1)
-    return out[0, :n] / norm[:n], out[1, :n] / norm[:n]
+    return out[0, NW:NW + n] / norm[NW:NW + n], out[1, NW:NW + n] / norm[NW:NW + n]
 
 
 def main():

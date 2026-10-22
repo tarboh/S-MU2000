@@ -480,7 +480,7 @@ inline void distortion(buf &L, buf &R, const block &b, const std::string &fxddir
 	// プリセットの組のまま録ったもの（tools/motif/mr_fx_dist_sets.py、fxds/<名前>.dsx）があれば、それをそのまま使う
 	bool per_set = false;
 	stereo_ir ir;
-	if (!b.is(9, 48)) {
+	if (!b.is(9, 48)) {      // Amp Simulator は式のまま（組のまま録ったものより 3 音色で少し合った）
 		std::string k = "t" + std::to_string(b.msb) + "_" + std::to_string(b.lsb);
 		for (int i = 1; i <= 16; i++)
 			k += "_" + std::to_string(i == 10 ? 127 : (i == 11 && b.is(9, 16)) ? 0 : b.p[i]);
@@ -497,17 +497,17 @@ inline void distortion(buf &L, buf &R, const block &b, const std::string &fxddir
 	if (drive_s < 0)
 		drive_s = std::atoi(ir.head["drive"].c_str());
 	double c = std::atof(ir.head["c"].c_str()), p = std::atof(ir.head["p"].c_str());
-	if (b.is(9, 48)) {
+	if (b.is(9, 48) && !per_set) {
 		c = drive_clip(b.p[1]);
 		if (b.p[1] >= 15)
 			p = edge_p(b.p[11]);
 	}
 	double fc = std::atof(ir.head["fc"].c_str());
-	if ((b.is(9, 48) || b.is(9, 49)) && b.p[3] > 0)
+	if ((b.is(9, 48) || b.is(9, 49)) && b.p[3] > 0 && !per_set)
 		fc = t3(b.p[3]);
 	const double k = per_set ? 1.0 : std::pow(10.0, (drive_gain_db(b.p[1]) - drive_gain_db(drive_s)) / 20);
 	double og = 1.0;
-	if (b.is(9, 48))
+	if (b.is(9, 48) && !per_set)
 		og = std::pow(10.0, 40 * std::log10(std::max(1, b.p[4]) / 80.0) / 20);
 	const double ang = PI / 2 * (std::max(1, b.p[10]) - 1) / 126.0;  // Dry/Wet: 元の音 cos・wet sin（Dry/Wet 20・64 で確かめた）
 	size_t pk = 0;
@@ -954,7 +954,8 @@ inline bool modfx(buf &L, buf &R, const block &b, const std::string &moddir, int
 // プリセットの組のまま録った時間ごとの周波数応答（tools/motif/mr_fx_ltv.py、fxltv/<名前>.ltv）を、窓 4096・ずらし 1024 の STFT で掛ける
 inline bool ltv_type(const block &b)
 {
-	static const int t[][2] = {{7, 0x00}, {7, 0x08}, {7, 0x20}, {7, 0x21}, {7, 0x30}, {7, 0x31}, {7, 0x50}, {6, 0x08}, {6, 0x10}, {6, 0x20},
+	static const int t[][2] = {{5, 0x00}, {5, 0x01}, {5, 0x02}, {5, 0x08}, {5, 0x09}, {5, 0x10}, {5, 0x11}, {5, 0x12}, {5, 0x18}, {6, 0x00}, {6, 0x01},
+		{7, 0x00}, {7, 0x08}, {7, 0x20}, {7, 0x21}, {7, 0x30}, {7, 0x31}, {7, 0x50}, {6, 0x08}, {6, 0x10}, {6, 0x20},
 		{6, 0x21}, {6, 0x22}, {6, 0x50}, {5, 0x20}, {12, 0x00}, {12, 0x20}, {12, 0x21}, {14, 0x30}, {15, 0x40}, {14, 0x20},
 		{12, 0x10}, {12, 0x11}, {12, 0x12}, {12, 0x30}, {12, 0x31}, {15, 0x78}, {6, 0x60}, {7, 0x60}, {10, 0x50}, {10, 0x51}, {14, 0x10}, {12, 0x01}, {12, 0x02}, {12, 0x40}, {12, 0x41}, {10, 0x40},
 		{10, 0x41}, {13, 0x10}, {13, 0x20}, {13, 0x30}};
@@ -988,17 +989,18 @@ inline bool ltvfx(buf &L, buf &R, const block &b, const std::string &ltvdir, int
 		return false;
 	const size_t n = L.size();
 	// 左右を別々に通す（Dynamic Filter だけは足す方が実機に合う）
-	const bool stereo = !b.is(15, 0x78);
-	buf xs2[2] = {buf(n + NW, 0.0), buf(n + NW, 0.0)};
+	const bool stereo = !b.is(15, 0x78) && !(chorus_type(b) && b.p[15] == 0);   // コーラス系は Input Mode p15 が 0 なら mono
+	// 頭の前に窓 1 枚ぶんの無音を足す（最初の枠では窓の重なりの合計がほぼ 0 で割り算が暴れる）。出口は NW ずらして取る
+	buf xs2[2] = {buf(n + 2 * NW, 0.0), buf(n + 2 * NW, 0.0)};
 	for (size_t i = 0; i < n; i++) {
-		xs2[0][i] = stereo ? L[i] : (L[i] + R[i]) / 2;
-		xs2[1][i] = stereo ? R[i] : (L[i] + R[i]) / 2;
+		xs2[0][NW + i] = stereo ? L[i] : (L[i] + R[i]) / 2;
+		xs2[1][NW + i] = stereo ? R[i] : (L[i] + R[i]) / 2;
 	}
 	const buf &x = xs2[0];
 	std::vector<double> w(NW);
 	for (int i = 0; i < NW; i++)
 		w[i] = 0.5 - 0.5 * std::cos(2 * PI * i / NW);
-	buf out[2] = {buf(n + 2 * NW, 0.0), buf(n + 2 * NW, 0.0)}, norm(n + 2 * NW, 0.0);
+	buf out[2] = {buf(n + 3 * NW, 0.0), buf(n + 3 * NW, 0.0)}, norm(n + 3 * NW, 0.0);
 	const int nf = 1 + int((x.size() - NW) / HOP);
 	std::vector<cplx> X(NW), Y(NW);
 	for (int i = 0; i < nf; i++) {
@@ -1025,9 +1027,9 @@ inline bool ltvfx(buf &L, buf &R, const block &b, const std::string &ltvdir, int
 			norm[size_t(i) * HOP + q] += w[q] * w[q];
 	}
 	for (size_t t = 0; t < n; t++) {
-		const double nn = norm[t] > 1e-9 ? norm[t] : 1.0;
-		L[t] = out[0][t] / nn;
-		R[t] = out[1][t] / nn;
+		const double nn = norm[NW + t] > 1e-9 ? norm[NW + t] : 1.0;
+		L[t] = out[0][NW + t] / nn;
+		R[t] = out[1][NW + t] / nn;
 	}
 	return true;
 }
@@ -1197,16 +1199,16 @@ inline bool dynfx(buf &L, buf &R, const block &b, const std::string &dyndir)
 	if (K < 2)
 		return false;
 	const size_t n = L.size();
-	buf xs[2] = {buf(n + NW, 0.0), buf(n + NW, 0.0)}, mono(n + NW, 0.0);
+	buf xs[2] = {buf(n + 2 * NW, 0.0), buf(n + 2 * NW, 0.0)}, mono(n + 2 * NW, 0.0);      // 頭に窓 1 枚ぶんの無音
 	for (size_t i = 0; i < n; i++) {
-		xs[0][i] = L[i];
-		xs[1][i] = R[i];
-		mono[i] = (L[i] + R[i]) / 2;
+		xs[0][NW + i] = L[i];
+		xs[1][NW + i] = R[i];
+		mono[NW + i] = (L[i] + R[i]) / 2;
 	}
 	std::vector<double> w(NW);
 	for (int i = 0; i < NW; i++)
 		w[i] = 0.5 - 0.5 * std::cos(2 * PI * i / NW);
-	buf out[2] = {buf(n + 2 * NW, 0.0), buf(n + 2 * NW, 0.0)}, norm(n + 2 * NW, 0.0);
+	buf out[2] = {buf(n + 3 * NW, 0.0), buf(n + 3 * NW, 0.0)}, norm(n + 3 * NW, 0.0);
 	const int nf = 1 + int((mono.size() - NW) / HOP);
 	std::vector<cplx> X(NW), Y(NW);
 	for (int i = 0; i < nf; i++) {
@@ -1237,9 +1239,9 @@ inline bool dynfx(buf &L, buf &R, const block &b, const std::string &dyndir)
 			norm[size_t(i) * HOP + q] += w[q] * w[q];
 	}
 	for (size_t t = 0; t < n; t++) {
-		const double nn = norm[t] > 1e-9 ? norm[t] : 1.0;
-		L[t] = out[0][t] / nn;
-		R[t] = out[1][t] / nn;
+		const double nn = norm[NW + t] > 1e-9 ? norm[NW + t] : 1.0;
+		L[t] = out[0][NW + t] / nn;
+		R[t] = out[1][NW + t] / nn;
 	}
 	return true;
 }
@@ -1277,10 +1279,8 @@ inline void apply_block(buf &L, buf &R, const block &b, const std::string &fxddi
 		pitch_change(L, R, q);
 		return;
 	}
-	if (ltv_type(b)) {
-		ltvfx(L, R, b, fxddir + "/../fxltv", tempo);
+	if (ltv_type(b) && ltvfx(L, R, b, fxddir + "/../fxltv", tempo))      // 式のある Chorus・Celeste・Flanger 1・2 も、録ったものがあれば優先
 		return;
-	}
 	if (mod_type(b)) {
 		modfx(L, R, b, fxddir + "/../fxmod", tempo);
 		return;

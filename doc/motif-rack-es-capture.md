@@ -920,6 +920,16 @@ wet ÷ dry で応答をそのまま読める（録音の頭は 1 本ごとに ±
     Dynamic Filter / Flanger / Phaser・Multi Band Comp も録ったが、この形では一つの音量のときより離れたので使わない
   * **V-Distortion の中のディレイ**: 遅れ（左 300・右 400ms、帰り 400ms ごと）と帰り（1 回で −12dB）は式どおり。こだまの大きさは Delay Mix / 95（/127 では 3dB 小さかった）
   * 3 Band EQ は、外れた音色の組（StrMachine・RotoGtr）でも実機と 0.6dB 以内。外れは後ろのブロックの側
+  * **コーラス系とフランジャーも組のまま録る**（Chorus 1〜5・Celeste 1〜4・Flanger 1・2、131 組を足して 270 組）。式（Chorus 1・Flanger 1 で測ったもの）より優先する。
+    コーラス系は Input Mode（15）が 0 なら左右を足す。Celeste 3 → Tempo Delay の J-Pop が −2.9 / −5.5 → −0.9 / −4.1dB
+  * **STFT の重ね足しの頭**: 最初の枠では窓の重なりの合計がほぼ 0 で、割り算が暴れる。実機の録音は頭に無音があるので出ず、芯の音は 0 サンプル目から鳴るので、
+    J-Pop で頭の 0.1 秒が +14dB・最大値 207 になっていた（49 音色の比べで +34dB）。入口の前に窓 1 枚ぶんの無音を足す
+  * 応答の尖り: ビンごとに時間方向の中央値の 4 倍（+12dB）で頭打ち。入口のエネルギーが枠の中央値の 1/1000 より小さいビンは相互スペクトルの値を使う
+  * LoRes・Noisy・Attack LoFi は間引きの折り返しや雑音が入口と相関しないので、エネルギーの比と較正の側に置いた
+  * Dual Rotor は音量 50・100 で振幅の倍率がまったく同じ（中の Drive で効き方は変わらない）
+  * Amp Simulator も組のまま録った（31 組、正弦波の当てはめ中央値 0.03dB）が、Amp Simulator を使う 3 音色では式の方が少し合った（差の平均 2.2 対 2.45dB）ので芯は式のまま。
+    組のままの方は、130Hz の正弦波 1 本に合わせて応答全体を持ち上げる直しが +11.8dB になる組があり、ほかの周波数で合わない
+  * ここまでで、アルペジオの 3 音色を除く 92 か所の差の中央値 0.86dB、1dB 以内 58、2dB 以内 75、90% の点 2.73dB
   * 残りの外れ: 歪みを中に持つ Rotary（Amp + Rotary の RotoGtr、Drive のある Dual Rotor の Slow Jam・Full/CVib。一つの音量で録った揺れでは歪みの効き方が合わない）、
     Celeste 3 → Tempo Delay の J-Pop、LoRes の Step Dance、Talking Mod → Multi Band Comp の Griffin
 * Python と C++ は、どの道も 1e-6 前後で一致（03_012 などのディレイ、Ambience、Gate、Lo-Fi、Ring Mod、組ごとの歪み、揺れる型、揺れる周波数の型）
