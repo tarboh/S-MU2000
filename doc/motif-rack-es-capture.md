@@ -939,6 +939,10 @@ wet ÷ dry で応答をそのまま読める（録音の頭は 1 本ごとに ±
     かえって悪くなった（直しの大きい組がさらに広がり、当てはめの 90% の点 0.37 → 1.48dB）ので元のまま（`mr_fx_dist_sets.py` の `_small_level.txt` で切り替えられる）。
     Full/CVib の Amp（Type off・Drive 1）は、短いノイズの音の中で wet が終始 −7dB（ゲートの開き方のような動きは無い）なのに、130Hz の正弦波では −3.5dB。
     ノイズと正弦波で周波数ごとの利きが違う非線形な振る舞いで、Wiener 型には収まらない
+  * **エレメントごとのスイッチ**: プリセットの 230 音色（18%）は、エレメントによってインサーションのスイッチが違う。芯は、エレメントをスイッチ（0・1・2）ごとの組に分けて鳴らし、
+    つなぎ方どおりに通す（並列: A ← 組 1・B ← 組 2。A → B: B ← A の出口 + 組 2。B → A: A ← B の出口 + 組 1。組 0 はそのまま足す）。混ざった 16 音色を実機と比べると、
+    インサーションによる音量の変わりの差の平均が、前の多数決 1.62dB → 1.27dB（02_121 は多数決 +7.6 → +2.5dB、実機 +2.7dB）。`sampler_render --ins-majority` で前の形に戻せる。
+    `mr_preset_compare.py --ins` も芯（C++）で通すようにした（`mr_fx_apply.apply_insertion` は多数決のまま）
   * 残りの外れ: Amp Simulator（Type off）→ Dual Rotor 2 の Full/CVib（+3.4 / +3.2dB）、Amp + Rotary の RotoGtr（−4.1 / −2.4dB）、
     Celeste 3 → Tempo Delay の J-Pop、LoRes の Step Dance、Talking Mod → Multi Band Comp の Griffin
 * Python と C++ は、どの道も 1e-6 前後で一致（03_012 などのディレイ、Ambience、Gate、Lo-Fi、Ring Mod、組ごとの歪み、揺れる型、揺れる周波数の型）

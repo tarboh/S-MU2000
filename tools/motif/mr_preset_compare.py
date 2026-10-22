@@ -11,7 +11,7 @@
 --tweak を付けると、実機と芯の両方で部品を 1 つ切って録る（nofeg = FEG の深さ 0、noscale = カットオフのスケーリング 0、nofilter = フィルター THRU）。
 名前の後ろに _<tweak> が付く。--reverb は、実機の CC91 を音色の送りにして（リバーブを残して）録り、芯の側も mr_fx_apply.py で
 リバーブを掛けて比べる（名前の後ろに _rv）。--fx はコーラスも残す（CC93 も音色の送り、名前の後ろに _fx）。
---ins はインサーションを残し（エレメントのスイッチを切らない）、芯の側も mr_fx_apply.apply_insertion で掛ける（名前の後ろに _ins）。
+--ins はインサーションを残し（エレメントのスイッチを切らない）、芯の側も sampler_render --fx で掛ける（エレメントをスイッチごとの組に分ける。名前の後ろに _ins）。
 比べるのは、10ms ごとの音量（dB）の動きと、0.1〜0.6 秒の平均のスペクトル（1/3 オクターブ）。絶対の音量は共通の音量などでずれるので、
 音色ごとに「ベロシティ 100・鍵 60」の差を引いてから比べる。終わったらマルチへ戻す。録った音は配らないこと（ヤマハの音）。"""
 import json
@@ -159,12 +159,11 @@ def main():
             sm = os.path.join(d, "%s_k%03d_v%03d%s_sm.wav" % (v, k, vel, sfx))
             if not os.path.exists(hw):
                 continue
-            subprocess.run([render, patch, str(k), str(vel), str(hold), sm], check=True, stdout=subprocess.DEVNULL)
+            cmd = [render, patch, str(k), str(vel), str(hold), sm]
             if ins:
-                import mr_fx_apply
-                L, R = mr_ref.read_wav(sm)
-                L, R, msg = mr_fx_apply.apply_insertion(np.asarray(L), np.asarray(R), js)
-                mr_fx_apply.write_wav(sm, L, R)
+                # インサーションは芯（C++）で通す。エレメントをスイッチごとの組に分けて、つなぎ方どおりに通す（mr_fx_apply.apply_insertion は多数決）
+                cmd += ["--fx", cap, "--no-reverb", "--no-chorus"]
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL)
             if reverb:
                 import mr_fx_apply
                 L, R = mr_ref.read_wav(sm)

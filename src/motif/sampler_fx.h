@@ -1403,6 +1403,54 @@ inline void apply_block(buf &L, buf &R, const block &b, const std::string &fxddi
 }
 
 // つなぎ方 0 = 並列（スイッチ 1 は A、2 は B）、1 = A → B（1 は A → B、2 は B）、2 = B → A（2 は B → A、1 は A）
+// エレメントをインサーションのスイッチ（0・1・2）ごとの組に分けて通す（実機の流れ）。g[s][0/1] は組 s の左右。
+// つなぎ方 0（並列）: A ← 組 1、B ← 組 2。1（A → B）: A ← 組 1、B ← A の出口 + 組 2。2（B → A）: B ← 組 2、A ← B の出口 + 組 1。組 0 はそのまま足す
+inline void insertion_groups(buf g[3][2], const block &a, const block &b, int connect, const std::string &fxddir, int tempo, buf &L, buf &R)
+{
+	const size_t n = g[0][0].size();
+	auto has = [&](int s) {
+		for (size_t i = 0; i < n; i++)
+			if (g[s][0][i] != 0 || g[s][1][i] != 0)
+				return true;
+		return false;
+	};
+	auto add = [&](buf &x, const buf &y) {
+		for (size_t i = 0; i < n; i++)
+			x[i] += y[i];
+	};
+	L = g[0][0];
+	R = g[0][1];
+	buf aL = g[1][0], aR = g[1][1], bL = g[2][0], bR = g[2][1];
+	if (connect == 1) {
+		if (has(1))
+			apply_block(aL, aR, a, fxddir, tempo);
+		add(bL, aL);
+		add(bR, aR);
+		if (has(1) || has(2))
+			apply_block(bL, bR, b, fxddir, tempo);
+		add(L, bL);
+		add(R, bR);
+	} else if (connect == 2) {
+		if (has(2))
+			apply_block(bL, bR, b, fxddir, tempo);
+		add(aL, bL);
+		add(aR, bR);
+		if (has(1) || has(2))
+			apply_block(aL, aR, a, fxddir, tempo);
+		add(L, aL);
+		add(R, aR);
+	} else {
+		if (has(1))
+			apply_block(aL, aR, a, fxddir, tempo);
+		if (has(2))
+			apply_block(bL, bR, b, fxddir, tempo);
+		add(L, aL);
+		add(R, aR);
+		add(L, bL);
+		add(R, bR);
+	}
+}
+
 inline void insertion(buf &L, buf &R, const block &a, const block &b, int connect, int sw, const std::string &fxddir, int tempo = 120)
 {
 	const char *chain = "";

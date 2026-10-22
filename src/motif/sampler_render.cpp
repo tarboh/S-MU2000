@@ -2,7 +2,7 @@
 // サンプリング方式の芯（sampler.h）で、パッチ（tools/motif/mr_patch.py が作る文字ファイル）の音を 1 つ鳴らして WAV に書く。
 //
 //   g++ -std=c++17 -O2 -o sampler_render src/motif/sampler_render.cpp
-//   sampler_render 音色.patch 鍵 ベロシティ 押さえる秒 出力.wav [--fx capture の置き場] [--no-ins] [--no-reverb] [--no-chorus]
+//   sampler_render 音色.patch 鍵 ベロシティ 押さえる秒 出力.wav [--fx capture の置き場] [--no-ins] [--no-reverb] [--no-chorus] [--ins-majority]
 //
 // --fx を付けると、パッチの fx の行のエフェクト（sampler_fx.h）を掛ける。置き場の fx/*.irx（リバーブ）と fxd/*.dsx（歪み系）を使う
 // （tools/motif/mr_fx_export.py が書く）。インサーションのスイッチは、鳴ったエレメントでいちばん多いもの。
@@ -124,7 +124,7 @@ int main(int argc, char **argv)
 	const std::string dir = patch.substr(0, patch.find_last_of("/\\") + 1);
 
 	std::string fxdir;
-	bool use_ins = true, use_rev = true, use_cho = true;
+	bool use_ins = true, use_rev = true, use_cho = true, majority = false;
 	for (int i = 6; i < argc; i++) {
 		if (!std::strcmp(argv[i], "--fx") && i + 1 < argc)
 			fxdir = argv[++i];
@@ -134,6 +134,8 @@ int main(int argc, char **argv)
 			use_rev = false;
 		else if (!std::strcmp(argv[i], "--no-chorus"))
 			use_cho = false;
+		else if (!std::strcmp(argv[i], "--ins-majority"))      // エレメントのスイッチの多数決で全体を 1 つの経路に通す（前の形。mr_fx_apply と同じ）
+			majority = true;
 	}
 	kv fxline, voiceline;
 	std::map<int, int> ins_count;
@@ -163,6 +165,7 @@ int main(int argc, char **argv)
 	std::fclose(pf);
 
 	std::vector<std::unique_ptr<motif_sampler::sample>> samples;
+	std::vector<int> vgroup;                 // エレメントのインサーションのスイッチ（0・1・2）
 	std::vector<motif_sampler::voice> voices;
 	for (const element &e : els) {
 		ins_count[geti(e.f, "ins")]++;      // インサーションのスイッチは、鳴る鳴らないによらず入っているエレメント全部の多数決（mr_fx_apply.apply_insertion と同じ）
@@ -270,15 +273,24 @@ int main(int argc, char **argv)
 		samples.push_back(std::move(s));
 		voices.emplace_back();
 		voices.back().start(*samples.back(), p, note, vel);
+		vgroup.push_back(std::max(0, std::min(2, geti(e.f, "ins"))));
 	}
 	const int n = int((hold + 3.0) * 44100), off_at = int(hold * 44100);
 	std::vector<float> l(n), r(n);
+	std::vector<float> gl[3] = {std::vector<float>(n), std::vector<float>(n), std::vector<float>(n)};
+	std::vector<float> gr[3] = {std::vector<float>(n), std::vector<float>(n), std::vector<float>(n)};
 	for (int i = 0; i < n; i++) {
 		if (i == off_at)
 			for (auto &v : voices)
 				v.release();
-		for (auto &v : voices)
-			v.render(l[i], r[i]);
+		for (size_t vi = 0; vi < voices.size(); vi++) {
+			float a = 0, b = 0;
+			voices[vi].render(a, b);
+			gl[vgroup[vi]][i] += a;
+			gr[vgroup[vi]][i] += b;
+			l[i] += a;
+			r[i] += b;
+		}
 	}
 	// 共通の音量（0〜127）は 40·log10(値 / 127) dB（プリセット 29 音色の実機と芯の音量の差から）。実機ではインサーションの後で掛かる
 	// （強く歪む Still Blue で、前に掛けると 11dB 大きく出た）ので、インサーションを通すときは前で戻して後で掛け直す
@@ -303,7 +315,18 @@ int main(int argc, char **argv)
 				L[i] /= vg;
 				R[i] /= vg;
 			}
-			insertion(L, R, ia, ib, geti(fxline, "connect"), sw, fxdir + "/fxd", geti(fxline, "tempo", 120));
+			if (majority)
+				insertion(L, R, ia, ib, geti(fxline, "connect"), sw, fxdir + "/fxd", geti(fxline, "tempo", 120));
+			else {
+				// エレメントをスイッチごとの組に分けて、つなぎ方どおりに通す（--ins-majority で前の多数決に戻せる。mr_fx_apply.apply_insertion は多数決）
+				buf g[3][2];
+				for (int s2 = 0; s2 < 3; s2++)
+					for (int c = 0; c < 2; c++) {
+						const std::vector<float> &src = c == 0 ? gl[s2] : gr[s2];
+						g[s2][c].assign(src.begin(), src.end());      // 組の音は共通の音量を掛ける前のもの
+					}
+				insertion_groups(g, ia, ib, geti(fxline, "connect"), fxdir + "/fxd", geti(fxline, "tempo", 120), L, R);
+			}
 			for (size_t i = 0; i < L.size(); i++) {
 				L[i] *= vg;
 				R[i] *= vg;
