@@ -84,7 +84,7 @@ def read_pair(base, f0):
     ow = int(np.argmax((np.abs(wL) + np.abs(wR)) > 1e-4))
     if abs(ow - od) > int(0.004 * FS):            # 出口が頭で黙っている型（Slice など）は、録音の頭どうしでそろえる
         ow = od
-    n = int(8.0 * FS)
+    n = int(7.8 * FS)                             # 8 秒で離すので、その手前まで（離したあとは dry が小さくなって割り算が暴れる）
     d, wL, wR = d[od:od + n], wL[ow:ow + n], wR[ow:ow + n]
     m = min(len(d), len(wL))
     ad = analytic(d[:m])
@@ -92,8 +92,15 @@ def read_pair(base, f0):
     for w in (wL[:m], wR[:m]):
         z = analytic(w) / np.where(np.abs(ad) > 1e-6, ad, 1e-6)
         A = np.abs(z)
-        ph = np.unwrap(np.angle(z))
+        # 振幅がほぼ 0 の所（Auto Pan の片側など）は位相が決まらないので、直前の位相を保ってからつなぐ
+        ph0 = np.angle(z)
+        ok = A > 0.05 * np.percentile(A, 99)
+        idx = np.where(ok, np.arange(len(A)), 0)
+        np.maximum.accumulate(idx, out=idx)
+        ph = np.unwrap(ph0[idx])
         dl = -ph / (2 * np.pi * f0) * FS
+        per = FS / f0                              # 位相のつなぎの始まりで 1 周期ずれることがあるので、中央値を ±半周期に入れる
+        dl -= per * np.round(np.median(dl) / per)
         # 1kHz へ間引く（1ms ごとの平均）
         k = FS // RATE
         mm = len(A) // k * k
@@ -104,13 +111,13 @@ def read_pair(base, f0):
 
 def period_of(A):
     a = A[200:] - np.mean(A[200:])
-    if np.std(a) < 1e-4:
+    if np.std(a) < 0.01 * np.mean(A[200:]):      # 揺れが 1% 未満なら周期なし（細かいさざ波を周期と取り違えない）
         return 0
     ac = np.correlate(a, a, "full")[len(a) - 1:]
     ac /= ac[0]
-    lo = 30
+    lo = 100                                     # 100ms より短い山は細かいさざ波（Dual Rotor で 30ms を拾った）
     i = lo + int(np.argmax(ac[lo:len(ac) // 2]))
-    return i if ac[i] > 0.5 else 0
+    return i if ac[i] > 0.5 and i > lo else 4000  # 周期が見えない（範囲の端に当たったときも）ときは最後の 4 秒を繰り返す
 
 
 def analyze():
@@ -121,7 +128,7 @@ def analyze():
         bands = [read_pair(b, f0) for b, (_, f0) in zip(bases, KEYS)]
         n = min(len(x) for band in bands for x in band)
         cols = [x[:n] for band in bands for x in band]
-        P = period_of(cols[0] + cols[2])
+        P = period_of(cols[0]) or period_of(cols[2])      # Auto Pan は左右が逆に動いて足すと一定なので、片側ずつ見る
         with open(os.path.join(OUT, k + ".mod"), "wb") as f:
             f.write(("MOD rate=%d frames=%d period=%d\n" % (RATE, n, P)).encode("ascii"))
             f.write(np.stack(cols, axis=1).astype("<f4").tobytes())
