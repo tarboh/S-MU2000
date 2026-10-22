@@ -280,7 +280,8 @@ int main(int argc, char **argv)
 		for (auto &v : voices)
 			v.render(l[i], r[i]);
 	}
-	// 共通の音量（0〜127）は 40·log10(値 / 127) dB（プリセット 29 音色の実機と芯の音量の差から。インサーションの前に掛ける）
+	// 共通の音量（0〜127）は 40·log10(値 / 127) dB（プリセット 29 音色の実機と芯の音量の差から）。実機ではインサーションの後で掛かる
+	// （強く歪む Still Blue で、前に掛けると 11dB 大きく出た）ので、インサーションを通すときは前で戻して後で掛け直す
 	const double vg = std::pow(geti(voiceline, "volume", 127) / 127.0, 2.0);
 	for (int i = 0; i < n; i++) {
 		l[i] = float(l[i] * vg);
@@ -297,8 +298,17 @@ int main(int argc, char **argv)
 				sw = kc.first;
 			}
 		buf L(l.begin(), l.end()), R(r.begin(), r.end());
-		if (use_ins)
+		if (use_ins && vg > 0) {
+			for (size_t i = 0; i < L.size(); i++) {
+				L[i] /= vg;
+				R[i] /= vg;
+			}
 			insertion(L, R, ia, ib, geti(fxline, "connect"), sw, fxdir + "/fxd", geti(fxline, "tempo", 120));
+			for (size_t i = 0; i < L.size(); i++) {
+				L[i] *= vg;
+				R[i] *= vg;
+			}
+		}
 		buf oL(L), oR(R);
 		if (use_rev)
 			reverb(L, R, rv, fxdir + "/fx", oL, oR, L.size());

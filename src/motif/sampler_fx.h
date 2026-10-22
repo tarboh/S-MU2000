@@ -862,11 +862,16 @@ inline bool modfx(buf &L, buf &R, const block &b, const std::string &moddir, int
 	if (frames < 2)
 		return false;
 	const size_t n = L.size();
-	buf x(n);
-	for (size_t i = 0; i < n; i++)
-		x[i] = (L[i] + R[i]) / 2;
+	// 左右を別々に通す（Rotary・Dual Rotor はスピーカーへ足して送る形なので左右を足す）
+	const bool stereo = !(b.msb == 8 && b.lsb >= 0x50 && b.lsb <= 0x72);
+	buf xs[2] = {buf(L.begin(), L.end()), buf(R.begin(), R.end())};
+	if (!stereo) {
+		for (size_t i = 0; i < n; i++)
+			xs[0][i] = (L[i] + R[i]) / 2;
+		xs[1] = xs[0];
+	}
 	// 1kHz で 2 つに分ける（2 次のバターワースを 2 回）
-	auto band = [&](bool low) {
+	auto band = [&](const buf &x, bool low) {
 		return filter_freq(x, n, [low](double fq) {
 			const cplx s(0, std::tan(PI * std::min(fq, FS * 0.4999) / FS) / std::tan(PI * 1000.0 / FS));
 			const cplx den = s * s + std::sqrt(2.0) * s + 1.0;
@@ -874,7 +879,7 @@ inline bool modfx(buf &L, buf &R, const block &b, const std::string &moddir, int
 			return h * h;
 		});
 	};
-	const buf xb[2] = {band(true), band(false)};
+	const buf xb2[2][2] = {{band(xs[0], true), band(xs[0], false)}, {band(xs[1], true), band(xs[1], false)}};
 	auto series = [&](int col, double tt) {
 		const double m = frames;
 		double u = tt / FS * rate;
@@ -897,7 +902,8 @@ inline bool modfx(buf &L, buf &R, const block &b, const std::string &moddir, int
 					continue;
 				const size_t k0 = size_t(pos);
 				const double fr = pos - double(k0);
-				const double v = k0 + 1 < n ? xb[bd][k0] + (xb[bd][k0 + 1] - xb[bd][k0]) * fr : (k0 < n ? xb[bd][k0] : 0.0);
+				const buf &xb = xb2[ch][bd];
+				const double v = k0 + 1 < n ? xb[k0] + (xb[k0 + 1] - xb[k0]) * fr : (k0 < n ? xb[k0] : 0.0);
 				o[ch] += A * v;
 			}
 		L[t] = o[0];
@@ -943,9 +949,14 @@ inline bool ltvfx(buf &L, buf &R, const block &b, const std::string &ltvdir, int
 	if (F < 1)
 		return false;
 	const size_t n = L.size();
-	buf x(n + NW, 0.0);
-	for (size_t i = 0; i < n; i++)
-		x[i] = (L[i] + R[i]) / 2;
+	// 左右を別々に通す（Dynamic Filter だけは足す方が実機に合う）
+	const bool stereo = !b.is(15, 0x78);
+	buf xs2[2] = {buf(n + NW, 0.0), buf(n + NW, 0.0)};
+	for (size_t i = 0; i < n; i++) {
+		xs2[0][i] = stereo ? L[i] : (L[i] + R[i]) / 2;
+		xs2[1][i] = stereo ? R[i] : (L[i] + R[i]) / 2;
+	}
+	const buf &x = xs2[0];
 	std::vector<double> w(NW);
 	for (int i = 0; i < NW; i++)
 		w[i] = 0.5 - 0.5 * std::cos(2 * PI * i / NW);
@@ -957,10 +968,10 @@ inline bool ltvfx(buf &L, buf &R, const block &b, const std::string &ltvdir, int
 		if (i >= F && per > 0)
 			j = (F - 1 - per) + (i - (F - 1 - per)) % per;
 		j = std::min(j, F - 1);
-		for (int q = 0; q < NW; q++)
-			X[q] = x[size_t(i) * HOP + q] * w[q];
-		fft(X, false);
 		for (int ch = 0; ch < 2; ch++) {
+			for (int q = 0; q < NW; q++)
+				X[q] = xs2[ch][size_t(i) * HOP + q] * w[q];
+			fft(X, false);
 			const float *h = &raw[((size_t(j) * 2 + ch) * NB) * 2];
 			for (int q = 0; q < NB; q++) {
 				const cplx hq(h[q * 2], h[q * 2 + 1]);

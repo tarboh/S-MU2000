@@ -133,9 +133,15 @@ def apply(L, R, ins, tempo, cache={}):
             cache[k] = (raw[..., 0] + 1j * raw[..., 1], per)
     H, per = cache[k]
     F = H.shape[0]
-    x = (np.asarray(L, dtype=np.float64) + np.asarray(R, dtype=np.float64)) / 2
-    n = len(x)
-    xp = np.concatenate([x, np.zeros(NW)])
+    # 左右を別々に通す（フェイザー類・Symphonic 系の 7 音色で、左右を足すより実機に 2〜4dB 近い。49 音色の比べ）。Dynamic Filter だけは足す方が合う
+    t = (ins["type"] >> 7, ins["type"] & 0x7F)
+    stereo = t != (15, 0x78)
+    xs = [np.asarray(L, dtype=np.float64), np.asarray(R, dtype=np.float64)]
+    if not stereo:
+        xs = [(xs[0] + xs[1]) / 2] * 2
+    n = len(xs[0])
+    xps = [np.concatenate([x, np.zeros(NW)]) for x in xs]
+    xp = xps[0]
     w = np.hanning(NW + 1)[:NW]
     out = np.zeros((2, n + 2 * NW))
     norm = np.zeros(n + 2 * NW)
@@ -143,8 +149,8 @@ def apply(L, R, ins, tempo, cache={}):
     for i in range(nf):
         j = i if i < F or per <= 0 else (F - 1 - per) + (i - (F - 1 - per)) % per
         j = min(j, F - 1)
-        X = np.fft.rfft(xp[i * HOP:i * HOP + NW] * w)
         for ch in range(2):
+            X = np.fft.rfft(xps[ch][i * HOP:i * HOP + NW] * w)
             out[ch, i * HOP:i * HOP + NW] += np.fft.irfft(X * H[j, ch], NW) * w
         norm[i * HOP:i * HOP + NW] += w * w
     norm = np.where(norm > 1e-9, norm, 1)

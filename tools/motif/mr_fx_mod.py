@@ -171,12 +171,19 @@ def apply(L, R, ins, tempo, cache={}):
             P = int(head[3].split("=")[1])
             cache[k] = (np.frombuffer(f.read(), dtype="<f4").reshape(-1, 8).astype(np.float64), P)
     cols, P = cache[k]
-    x = (np.asarray(L, dtype=np.float64) + np.asarray(R, dtype=np.float64)) / 2
-    n = len(x)
+    # 左右を別々に通す（Tremolo・Slice が実機と 3〜4dB 合うようになった。49 音色の比べ）。Rotary・Dual Rotor はスピーカーへ足して送る形なので左右を足す
+    t = (ins["type"] >> 7, ins["type"] & 0x7F)
+    stereo = not (t[0] == 8 and 0x50 <= t[1] <= 0x72)
+    xs = [np.asarray(L, dtype=np.float64), np.asarray(R, dtype=np.float64)]
+    if not stereo:
+        xs = [(xs[0] + xs[1]) / 2] * 2
+    n = len(xs[0])
     t = np.arange(n)
     out = [np.zeros(n), np.zeros(n)]
-    for b, xb in enumerate(split(x)):
+    bl = [split(x) for x in xs]
+    for b in range(2):
         for ch in range(2):
+            xb = bl[ch][b]
             A = series(cols[:, b * 4 + ch * 2], P, n)
             d = series(cols[:, b * 4 + ch * 2 + 1], P, n)
             out[ch] += A * np.interp(t - d, t, xb, left=0.0)

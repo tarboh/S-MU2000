@@ -276,9 +276,10 @@ def distortion(L, R, prm, t, fxdir, default_prm):
         c = float(np.interp(drive, [d for d, _ in DRIVE_CLIP], [v for _, v in DRIVE_CLIP]))
         if drive >= 15:
             p = float(np.exp(np.interp(prm.get("param11", 112), [e for e, _ in EDGE_P], [np.log(v) for _, v in EDGE_P])))
-    x = (np.asarray(L) + np.asarray(R)) / 2
+    stereo = False      # 歪み系は左右を足す（別々に通しても 49 音色の比べは変わらなかった）
+    xs = [np.asarray(L, dtype=np.float64), np.asarray(R, dtype=np.float64)] if stereo else [(np.asarray(L) + np.asarray(R)) / 2] * 2
     outs = []
-    for h in (hL, hR):
+    for x, h in zip(xs, (hL, hR)):
         n = len(x) + len(h)
         N = 1 << int(np.ceil(np.log2(n)))
         u = np.fft.irfft(np.fft.rfft(x, N) * np.fft.rfft(h, N), N)[:len(x)] * k
@@ -316,9 +317,11 @@ def per_set_distortion(L, R, prm, t, z):
     """プリセットの組のまま録って当てはめた Wiener 型（mr_fx_dist_sets.py）。Dry/Wet は (値 − 1) / 126 で混ぜる（確かめていない）"""
     d = np.load(z)
     hL, hR, c, p, fc = d["hL"].astype(np.float64), d["hR"].astype(np.float64), float(d["c"]), float(d["p"]), float(d["fc"])
-    x = (np.asarray(L) + np.asarray(R)) / 2
+    stereo = False      # 歪み系は左右を足す（別々に通しても 49 音色の比べは変わらなかった）
+    xs = [np.asarray(L, dtype=np.float64), np.asarray(R, dtype=np.float64)] if stereo else [(np.asarray(L) + np.asarray(R)) / 2] * 2
     outs = []
     for ch, h in enumerate((hL, hR)):
+        x = xs[ch]
         n = len(x) + len(h)
         N = 1 << int(np.ceil(np.log2(n)))
         u = np.fft.irfft(np.fft.rfft(x, N) * np.fft.rfft(h, N), N)[:len(x)]
@@ -771,12 +774,18 @@ def apply_insertion(L, R, voice, fxdir=None):
     if sw == 0:
         return L, R, "インサーションを通さない"
     chain = {(0, 1): "A", (0, 2): "B", (1, 1): "AB", (1, 2): "B", (2, 1): "A", (2, 2): "BA"}[(con, sw)]
+    # 芯の出力には共通の音量（40·log10(値 / 127)）が入っているが、実機ではインサーションの後で掛かるので、前で戻して後で掛け直す
+    vg = (voice.get("common", {}).get("volume", 127) / 127.0) ** 2
+    if vg > 0:
+        L, R = np.asarray(L) / vg, np.asarray(R) / vg
     msgs = []
     for blk in chain:
         ins = dict(voice["insertion1" if blk == "A" else "insertion2"])
         ins["_tempo"] = voice.get("arp_tempo", 120)
         L, R, m = apply_block(L, R, ins, fxdir)
         msgs.append("%s: %s" % (blk, m))
+    if vg > 0:
+        L, R = np.asarray(L) * vg, np.asarray(R) * vg
     return L, R, " → ".join(msgs)
 
 
