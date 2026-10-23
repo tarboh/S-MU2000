@@ -34,6 +34,21 @@ def voice_tempo(json_path):
     return (x[0x28] << 7 | x[0x29]) if x and len(x) > 0x29 else 120
 
 
+def voice_common_lfo(json_path):
+    """音色のコモン LFO（ダンプの 40 06 00）。欄: 0 位相・1 波形・2 速さ・3 テンポの速さ・4 テンポ同期・5 遅れ・6 フェードイン・7 ホールド・8 フェードアウト・
+    9 キーオンリセット・10/13/16 箱 1〜3 の行き先・11/14/17 深さ・19 ユーザー波形の段の数・20 傾き・21〜 段の値"""
+    import mr_voice
+    syx = os.path.join(os.path.dirname(json_path), "..", "voice", os.path.basename(json_path).replace(".json", ".syx"))
+    if not os.path.exists(syx):
+        return None
+    x = mr_voice.blocks(syx).get((0x40, 0x06, 0x00))
+    if not x or len(x) < 29:
+        return None
+    return {"phase": x[0], "wave": x[1], "speed": x[2], "tspeed": x[3], "sync": x[4], "delay": x[5], "fadein": x[6], "hold": x[7],
+            "fadeout": x[8], "reset": x[9], "dest": "%d,%d,%d" % (x[10], x[13], x[16]), "depth": "%d,%d,%d" % (x[11], x[14], x[17]),
+            "usteps": x[19], "uvals": ",".join(str(v) for v in x[21:21 + 16])}
+
+
 def main():
     vpath, sdir, odir = sys.argv[1:4]
     os.makedirs(odir, exist_ok=True)
@@ -61,6 +76,9 @@ def main():
     fx["tempo"] = voice_tempo(vpath)
     lines.append("fx " + " ".join("%s=%s" % kv for kv in fx.items()))
     lines.append("voice volume=%d" % v.get("common", {}).get("volume", 127))
+    cl = voice_common_lfo(vpath)
+    if cl:
+        lines.append("clfo " + " ".join("%s=%s" % kv for kv in cl.items()))
     missing = []
     for e in v["elements"]:
         osc, amp, pit, flt, eq, lfo = e["oscillator"], e["amplitude"], e["pitch"], e["filter"], e["eq"], e["lfo"]
@@ -68,7 +86,9 @@ def main():
             continue
         w = osc["wave_number"]
         f = {
-            "wave": w, "ins": osc.get("insertion_effect_switch", 0), "kdelay": osc.get("key_on_delay", 0), "note_lo": osc["note_limit_low"], "note_hi": osc["note_limit_high"],
+            "wave": w, "ins": osc.get("insertion_effect_switch", 0), "lbox": osc.get("lfo_box_sw", 0),
+            "lratio": "%d,%d,%d,%d" % tuple(e.get("common_lfo_ratio", {}).get(k, d) for k, d in (("common_lfo_phase_offset", 0),
+                ("common_lfo_box1_depth_ratio", 127), ("common_lfo_box2_depth_ratio", 127), ("common_lfo_box3_depth_ratio", 127))), "kdelay": osc.get("key_on_delay", 0), "note_lo": osc["note_limit_low"], "note_hi": osc["note_limit_high"],
             "vel_lo": osc["velocity_limit_low"], "vel_hi": osc["velocity_limit_high"], "pan": osc["pan"], "span": osc.get("scaling_pan_depth", 64),
             "level": amp["element_level"], "fgain": flt["filter_gain"], "release": amp["aeg_release_time"],
             "aegt": "%d,%d,%d,%d" % tuple(amp["aeg_%s_time" % n] for n in ("attack", "decay1", "decay2", "release")),

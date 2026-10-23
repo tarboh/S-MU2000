@@ -152,7 +152,7 @@ int main(int argc, char **argv)
 		else if (!std::strcmp(argv[i], "--ins-majority"))      // エレメントのスイッチの多数決で全体を 1 つの経路に通す（前の形。mr_fx_apply と同じ）
 			majority = true;
 	}
-	kv fxline, voiceline;
+	kv fxline, voiceline, clfoline;
 	std::map<int, int> ins_count;
 
 	std::vector<element> els;
@@ -167,6 +167,8 @@ int main(int argc, char **argv)
 			fxline = parse(line);
 		else if (!std::strncmp(line, "voice ", 6))
 			voiceline = parse(line);
+		else if (!std::strncmp(line, "clfo ", 5))
+			clfoline = parse(line);
 		else if (!std::strncmp(line, "element ", 8))
 			els.push_back({ parse(line), {} });
 		else if (!std::strncmp(line, "zone ", 5) && !els.empty()) {
@@ -215,6 +217,33 @@ int main(int argc, char **argv)
 		p.gain = std::pow(10.0, (swp50_filter::filter_gain_db(geti(e.f, "fgain", 250)) - swp50_filter::filter_gain_db(250)) / 20.0);
 		p.pan = geti(e.f, "pan", 64);
 		p.scaling_pan = geti(e.f, "span", 64);
+		if (!clfoline.empty()) {
+			motif_sampler::common_lfo &c = p.clfo;
+			c.on = true;
+			c.phase = geti(clfoline, "phase");
+			c.wave = geti(clfoline, "wave");
+			c.speed = geti(clfoline, "speed", 32);
+			c.tspeed = geti(clfoline, "tspeed", 11);
+			c.sync = geti(clfoline, "sync");
+			c.delay = geti(clfoline, "delay");
+			c.fadein = geti(clfoline, "fadein");
+			c.reset = geti(clfoline, "reset", 1);
+			const auto ds = list(clfoline, "dest"), dp = list(clfoline, "depth"), uv = list(clfoline, "uvals");
+			for (int b = 0; b < 3 && b < int(ds.size()) && b < int(dp.size()); b++) {
+				c.dest[b] = ds[b];
+				c.depth[b] = dp[b];
+			}
+			c.usteps = geti(clfoline, "usteps");
+			for (int i = 0; i < 16 && i < int(uv.size()); i++)
+				c.uvals[i] = uv[i];
+			c.tempo = geti(fxline, "tempo", 120);
+		}
+		p.lbox = geti(e.f, "lbox");
+		{
+			const auto lr = list(e.f, "lratio");
+			for (int i = 0; i < 4 && i < int(lr.size()); i++)
+				p.lratio[i] = lr[i];
+		}
 		const auto at = list(e.f, "aegt"), al = list(e.f, "aegl");
 		for (int i = 0; i < 4 && i < int(at.size()); i++)
 			p.aeg.time[i] = at[i];

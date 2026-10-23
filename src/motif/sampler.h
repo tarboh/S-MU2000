@@ -34,6 +34,86 @@ struct sample {
 	double stretch = 1.0;         // 切り出しのときの伸び縮み（録った鍵の高さで鳴らすには、1 サンプルあたり 1 / stretch 進む）
 };
 
+// 音色のコモン LFO（40 06 00）。tools/motif/mr_clfo.py で測った:
+// 速さ 0.824 × 2^((値 − 32) / 8) Hz（8・16・32・40・48・56・63 で 0.095・0.206・0.824・1.64・3.28・6.54・11.97Hz）。テンポ同期は表 14 の音符 × 60 / テンポ。
+// PMD は 16 上がるごとに 2.2 倍（16・32・64・96・127 で ±9.4・21・102・486・2189 セント）。AMD は波形の負の側だけ効き、
+// エレメントの音量の値（41 e 20）を 深さ × 振れ だけ下げる（ユーザー波形の −1 を深さ 32・64・96・113 で −4.5・−12.5・−24.5・−37.5dB、127 で無音。
+// 音量 96 で深さ 64 なら −24dB、音量 64 で深さ 64・音量 96 で深さ 96 は無音。Eclipse の音量 100 は深さ 104 で無音）。エレメント側の割合（44 ee 51〜53）は深さに掛かる（深さ × 割合 / 127）。
+// 遅れ（5）・フェードイン（6）は値に対して指数的（遅れ 64・96・127 で 0.18・2.03・11.2 秒、フェードイン 64・96・127 で 0.27・2.3・12 秒）。
+// 波形: 0 三角（0 から上がる）・1 tri+（0〜1）・2 のこぎり上（0〜1）・3 のこぎり下・4〜8 方形（1/4・1/3・1/2・2/3・3/4、高い側から）・9 台形・10/11 S/H・12 ユーザー。
+// FMD・RESO・PAN・エレメント LFO の速さの行き先は、目盛りを測っていないので入れていない
+struct common_lfo {
+	bool on = false;
+	int phase = 0, wave = 0, speed = 32, tspeed = 11, sync = 0, delay = 0, fadein = 0, reset = 1;
+	int dest[3] = {0, 0, 0}, depth[3] = {0, 0, 0};
+	int usteps = 0, uvals[16] = {0};
+	int tempo = 120;
+	double hz() const
+	{
+		if (sync) {
+			static const double beats[17] = {0.25, 1 / 3.0, 0.375, 0.5, 2 / 3.0, 0.75, 1, 4 / 3.0, 1.5, 2, 8 / 3.0, 3, 4, 5, 6, 7, 8};
+			const int i = std::max(0, std::min(16, tspeed - 5));
+			return 1.0 / (beats[i] * 60.0 / std::max(1, tempo));
+		}
+		return 0.824 * std::exp2((speed - 32) / 8.0);
+	}
+	static double interp(const double *x, const double *y, int n, double v)
+	{
+		if (v <= x[0])
+			return y[0];
+		for (int i = 0; i < n - 1; i++)
+			if (v <= x[i + 1])
+				return y[i] + (v - x[i]) / (x[i + 1] - x[i]) * (y[i + 1] - y[i]);
+		return y[n - 1];
+	}
+	static double delay_s(int v)
+	{
+		static const double x[6] = {0, 16, 32, 64, 96, 127}, y[6] = {0, 0.002, 0.02, 0.18, 2.03, 11.2};
+		return interp(x, y, 6, v);
+	}
+	static double fade_s(int v)
+	{
+		static const double x[5] = {0, 32, 64, 96, 127}, y[5] = {0, 0.025, 0.27, 2.3, 12.1};
+		return interp(x, y, 5, v);
+	}
+	static double pmd_cents(double d)
+	{
+		static const double x[6] = {0, 16, 32, 64, 96, 127}, y[6] = {0, 9.4, 21, 102, 486, 2189};
+		return interp(x, y, 6, d);
+	}
+	// 波形の値（-1〜1）。ph は 0〜1 の位相、cyc は何周目か（S/H の乱数に使う）
+	double wave_at(double ph, long cyc) const
+	{
+		switch (wave) {
+		case 0: return ph < 0.25 ? 4 * ph : ph < 0.75 ? 2 - 4 * ph : 4 * ph - 4;
+		case 1: return ph < 0.5 ? 2 * ph : 2 - 2 * ph;
+		case 2: return ph;
+		case 3: return 1 - ph;
+		case 4: return ph < 0.25 ? 1 : -1;
+		case 5: return ph < 1 / 3.0 ? 1 : -1;
+		case 6: return ph < 0.5 ? 1 : -1;
+		case 7: return ph < 2 / 3.0 ? 1 : -1;
+		case 8: return ph < 0.75 ? 1 : -1;
+		case 9: return ph < 0.125 ? 8 * ph : ph < 0.375 ? 1 : ph < 0.625 ? 1 - 8 * (ph - 0.375) : ph < 0.875 ? -1 : -1 + 8 * (ph - 0.875);
+		case 10:
+		case 11: {
+			unsigned h = unsigned(cyc) * 2654435761u + 12345u;
+			h ^= h >> 13;
+			h *= 0x5bd1e995u;
+			h ^= h >> 15;
+			return (h % 2001) / 1000.0 - 1.0;
+		}
+		case 12: {
+			static const int nsteps[7] = {2, 3, 4, 6, 8, 12, 16};
+			const int n = nsteps[std::max(0, std::min(6, usteps))];
+			const int k = std::min(n - 1, int(ph * n));
+			return (uvals[k] - 64) / 63.0;
+		}
+		}
+		return 0;
+	}
+};
+
 struct element_params {
 	int coarse = 0;               // 半音
 	int fine = 0;                 // -64..+63（1 = 1.5625 セント）
@@ -41,6 +121,9 @@ struct element_params {
 	double gain = 1.0;            // Filter Gain（録った雛形の 250 からの比）
 	int pan = 64;                 // 1..127、64 が中央
 	int scaling_pan = 64;         // スケーリングパンの深さ（64 が 0）
+	common_lfo clfo;              // 音色のコモン LFO（clfo.on が偽なら使わない）
+	int lbox = 0;                 // このエレメントが受ける箱（ビット 0〜2 = 箱 1〜3）
+	int lratio[4] = {0, 127, 127, 127};   // 位相のずらし（0〜5）と箱 1〜3 の深さの割合
 	int level_vel_sens = 64, level_vel_curve = 0, level_kf = 64;
 	int level_bp[4] = { 0, 0, 0, 0 }, level_off[4] = { 128, 128, 128, 128 };   // 音量のレベルスケーリング
 	swp50_aeg::amp_eg aeg;        // 時間・高さ・時間の感度（鍵とベロシティは start で入れる）
@@ -76,11 +159,40 @@ struct voice {
 	swp50_filter::element_filter flt, flt_r;
 	swp50_eq::element_eq eq, eq_r;
 	double gl = 1, gr = 1;
+	long tick = 0;                        // 鳴り始めからのサンプル数（コモン LFO）
+
+	// コモン LFO の今の値から、音程（セント）と音量の値の下げ幅（エレメントの音量の目盛り。AMD は深さ × 負の側の振れだけ音量を下げる）を出す
+	void common_lfo_now(double &cents, double &drop) const
+	{
+		const common_lfo &c = p.clfo;
+		if (!c.on || !p.lbox)
+			return;
+		const double t = tick / 44100.0, dl = common_lfo::delay_s(c.delay);
+		if (t < dl)
+			return;
+		const double fd = common_lfo::fade_s(c.fadein);
+		const double f = fd > 0 ? std::min(1.0, (t - dl) / fd) : 1.0;
+		static const double offs[6] = {0, 90, 120, 180, 240, 270};
+		const double ph0 = (offs[std::max(0, std::min(5, c.phase))] + offs[std::max(0, std::min(5, p.lratio[0]))]) / 360.0;
+		const double x = t * c.hz() + ph0;
+		const double ph = x - std::floor(x);
+		const double w = c.wave_at(ph, long(std::floor(x)));
+		for (int b = 0; b < 3; b++) {
+			if (!(p.lbox >> b & 1) || c.depth[b] == 0)
+				continue;
+			const double d = c.depth[b] * p.lratio[b + 1] / 127.0;
+			if (c.dest[b] == 1)
+				cents += common_lfo::pmd_cents(d) * w * f;
+			else if (c.dest[b] == 0)
+				drop += d * std::max(0.0, -w) * f;
+		}
+	}
 
 	void start(const sample &s, const element_params &ep, int n, int v)
 	{
 		smp = &s; p = ep; note = n; velocity = v;
 		pos = 0; step = step_for(s, n, p.coarse, p.fine);
+		tick = 0;
 		on = true; released = false; done = false;
 		p.aeg.key = n;
 		p.aeg.velocity = v;
@@ -179,6 +291,9 @@ struct voice {
 			cents += swp50_peg::cents(p.peg.value * p.peg.level_factor, p.peg.depth);
 		if (p.lfo.pmod)
 			cents += p.lfo.pitch_cents_now();
+		double cdrop = 0.0;
+		common_lfo_now(cents, cdrop);
+		tick++;
 		pos += cents != 0.0 ? step * std::exp2(cents / 1200.0) : step;
 		if (s.loop_start < 0 && pos >= double(s.L.size()))
 			done = true;
@@ -199,7 +314,7 @@ struct voice {
 			done = true;
 			return;
 		}
-		const double g = eg * vel_gain * p.gain * level_gain(level - p.lfo.level_drop_now());
+		const double g = eg * vel_gain * p.gain * level_gain(level - p.lfo.level_drop_now() - cdrop);
 		outl += float(l * gl * g);
 		outr += float(r * gr * g);
 	}
