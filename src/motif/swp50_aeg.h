@@ -137,6 +137,9 @@ static inline double rise_seconds(double t)
 
 static constexpr double TIME_VEL_STEPS = 1.0;      // 時間の値のずれ =（感度 − 64）×（v − 1）/ 126（速くなる向き）
 static constexpr double TIME_KF_OCT = 0.0020;      // 段の長さの倍率 = 2^(−これ ×（感度 − 64）×（鍵 − 中心））
+// リリースは同じ形で係数が小さい（2026-10-24、tools/motif/mr_aeg_kf_release.py: 感度 32・96・127、中心 48・72、鍵 36〜96 の 13 点で
+// 0.00046、残差 0.065 オクターブ。BackGround は感度 82・中心 48 で、鍵 60 のリリースはほぼ変わらない）
+static constexpr double TIME_KF_OCT_RELEASE = 0.00046;
 
 struct amp_eg {
 	int level[4] = { 0, 127, 127, 127 };   // 初め・アタック・ディケイ 1・ディケイ 2（0..127）
@@ -168,7 +171,10 @@ struct amp_eg {
 	{
 		return t - (vel_applies(s) ? TIME_VEL_STEPS * (time_vel_sens - 64) * (velocity - 1) / 126.0 : 0.0);
 	}
-	double kf_factor() const { return std::exp2(-TIME_KF_OCT * (time_kf - 64) * (key - time_kf_center)); }
+	double kf_factor(int s = 0) const
+	{
+		return std::exp2(-(s == 4 ? TIME_KF_OCT_RELEASE : TIME_KF_OCT) * (time_kf - 64) * (key - time_kf_center));
+	}
 	static double seg_samples_at(double t)
 	{
 		if (t <= 0)
@@ -189,13 +195,13 @@ struct amp_eg {
 		seg = s;
 		from = db <= SILENT ? FLOOR_DB : db;
 		to = target_db;
-		len = left = t <= 0 ? 0.0 : seg_samples_at(shifted(t, s)) * kf_factor();
+		len = left = t <= 0 ? 0.0 : seg_samples_at(shifted(t, s)) * kf_factor(s);
 		rising = to > from;
 		if (rising) {
 			// 上がる段は振幅でまっすぐ、短い時間で着き、段の残りはそのまま待つ
 			amp = std::pow(10.0, from / 20.0);
 			amp_to = std::pow(10.0, to / 20.0);
-			const double rs = rise_seconds(t <= 0 ? 0 : shifted(t, s)) * kf_factor() * 44100.0;
+			const double rs = rise_seconds(t <= 0 ? 0 : shifted(t, s)) * kf_factor(s) * 44100.0;
 			amp_step = rs <= 0 ? 1.0 : 1.0 / rs;
 		}
 	}

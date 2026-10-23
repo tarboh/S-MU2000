@@ -138,6 +138,17 @@ int main()
 		const double want = amp_eg::seg_samples_at(t.base) / 44100.0;
 		CHECK(std::fabs(want * e.kf_factor() / t.sec - 1) < 0.12);
 	}
+	// リリースのキーフォローは弱い（感度 127・中心 48: 鍵 36・60・84 で 1.25・0.77・0.47 倍）
+	{
+		amp_eg e;
+		e.time_kf = 127;
+		e.time_kf_center = 48;
+		static const struct { int key; double r; } RS[] = { { 36, 1.246 }, { 60, 0.774 }, { 84, 0.472 } };
+		for (auto &t : RS) {
+			e.key = t.key;
+			CHECK(std::fabs(e.kf_factor(4) / t.r - 1) < 0.06);
+		}
+	}
 
 	// 効く段: 1 はディケイ 2 に効かず、2・4 は効く（ディケイ 2 = 80 で 127 → 64、感度 +32・v = 127 で 3.13 / 0.13 / 0.14 秒）
 	for (int sg : { 1, 2, 4 }) {
