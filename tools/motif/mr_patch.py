@@ -68,7 +68,7 @@ def main():
             continue
         w = osc["wave_number"]
         f = {
-            "wave": w, "ins": osc.get("insertion_effect_switch", 0), "note_lo": osc["note_limit_low"], "note_hi": osc["note_limit_high"],
+            "wave": w, "ins": osc.get("insertion_effect_switch", 0), "kdelay": osc.get("key_on_delay", 0), "note_lo": osc["note_limit_low"], "note_hi": osc["note_limit_high"],
             "vel_lo": osc["velocity_limit_low"], "vel_hi": osc["velocity_limit_high"], "pan": osc["pan"],
             "level": amp["element_level"], "fgain": flt["filter_gain"], "release": amp["aeg_release_time"],
             "aegt": "%d,%d,%d,%d" % tuple(amp["aeg_%s_time" % n] for n in ("attack", "decay1", "decay2", "release")),

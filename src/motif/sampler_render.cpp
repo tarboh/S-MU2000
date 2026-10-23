@@ -112,6 +112,21 @@ void write_wav(const char *path, const std::vector<float> &l, const std::vector<
 
 } // namespace
 
+// エレメントの Key On Delay（0〜127）→ ms。正弦波の雛形で、値ごとに 3 回ずつ録った音の頭の遅れ（tools/motif/mr_keydelay.py）。間はまっすぐに補間
+static double key_on_delay_ms(int v)
+{
+	static const double x[] = {0, 1, 2, 3, 4, 5, 7, 10, 15, 20, 30, 40, 60, 80, 100, 127};
+	static const double y[] = {0, 5.5, 19, 25.4, 43.4, 60.2, 93.7, 176.4, 322.2, 509.2, 925.0, 1428.5, 2627.5, 4049.2, 5654.6, 8097.7};
+	if (v <= 0)
+		return 0;
+	if (v >= 127)
+		return y[15];
+	for (int i = 0; i < 15; i++)
+		if (v <= x[i + 1])
+			return y[i] + (v - x[i]) / (x[i + 1] - x[i]) * (y[i + 1] - y[i]);
+	return y[15];
+}
+
 int main(int argc, char **argv)
 {
 	if (argc < 6) {
@@ -166,6 +181,7 @@ int main(int argc, char **argv)
 
 	std::vector<std::unique_ptr<motif_sampler::sample>> samples;
 	std::vector<int> vgroup;                 // エレメントのインサーションのスイッチ（0・1・2）
+	std::vector<int> vdelay;                 // エレメントの Key On Delay（サンプル）
 	std::vector<motif_sampler::voice> voices;
 	for (const element &e : els) {
 		ins_count[geti(e.f, "ins")]++;      // インサーションのスイッチは、鳴る鳴らないによらず入っているエレメント全部の多数決（mr_fx_apply.apply_insertion と同じ）
@@ -274,6 +290,7 @@ int main(int argc, char **argv)
 		voices.emplace_back();
 		voices.back().start(*samples.back(), p, note, vel);
 		vgroup.push_back(std::max(0, std::min(2, geti(e.f, "ins"))));
+		vdelay.push_back(int(key_on_delay_ms(geti(e.f, "kdelay")) / 1000.0 * 44100 + 0.5));
 	}
 	const int n = int((hold + 3.0) * 44100), off_at = int(hold * 44100);
 	std::vector<float> l(n), r(n);
@@ -284,6 +301,9 @@ int main(int argc, char **argv)
 			for (auto &v : voices)
 				v.release();
 		for (size_t vi = 0; vi < voices.size(); vi++) {
+			// Key On Delay: 遅れが過ぎるまで鳴らさない。遅れより先に鍵を離したエレメントは鳴らない（実機で確かめた）
+			if (i < vdelay[vi] || vdelay[vi] >= off_at)
+				continue;
 			float a = 0, b = 0;
 			voices[vi].render(a, b);
 			gl[vgroup[vi]][i] += a;
