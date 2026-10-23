@@ -17,7 +17,7 @@ def series(path):
     L, R = mr_ref.read_wav(path)
     x = np.asarray(L, dtype=np.float64)
     on = int(np.argmax(np.abs(x) > 1e-4))
-    x = x[on:on + int((11.8 if 'slow' in path else 4.0) * FS)]
+    x = x[on:on + int((11.8 if 'slow' in path or 'lspdS' in path or 'hold' in path else 4.0) * FS)]
     N = len(x)
     X = np.fft.fft(x)
     X[N // 2 + 1:] = 0

@@ -7,8 +7,9 @@
 //             0 は止まる（揺れない）
 //   形      : 0 = のこぎり（音程は一気に上がって、まっすぐ下がる）、1 = 三角、2 = 四角（半分ずつ）
 //   音程の深さ: 値 16 ごとに 2 倍。±37.9 セント × 2^((値 − 64) / 16)（16・32・64・96・127 で 4.4・9.9・37.9・147.7・582.0、式は 4.7・9.5・37.9・151・579）
-//   音量の深さ: 音量の値（40 × log10(L / 127) dB の L）を、LFO が下へ振れた所で「深さ」だけ下げる。上へは上げない。
-//             深さ 32・64・96・127 で山から谷 4.3・12.0・23.8・93dB（式は 5.0・11.9・24.5・無音）
+//   音量の深さ: 山から谷 深さ 32・64・96・127 で 4.3・12.0・23.8・93dB。下げ幅は dB でまっすぐ増えて減る三角で、
+//             キーオンでそろえると下げ幅 0 から始まり、半周で谷（音程の揺れより 1/4 周遅い。2026-10-24、tools/motif/mr_clfo_dest.py の lspd0a と
+//             mr_lfo.py の la???.wav を 10ms ごとに見た）。のこぎり・四角の音量の形は測っていないので、三角と同じずらしで形だけ当てている
 //   フィルターの深さ: カットオフの谷が上下に、山から谷で 0.0378 × 深さ^0.95 オクターブ（32・64・127 で 1.02・1.93・3.78 オクターブ、式は 1.02・1.97・3.78）。
 //             真ん中はもとのカットオフ（BEF12・目盛り 128 で揺れの真ん中が 470Hz 前後）
 //   ディレイ: キーオンから揺れが始まるまで 0.0056 × 値^1.5 秒。値 8・16・32・48・64 で 0.125・0.354・1.018・1.871・2.894 秒
@@ -33,6 +34,18 @@ static inline double pitch_cents(int depth)
 	return depth <= 0 ? 0.0 : 37.9 * std::exp2((depth - 64) / 16.0);
 }
 
+// 音量の谷（dB、負）
+static inline double amp_trough_db(int depth)
+{
+	static const double x[5] = {0, 32, 64, 96, 127}, y[5] = {0, -4.3, -12.0, -23.8, -93.0};
+	if (depth <= 0)
+		return 0.0;
+	int i = 0;
+	while (i < 3 && depth > x[i + 1])
+		i++;
+	return y[i] + (depth - x[i]) / (x[i + 1] - x[i]) * (y[i + 1] - y[i]);
+}
+
 static inline double filter_octaves_pp(int depth)
 {
 	return depth <= 0 ? 0.0 : 0.0378 * std::pow(double(depth), 0.95);
@@ -51,6 +64,7 @@ static inline double fade_seconds(int v)
 struct element_lfo {
 	int wave = 1, speed = 32, delay = 0, fade = 0, pmod = 0, amod = 0, fmod = 0;
 	bool key_sync = true;
+	double speed_mul = 1;      // 速さの倍率（MOTIF のコモン LFO の行き先「エレメント LFO の速さ」）
 	double phase = 0;          // 0..1（三角・のこぎりは 0 で真ん中・下がる向き、四角は上）
 	double t = 0;              // キーオンからの秒
 
@@ -62,7 +76,8 @@ struct element_lfo {
 	}
 
 	// 形の値（-1..+1）
-	double shape() const
+	double shape() const { return shape_at(phase); }
+	double shape_at(double phase) const
 	{
 		switch (wave) {
 		case 0: return phase < 0.5 ? -2.0 * phase : 2.0 - 2.0 * phase;        // のこぎり: 真ん中から下がり、上へ跳んでまた下がる
@@ -88,13 +103,20 @@ struct element_lfo {
 	void step(double fs)
 	{
 		t += 1.0 / fs;
-		phase += speed_hz(speed) / fs;
+		phase += std::fmin(speed_hz(63), speed_hz(speed) * speed_mul) / fs;
 		phase -= std::floor(phase);
 	}
 
 	double pitch_cents_now() const { return pitch_cents(pmod) * shape() * amount(); }
-	// 音量の値から下げる量（0..amod）。LFO が下へ振れた所で一番下げる
-	double level_drop_now() const { return amod * (1.0 - shape()) * 0.5 * amount(); }
+	// 音量の下げ幅（dB、0 以下）。キーオンで 0、半周で谷
+	double amp_db_now() const
+	{
+		if (amod <= 0)
+			return 0.0;
+		double ph = phase + 0.75;
+		ph -= std::floor(ph);
+		return amp_trough_db(amod) * (1.0 - shape_at(ph)) * 0.5 * amount();
+	}
 	double filter_octaves_now() const { return filter_octaves_pp(fmod) * 0.5 * shape() * amount(); }
 };
 

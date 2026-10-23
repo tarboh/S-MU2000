@@ -55,15 +55,20 @@ int main()
 	}
 	CHECK(std::fabs(first) < 1e-9);
 	CHECK(std::fabs(hi - 37.9) < 0.5 && std::fabs(lo + 37.9) < 0.5);
-	// 音量: 深さ 64 で一番下げる所は 64
+	// 音量: 深さ 64 で谷は −12dB、キーオンでは下げない、半周で谷
 	l.amod = 64;
-	double drop = 0;
 	l.key_on();
+	CHECK(std::fabs(l.amp_db_now()) < 1e-9);
+	double drop = 0;
 	for (int i = 0; i < 44100; i++) {
 		l.step(44100.0);
-		drop = std::fmax(drop, l.level_drop_now());
+		drop = std::fmin(drop, l.amp_db_now());
 	}
-	CHECK(std::fabs(drop - 64) < 0.5);
+	CHECK(std::fabs(drop + 12.0) < 0.05);
+	l.key_on();
+	for (int i = 0; i < int(44100 / (2 * swp50_lfo::speed_hz(l.speed))); i++)
+		l.step(44100.0);
+	CHECK(std::fabs(l.amp_db_now() + 12.0) < 0.05);
 	// ディレイ 32: 0.95 秒では揺れない、1.1 秒では揺れている
 	l.delay = 32;
 	l.key_on();

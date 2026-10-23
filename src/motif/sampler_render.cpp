@@ -228,6 +228,8 @@ int main(int argc, char **argv)
 			c.delay = geti(clfoline, "delay");
 			c.fadein = geti(clfoline, "fadein");
 			c.reset = geti(clfoline, "reset", 1);
+			c.hold = geti(clfoline, "hold", 127);
+			c.fadeout = geti(clfoline, "fadeout");
 			const auto ds = list(clfoline, "dest"), dp = list(clfoline, "depth"), uv = list(clfoline, "uvals");
 			for (int b = 0; b < 3 && b < int(ds.size()) && b < int(dp.size()); b++) {
 				c.dest[b] = ds[b];

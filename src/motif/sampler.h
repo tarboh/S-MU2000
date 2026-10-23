@@ -41,10 +41,15 @@ struct sample {
 // 音量 96 で深さ 64 なら −24dB、音量 64 で深さ 64・音量 96 で深さ 96 は無音。Eclipse の音量 100 は深さ 104 で無音）。エレメント側の割合（44 ee 51〜53）は深さに掛かる（深さ × 割合 / 127）。
 // 遅れ（5）・フェードイン（6）は値に対して指数的（遅れ 64・96・127 で 0.18・2.03・11.2 秒、フェードイン 64・96・127 で 0.27・2.3・12 秒）。
 // 波形: 0 三角（0 から上がる）・1 tri+（0〜1）・2 のこぎり上（0〜1）・3 のこぎり下・4〜8 方形（1/4・1/3・1/2・2/3・3/4、高い側から）・9 台形・10/11 S/H・12 ユーザー。
-// FMD・RESO・PAN・エレメント LFO の速さの行き先は、目盛りを測っていないので入れていない
+// 行き先（tools/motif/mr_clfo_dest.py）: FMD はカットオフを 2 × 深さ × 振れ 目盛り、RESO はレゾナンスを 深さ / 2 × 振れ、エレメント LFO の速さは
+// 速さの値を 深さ / 2 × 振れ（8 で 2 倍）動かす。PAN は振れにまっすぐ比例するが、いちばん振れたときのパンのずれが深さ 8・16・32・64 で 18・33・48・63
+// （倍にするごとに +15、64 から上は 63 のまま）。左右は同じ（三角で測った。ユーザー波形の −1 だけ左が浅かったが入れていない）。
+// RESO の −1 の側は、もとが 64 以下だと 50 前後より下がらなかった（もと 96 では ±16 で対称）。入れていない。
+// ホールド（7、127 は続ける）は遅れのあとから数え、64・83・96・113・126 で 0.45・1.25・2.3・5.6・11 秒。そのあとフェードアウト（8）で
+// 揺れが dB でまっすぐ −30dB まで小さくなって止まる（64・94・123 で 0.45・2.2・9.3 秒）
 struct common_lfo {
 	bool on = false;
-	int phase = 0, wave = 0, speed = 32, tspeed = 11, sync = 0, delay = 0, fadein = 0, reset = 1;
+	int phase = 0, wave = 0, speed = 32, tspeed = 11, sync = 0, delay = 0, fadein = 0, reset = 1, hold = 127, fadeout = 0;
 	int dest[3] = {0, 0, 0}, depth[3] = {0, 0, 0};
 	int usteps = 0, uvals[16] = {0};
 	int tempo = 120;
@@ -75,6 +80,22 @@ struct common_lfo {
 	{
 		static const double x[5] = {0, 32, 64, 96, 127}, y[5] = {0, 0.025, 0.27, 2.3, 12.1};
 		return interp(x, y, 5, v);
+	}
+	static double hold_s(int v)
+	{
+		static const double x[6] = {0, 64, 83, 96, 113, 126}, y[6] = {0, 0.45, 1.25, 2.3, 5.6, 11.0};
+		return interp(x, y, 6, v);
+	}
+	static double fadeout_s(int v)
+	{
+		static const double x[6] = {0, 32, 64, 94, 123, 127}, y[6] = {0, 0.05, 0.45, 2.2, 9.3, 12.0};
+		return interp(x, y, 6, v);
+	}
+	// PAN: いちばん振れたときのパンのずれ（目盛り）
+	static double pan_units(double d)
+	{
+		static const double x[5] = {0, 8, 16, 32, 64}, y[5] = {0, 18.4, 33, 48, 63};
+		return interp(x, y, 5, d);
 	}
 	static double pmd_cents(double d)
 	{
@@ -158,11 +179,16 @@ struct voice {
 	double static_cents = 0;              // 音程のキーフォロー・ベロシティ感度のずれ
 	swp50_filter::element_filter flt, flt_r;
 	swp50_eq::element_eq eq, eq_r;
-	double gl = 1, gr = 1;
+	double gl = 1, gr = 1, pan_offset = 0;
 	long tick = 0;                        // 鳴り始めからのサンプル数（コモン LFO）
 
-	// コモン LFO の今の値から、音程（セント）と音量の値の下げ幅（エレメントの音量の目盛り。AMD は深さ × 負の側の振れだけ音量を下げる）を出す
-	void common_lfo_now(double &cents, double &drop) const
+	// コモン LFO の今の値。音程（セント）と音量の値の下げ幅（エレメントの音量の目盛り。AMD は深さ × 負の側の振れだけ音量を下げる）、
+	// カットオフとレゾナンスとパンのずれ（目盛り）、エレメント LFO の速さの倍率
+	struct clfo_out {
+		double cents = 0, drop = 0, cutoff = 0, reso = 0, pan = 0, speed_mul = 1;
+		bool filter = false, panning = false;
+	};
+	void common_lfo_now(clfo_out &o) const
 	{
 		const common_lfo &c = p.clfo;
 		if (!c.on || !p.lbox)
@@ -171,7 +197,14 @@ struct voice {
 		if (t < dl)
 			return;
 		const double fd = common_lfo::fade_s(c.fadein);
-		const double f = fd > 0 ? std::min(1.0, (t - dl) / fd) : 1.0;
+		double f = fd > 0 ? std::min(1.0, (t - dl) / fd) : 1.0;
+		if (c.hold < 127) {
+			const double th = t - dl - common_lfo::hold_s(c.hold), fo = common_lfo::fadeout_s(c.fadeout);
+			if (th >= fo)
+				return;
+			if (th > 0)
+				f *= std::pow(10.0, -1.5 * th / fo);
+		}
 		static const double offs[6] = {0, 90, 120, 180, 240, 270};
 		const double ph0 = (offs[std::max(0, std::min(5, c.phase))] + offs[std::max(0, std::min(5, p.lratio[0]))]) / 360.0;
 		const double x = t * c.hz() + ph0;
@@ -181,10 +214,14 @@ struct voice {
 			if (!(p.lbox >> b & 1) || c.depth[b] == 0)
 				continue;
 			const double d = c.depth[b] * p.lratio[b + 1] / 127.0;
-			if (c.dest[b] == 1)
-				cents += common_lfo::pmd_cents(d) * w * f;
-			else if (c.dest[b] == 0)
-				drop += d * std::max(0.0, -w) * f;
+			switch (c.dest[b]) {
+			case 0: o.drop += d * std::max(0.0, -w) * f; break;
+			case 1: o.cents += common_lfo::pmd_cents(d) * w * f; break;
+			case 2: o.cutoff += 2.0 * d * w * f; o.filter = true; break;
+			case 3: o.reso += 0.5 * d * w * f; o.filter = true; break;
+			case 4: o.pan += common_lfo::pan_units(d) * w * f; o.panning = true; break;
+			case 5: o.speed_mul *= std::exp2(d * w * f / 16.0); break;
+			}
 		}
 	}
 
@@ -236,6 +273,13 @@ struct voice {
 			}
 			o += std::max(-63.0, std::min(63.0, sk)) * (p.scaling_pan - 64) / 63.0;
 		}
+		pan_offset = o;
+		pan_gains(o);
+	}
+
+	// パンのずれ（中央から、目盛り）から左右の倍率を決める
+	void pan_gains(double o)
+	{
 		o = std::max(-63.0, std::min(63.0, o));
 		static const double px[5] = {0, 16, 32, 48, 63}, py[5] = {1.0, 0.871, 0.484, 0.133, 0.0};
 		const double ao = std::fabs(o);
@@ -291,21 +335,25 @@ struct voice {
 			cents += swp50_peg::cents(p.peg.value * p.peg.level_factor, p.peg.depth);
 		if (p.lfo.pmod)
 			cents += p.lfo.pitch_cents_now();
-		double cdrop = 0.0;
-		common_lfo_now(cents, cdrop);
+		clfo_out co;
+		common_lfo_now(co);
+		cents += co.cents;
+		p.lfo.speed_mul = co.speed_mul;
 		tick++;
 		pos += cents != 0.0 ? step * std::exp2(cents / 1200.0) : step;
 		if (s.loop_start < 0 && pos >= double(s.L.size()))
 			done = true;
 		// FEG を目盛りに足してフィルターの g を決め直すのは重いので、FEG の深さが 0 でなければ毎サンプル（芯の試しなので素直に書く）
 		const double fs = p.feg.step();
-		if (p.feg.depth != 64 || p.lfo.fmod) {
+		if (p.feg.depth != 64 || p.lfo.fmod || co.filter) {
 			swp50_filter::filter_params fp = p.filter;
-			fp.cutoff = int(std::lround(swp50_filter::cutoff_with_feg(p.filter.cutoff, fs + p.lfo.filter_octaves_now() * 25.6)));
+			fp.cutoff = int(std::lround(swp50_filter::cutoff_with_feg(p.filter.cutoff, fs + p.lfo.filter_octaves_now() * 25.6 + co.cutoff)));
+			fp.reso = std::max(0, std::min(127, int(std::lround(p.filter.reso + co.reso))));
 			swp50_filter::element_filter tmp;
 			tmp.set(fp, note, velocity);
 			flt.g = flt_r.g = tmp.g;
 			flt.g2 = flt_r.g2 = tmp.g2;
+			flt.q = flt_r.q = tmp.q;
 		}
 		l = eq.process(flt.process(float(l)));
 		r = eq_r.process(flt_r.process(float(r)));
@@ -314,7 +362,9 @@ struct voice {
 			done = true;
 			return;
 		}
-		const double g = eg * vel_gain * p.gain * level_gain(level - p.lfo.level_drop_now() - cdrop);
+		const double g = eg * vel_gain * p.gain * level_gain(level - co.drop) * (p.lfo.amod ? std::pow(10.0, p.lfo.amp_db_now() / 20.0) : 1.0);
+		if (co.panning)
+			pan_gains(pan_offset + co.pan);
 		outl += float(l * gl * g);
 		outr += float(r * gr * g);
 	}
