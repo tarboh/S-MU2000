@@ -214,6 +214,7 @@ int main(int argc, char **argv)
 		// Filter Gain は 1 あたり 0.375dB。サンプルは雛形の音色（250）で録ったので、その差だけ掛ける
 		p.gain = std::pow(10.0, (swp50_filter::filter_gain_db(geti(e.f, "fgain", 250)) - swp50_filter::filter_gain_db(250)) / 20.0);
 		p.pan = geti(e.f, "pan", 64);
+		p.scaling_pan = geti(e.f, "span", 64);
 		const auto at = list(e.f, "aegt"), al = list(e.f, "aegl");
 		for (int i = 0; i < 4 && i < int(at.size()); i++)
 			p.aeg.time[i] = at[i];

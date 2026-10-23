@@ -40,6 +40,7 @@ struct element_params {
 	int level = 127;
 	double gain = 1.0;            // Filter Gain（録った雛形の 250 からの比）
 	int pan = 64;                 // 1..127、64 が中央
+	int scaling_pan = 64;         // スケーリングパンの深さ（64 が 0）
 	int level_vel_sens = 64, level_vel_curve = 0, level_kf = 64;
 	int level_bp[4] = { 0, 0, 0, 0 }, level_off[4] = { 128, 128, 128, 128 };   // 音量のレベルスケーリング
 	swp50_aeg::amp_eg aeg;        // 時間・高さ・時間の感度（鍵とベロシティは start で入れる）
@@ -105,9 +106,33 @@ struct voice {
 		eq.set(p.eq_type, p.eq_res, p.eq_f1, p.eq_g1, p.eq_f2, p.eq_g2);
 		eq.reset();
 		eq_r = eq;
-		const double a = (p.pan < 1 ? 1 : p.pan > 127 ? 127 : p.pan - 1) / 126.0 * (3.14159265358979 / 2);
-		gl = std::cos(a) * std::sqrt(2.0);
-		gr = std::sin(a) * std::sqrt(2.0);
+		// パン: 実機は近い側が 0dB のまま、遠い側だけ下がる（中央から 16・32・48・63 で −1.2・−6.3・−17.5dB・無音。tools/motif/mr_pan.py）。
+		// スケーリングパンは鍵ごとのずれ（深さ 127 で鍵 36・48・60・72・84・96 が −48・−21・0・+12・+38・+63）を、(深さ − 64) / 63 倍して足す
+		double o = (p.pan < 1 ? 1 : p.pan > 127 ? 127 : p.pan) - 64;
+		{
+			static const double kx[6] = {36, 48, 60, 72, 84, 96}, ky[6] = {-48, -21, 0, 12, 38, 63};
+			double sk;
+			if (n <= kx[0])
+				sk = ky[0] + (n - kx[0]) * (ky[1] - ky[0]) / 12.0;
+			else if (n >= kx[5])
+				sk = 63;
+			else {
+				int i = 0;
+				while (n > kx[i + 1])
+					i++;
+				sk = ky[i] + (n - kx[i]) / 12.0 * (ky[i + 1] - ky[i]);
+			}
+			o += std::max(-63.0, std::min(63.0, sk)) * (p.scaling_pan - 64) / 63.0;
+		}
+		o = std::max(-63.0, std::min(63.0, o));
+		static const double px[5] = {0, 16, 32, 48, 63}, py[5] = {1.0, 0.871, 0.484, 0.133, 0.0};
+		const double ao = std::fabs(o);
+		int j = 0;
+		while (j < 3 && ao > px[j + 1])
+			j++;
+		const double far = py[j] + (ao - px[j]) / (px[j + 1] - px[j]) * (py[j + 1] - py[j]);
+		gl = o > 0 ? far : 1.0;
+		gr = o < 0 ? far : 1.0;
 	}
 
 	void release()
