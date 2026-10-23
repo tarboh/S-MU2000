@@ -365,9 +365,15 @@ struct voice {
 		const double g = eg * vel_gain * p.gain * level_gain(level - co.drop) * (p.lfo.amod ? std::pow(10.0, p.lfo.amp_db_now() / 20.0) : 1.0);
 		if (co.panning)
 			pan_gains(pan_offset + co.pan);
+		// 離したあと出力がほぼ聞こえない（倍率 −80dB 未満）間は、実機はリリースを 4 倍の速さで進める
+		// （tools/motif/mr_clfo_gate_release.py: コモン LFO の AMD で消している間に離すと、開いたあとが小さい・鳴らない。Eclipse 03_087）
+		if (released && g < QUIET_GAIN)
+			for (int k = 0; k < 3 && !p.aeg.finished(); k++)
+				p.aeg.step();
 		outl += float(l * gl * g);
 		outr += float(r * gr * g);
 	}
+	static constexpr double QUIET_GAIN = 1e-4;
 };
 
 } // namespace motif_sampler
