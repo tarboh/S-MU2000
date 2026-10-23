@@ -56,14 +56,20 @@ def edit_name(mi, mo):
 
 def env_db(path, win=0.01):
     L, R = mr_ref.read_wav(path)
-    x = np.asarray(L) + np.asarray(R)
     # 直流を除く（インサーションによっては実機の出力に −57dB ほどの直流が乗り、鳴り終わったあとも残る。耳には聞こえない）。50ms の移動平均を引く
     w = int(0.05 * FS)
-    c = np.cumsum(np.concatenate([[0.0], np.pad(x, (w // 2, w - w // 2), mode="edge")]))   # 端は端の値で延ばす（0 だと直流が段になって出だしと取り違える）
-    x = x - (c[w:w + len(x)] - c[:len(x)]) / w
+
+    def dc(y):
+        y = np.asarray(y, dtype=np.float64)
+        c = np.cumsum(np.concatenate([[0.0], np.pad(y, (w // 2, w - w // 2), mode="edge")]))   # 端は端の値で延ばす（0 だと直流が段になって出だしと取り違える）
+        return y - (c[w:w + len(y)] - c[:len(y)]) / w
+    L, R = dc(L), dc(R)
+    x = L + R
     n = int(win * FS)
     m = len(x) // n
-    return 20 * np.log10(np.sqrt(np.mean(x[:m * n].reshape(m, n) ** 2, axis=1)) + 1e-9), x
+    # 音量は左右の電力の和で測る（2 倍して、左右が同じなら L+R と同じ値）。左右に振った同じ高さのエレメントが L+R で打ち消し合うのは、聞こえ方と違う
+    p = 2 * (L[:m * n] ** 2 + R[:m * n] ** 2).reshape(m, n).mean(axis=1) / 4
+    return 10 * np.log10(4 * p + 1e-18), x
 
 
 def onset(x):
