@@ -131,7 +131,8 @@ def main():
         zs = sorted(zs, key=lambda s: (int(s["key_hi"]) - int(s["key_lo"]), int(s["vel_hi"]) - int(s["vel_lo"])))
         for s in zs:
             name = s["file"].replace(".npz", ".smpx")
-            if not os.path.exists(os.path.join(odir, name)):
+            sp, np_ = os.path.join(odir, name), os.path.join(sdir, s["file"])
+            if not os.path.exists(sp) or os.path.getmtime(sp) < os.path.getmtime(np_):    # 切り出し直したサンプルは作り直す
                 pack(os.path.join(sdir, s["file"]), os.path.join(odir, name), int(s["key"]))
             lines.append("zone key_lo=%s key_hi=%s vel_lo=%s vel_hi=%s file=%s" % (s["key_lo"], s["key_hi"], s["vel_lo"], s["vel_hi"], name))
     out = os.path.join(odir, os.path.splitext(os.path.basename(vpath))[0] + ".patch")

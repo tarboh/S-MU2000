@@ -1,5 +1,5 @@
 """mr_capture.py で録った長い音を、まとめて「出だし + ループ」（または鳴らし切り）に切り出す。
-  python mr_extract_all.py 録った置き場 出力の置き場 [--redo-raw] [--no-xfade]
+  python mr_extract_all.py 録った置き場 出力の置き場 [--redo-raw] [--redo-list 一覧] [--no-xfade]
 
 録った置き場の capture.csv を読み、まだ切り出していないものを順に処理する（もうある .npz は飛ばす）。
 * ループ: mr_extract.py と同じ（相関 0.998 以上をループとみなす。小さい音の高い鍵は 0.998〜0.999 に来る）
@@ -96,6 +96,23 @@ def main():
                 keep.append(r)
         with open(path, "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=list(keep[0].keys()) if keep else [], lineterminator="\n")
+            w.writeheader()
+            w.writerows(keep)
+    if "--redo-list" in sys.argv:
+        # 一覧（1 行に 1 つ .npz の名前）にあるものを消して、もう一度切り出す（ループの探し方を変えたあと。mr_loop_check.py で見つけたもの）
+        redo = {l.strip() for l in open(sys.argv[sys.argv.index("--redo-list") + 1]) if l.strip()}
+        path = os.path.join(dst, "samples.csv")
+        keep = []
+        for r in csv.DictReader(open(path)):
+            if r["file"] in redo:
+                try:
+                    os.remove(os.path.join(dst, r["file"]))
+                except OSError:
+                    pass
+            else:
+                keep.append(r)
+        with open(path, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(keep[0].keys()), lineterminator="\n")
             w.writeheader()
             w.writerows(keep)
     os.makedirs(dst, exist_ok=True)

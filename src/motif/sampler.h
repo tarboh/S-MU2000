@@ -347,7 +347,7 @@ struct voice {
 		const double fs = p.feg.step();
 		if (p.feg.depth != 64 || p.lfo.fmod || co.filter) {
 			swp50_filter::filter_params fp = p.filter;
-			fp.cutoff = int(std::lround(swp50_filter::cutoff_with_feg(p.filter.cutoff, fs + p.lfo.filter_octaves_now() * 25.6 + co.cutoff)));
+			fp.cutoff = int(std::lround(swp50_filter::cutoff_with_feg(p.filter.cutoff, fs + p.lfo.filter_octaves_now() * 25.6 + co.cutoff, p.filter.type)));
 			fp.reso = std::max(0, std::min(127, int(std::lround(p.filter.reso + co.reso))));
 			swp50_filter::element_filter tmp;
 			tmp.set(fp, note, velocity);

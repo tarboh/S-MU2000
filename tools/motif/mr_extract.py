@@ -43,17 +43,21 @@ def extract(L, R, hold_end=None):
     seg = x[on + 3 * FS:end]
     Lf, rr = loop_length(seg)
     Li = int(round(Lf))
-    # ループの始まり: 出だしから 20ms ごとに、[s, s+Li) と [s+Lf, s+Lf+Li) を比べる
+    # ループの始まり: 出だしから 5ms ごとに、[s, s+Li) と [s+Lf, s+Lf+Li) を比べる。相関は大きさを見ないので、
+    # 音量も離す直前 0.3 秒と 1dB 以内であること（減っていく途中で形だけそろった所をループにすると、そこで減るのが止まる。波形 507 など）
+    ref = float(np.sqrt(np.mean(x[end - int(0.3 * FS):end] ** 2))) + 1e-12
     s0 = None
     for s in range(on + int(0.02 * FS), end - 2 * Li, int(0.005 * FS)):
         a = x[s:s + Li]
+        if abs(20 * np.log10(float(np.sqrt(np.mean(a ** 2))) / ref + 1e-12)) > 1.0:
+            continue
         b = np.interp(np.arange(Li) + s + Lf, np.arange(len(x)), x)
         c = float(np.dot(a, b) / np.sqrt(np.dot(a, a) * np.dot(b, b) + 1e-30))
         if c > rr - 2e-4:
             s0 = s
             break
     if s0 is None:
-        s0 = on + 3 * FS
+        s0 = end - 2 * Li - int(0.05 * FS)
     # 伸び縮み: 長さ Lf を Li にそろえる
     k = Lf / Li
     n = int((s0 - on + Li) / k) + 2

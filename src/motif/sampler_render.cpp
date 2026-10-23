@@ -189,14 +189,16 @@ int main(int argc, char **argv)
 		ins_count[geti(e.f, "ins")]++;      // インサーションのスイッチは、鳴る鳴らないによらず入っているエレメント全部の多数決（mr_fx_apply.apply_insertion と同じ）
 		if (note < geti(e.f, "note_lo") || note > geti(e.f, "note_hi") || vel < geti(e.f, "vel_lo") || vel > geti(e.f, "vel_hi"))
 			continue;
+		// 区間は、コースチューンでずらしたあとの鍵で選ぶ（実機: PBasFngDst のエレメント 1 はコース −12 で、鍵 60 なら鍵 48 で録ったサンプルの減り方になる）
+		const int zk = std::max(0, std::min(127, note + geti(e.f, "coarse")));
 		const zone *z = nullptr;
 		int best = 1 << 30;
 		for (const zone &c : e.zones) {
-			if (note >= c.key_lo && note <= c.key_hi && vel >= c.vel_lo && vel <= c.vel_hi) {
+			if (zk >= c.key_lo && zk <= c.key_hi && vel >= c.vel_lo && vel <= c.vel_hi) {
 				z = &c;
 				break;
 			}
-			const int d = std::abs((c.key_lo + c.key_hi) / 2 - note);
+			const int d = std::abs((c.key_lo + c.key_hi) / 2 - zk);
 			if (d < best) {
 				best = d;
 				z = &c;

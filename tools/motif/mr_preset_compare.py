@@ -57,13 +57,18 @@ def edit_name(mi, mo):
 def env_db(path, win=0.01):
     L, R = mr_ref.read_wav(path)
     x = np.asarray(L) + np.asarray(R)
+    # 直流を除く（インサーションによっては実機の出力に −57dB ほどの直流が乗り、鳴り終わったあとも残る。耳には聞こえない）。50ms の移動平均を引く
+    w = int(0.05 * FS)
+    c = np.cumsum(np.concatenate([[0.0], np.pad(x, (w // 2, w - w // 2), mode="edge")]))   # 端は端の値で延ばす（0 だと直流が段になって出だしと取り違える）
+    x = x - (c[w:w + len(x)] - c[:len(x)]) / w
     n = int(win * FS)
     m = len(x) // n
     return 20 * np.log10(np.sqrt(np.mean(x[:m * n].reshape(m, n) ** 2, axis=1)) + 1e-9), x
 
 
 def onset(x):
-    return int(np.argmax(np.abs(x) > 1e-4))
+    # 前の音の名残り（実機の録音で −70〜−80dB）を出だしと取り違えないよう、いちばん大きい所から −40dB も見る
+    return int(np.argmax(np.abs(x) > max(1e-4, 0.01 * float(np.max(np.abs(x))))))
 
 
 def third_octave(x, on):
@@ -183,7 +188,10 @@ def main():
         print("%s%s（実機と芯の差 %.1fdB を引いて比べる）" % (v, sfx, offset))
         print("   鍵 ベロ  0.05s  0.2s  0.5s  1.0s  1.9s  離して0.3s  1.0s | 音量の差の中央値・最大 | スペクトルの差（1/3 オクターブ、平均・最大）")
         for k, vel, ah, bs, mask, th, ts in rows:
-            diff = ah - (bs + offset)
+            fl = np.percentile(ah, 1) + 3                         # 実機の録音の床（雑音）より下は床にそろえる（芯は鳴り終わると −200dB まで落ちる）
+            if fl > ah.max() - 40:                                # 実機が鳴りやまない録音には床が無い
+                fl = -120.0
+            diff = np.maximum(ah, fl) - np.maximum(bs + offset, fl)
             pts = []
             for t in (0.05, 0.2, 0.5, 1.0, 1.9, hold + 0.3, hold + 1.0):
                 i = int(t / 0.01)

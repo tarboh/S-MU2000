@@ -248,10 +248,13 @@ struct element_filter {
 	         int vel_sens = 64, int velocity = 100, int reso_vel_sens = 64)
 	{
 		reso = resonance_with_velocity(reso, reso_vel_sens, velocity);
-		double c = keyfollow == 64 ? double(cutoff < 0 ? 0 : cutoff > 255 ? 255 : cutoff) : cutoff_with_keyfollow(cutoff, keyfollow, key);
+		// 0 より下（FEG で下げたとき）は g_at の延長で低い周波数へ続ける
+		double c = keyfollow == 64 ? double(cutoff > 255 ? 255 : cutoff)
+			: cutoff >= 0 ? cutoff_with_keyfollow(cutoff, keyfollow, key)
+			: cutoff + (keyfollow - 64) / 32.0 * (key - 60) * KEYFOLLOW_STEPS_PER_SEMITONE;
 		if (vel_sens != 64) {
 			c += velocity_steps(vel_sens, velocity);
-			c = c < 0 ? 0 : c > 255 ? 255 : c;
+			c = c > 255 ? 255 : c;
 		}
 		{
 			const float x = g_at(c + DISTANCE_STEPS * (distance - 128));
@@ -263,7 +266,7 @@ struct element_filter {
 			hg = x < 0.82f ? x : 0.82f;
 		}
 		type = canonical_type(t);
-		g = (keyfollow == 64 && vel_sens == 64) ? g_table[cutoff < 0 ? 0 : cutoff > 255 ? 255 : cutoff] : g_at(c);
+		g = (keyfollow == 64 && vel_sens == 64 && cutoff >= 0) ? g_table[cutoff > 255 ? 255 : cutoff] : g_at(c);
 		const float gs = g < 0.82f ? g : 0.82f;
 		q = stable_q(gs, type_q(type, reso));
 	}
@@ -274,7 +277,7 @@ struct element_filter {
 	{
 		const int sc = int(std::lround(scaling_steps(key, p.bp, p.offset)));
 		int c = p.cutoff + sc;
-		c = c < 0 ? 0 : c > 255 ? 255 : c;
+		c = c < 0 && p.cutoff >= 0 ? 0 : c > 255 ? 255 : c;     // スケーリングでは 0 で止める。FEG で 0 より下に出したカットオフは通す
 		set(p.type, c, p.reso, p.keyfollow, key, p.hpf, p.hpf_keyfollow, p.distance, p.vel_sens, velocity, p.reso_vel_sens);
 	}
 
@@ -501,11 +504,14 @@ struct filter_eg {
 	double steps() const { return octaves() * 25.6; }
 };
 
-// FEG を足した目盛り（0 より下は 0 で折り返す、上は 255 で止める）
-static inline double cutoff_with_feg(double cutoff, double feg_steps)
+// FEG を足した目盛り（上は 255 で止める）。0 より下は、BEF 系では 0 で折り返す（BEF12 で測った）。ほかの型は折り返さず、
+// そのまま低い周波数へ続く（2026-10-24、tools/motif/mr_feg_floor.py: LPF24D の目盛り 64 − 202 は 0 より 19dB 小さく、LPF12 は無音。
+// Groovin'Bs のエレメント 2 はカットオフ 0 から FEG で −79 目盛りに下がり、押している間は鳴らない）
+static inline double cutoff_with_feg(double cutoff, double feg_steps, int type = BEF12)
 {
 	double c = cutoff + feg_steps;
-	if (c < 0)
+	const int t = canonical_type(type);
+	if (c < 0 && (t == BEF12 || t == BEF6 || t == DUAL_BEF))
 		c = -c;
 	return c > 255 ? 255 : c;
 }
