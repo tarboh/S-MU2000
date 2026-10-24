@@ -77,9 +77,11 @@ def onset(x):
     return int(np.argmax(np.abs(x) > max(1e-4, 0.01 * float(np.max(np.abs(x))))))
 
 
-def third_octave(x, on):
-    seg = x[on + int(0.1 * FS):on + int(0.6 * FS)]
-    if len(seg) < 4096:
+def third_octave(x, on, at=None):
+    # at: 窓の始まり（出だしからの秒）。決まっていなければ 0.1 秒
+    a = on + int((0.1 if at is None else at) * FS)
+    seg = x[a:a + int(0.5 * FS)]
+    if len(seg) < 4096 or np.max(np.abs(seg)) < 1e-5:   # 実機も芯も鳴っていない所は比べない
         return None
     S = np.abs(np.fft.rfft(seg * np.hanning(len(seg)))) ** 2
     f = np.fft.rfftfreq(len(seg), 1 / FS)
@@ -94,7 +96,11 @@ def compare(hw, sm):
     n = min(len(eh) - oh, len(es) - os_)
     a, b = eh[oh:oh + n], es[os_:os_ + n]
     mask = (a > a.max() - 60) | (b > b.max() - 60)
-    th, ts = third_octave(xh, onset(xh)), third_octave(xs, onset(xs))
+    # スペクトルの窓は、実機の最初の 1.8 秒でいちばん大きい所を真ん中にした 0.5 秒（立ち上がりの遅い音で、出だしの小さい所の雑音を比べないように）。
+    # 芯も同じ時刻で取る
+    pk = a[:180]
+    at = max(0.1, min(1.3, (int(np.argmax(pk)) if len(pk) else 0) * 0.01 - 0.25))
+    th, ts = third_octave(xh, onset(xh), at), third_octave(xs, onset(xs), at)
     return a, b, mask, th, ts
 
 
