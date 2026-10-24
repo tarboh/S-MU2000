@@ -7,6 +7,7 @@
   tkf  : 同じアタックで、時間のキーフォロー（0x30、中心の鍵 0x31 = 60）× 鍵（tk???_k??.wav）。鍵ごとの素通しは thru_k??.wav
   lvel2: lvel をベロシティ 8 刻みで（カーブ 0-4 × 感度 127、カーブ 0 × 感度 96・80。lw???_c?_v???.wav）
   tvel2: tvel を小さい感度 72・80・96 で（tw???_v???.wav）
+  lvel3: 深さ 127 で高さ +16・+32・−32・−64、感度 127・カーブ 2、ベロシティ 1・40・64・100・127（l3[pm]???_v???.wav）
 基準は thru.wav・thru_v???.wav。mr_feg.py と同じく、ほかの感度とキーフォローは 0 にする。
 もうあるものは飛ばす。数を出すのは別。送るのはパラメーターチェンジとノートだけ（保存しない）。終わったらマルチへ戻す。"""
 import os
@@ -119,6 +120,20 @@ def main():
                 for v in vs:
                     take("lw%03d_c%d_v%03d" % (s, c, v), 1.0, 60, v)
             print("lvel2 done", flush=True)
+            base()
+        if "lvel3" in parts:
+            # 2026-10-24: 大きい FEG でも倍率が同じか（BalladEP の e3 は高さ 97・深さ 127・感度 127・カーブ 2）。深さ 127 で高さ +16・+32・−32・−64
+            vs = (1, 40, 64, 100, 127)
+            for v in vs:
+                thru("thru_v%03d" % v, 60, v)
+            for h in (16, 32, -32, -64):
+                feg((0, 0, 0, 0, 0), (h,) * 5, 127)
+                r.el(0, 0x43, 0x20, 127)
+                r.el(0, 0x43, 0x21, 2)
+                time.sleep(0.05)
+                for v in vs:
+                    take("l3%s%03d_v%03d" % ("p" if h > 0 else "m", abs(h), v), 1.0, 60, v)
+            print("lvel3 done", flush=True)
             base()
         if "tvel2" in parts:
             for s in (72, 80, 96):
