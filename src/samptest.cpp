@@ -2800,6 +2800,55 @@ static smu2000::voicelib::item g_lib_item;      // ライブラリの確かめ�
 				      std::to_string(a4_880) + "）、A5 の 880Hz " + std::to_string(a5_880) + "、ドラム 鍵 36 " + std::to_string(level(kick)) +
 				      " / 鍵 40 " + std::to_string(level(none)) + "、ゲートなし " + std::to_string(tap) + "（押したまま " + std::to_string(held) + "）" + "、チャンネル 2 をドラムに: 鍵 36 " +
 				      std::to_string(level(kick2)) + " / 鍵 40 " + std::to_string(level(none2)) + "、戻して鍵 40 " + std::to_string(level(mel2)));
+				// ドラムを同じ鍵で連打しても声が積み上がらない（#237。余韻 40 秒のループした音で 200 回）。
+				// メロディの音色は、同じ鍵でも重ねて鳴らす
+				{
+					namespace vb = smu2000::vboard;
+					auto bank = std::make_shared<vb::dls_bank>();
+					vb::dls_wave w;
+					w.rate = 44100;
+					for (int i = 0; i < 4410; i++)
+						w.pcm.push_back(s16(12000 * std::sin(i * 0.0627)));
+					bank->waves.push_back(w);
+					vb::dls_region r;
+					r.wave = 0;
+					r.loop = true;
+					r.loop_start = 0;
+					r.loop_len = 4410;
+					r.art.eg1_decay = 40.0;
+					r.art.eg1_sustain = 0.0;
+					r.art.eg1_release = 40.0;
+					vb::dls_instrument kit, mel;
+					kit.drum = true;
+					kit.regions.push_back(r);
+					mel.regions.push_back(r);
+					bank->instruments.push_back(kit);
+					bank->instruments.push_back(mel);
+					vb::dls_synth syn;
+					syn.set_bank(bank);
+					auto run = [&](int n) {
+						for (int i = 0; i < n; i++) {
+							float ch[16][2] = {};
+							syn.render(ch);
+						}
+					};
+					for (int i = 0; i < 200; i++) {
+						syn.midi(0x99, 42, 100);
+						run(200);
+						syn.midi(0x89, 42, 0);
+						run(200);
+					}
+					run(2205);
+					const int drum_voices = syn.active_voices();
+					syn.midi(0xb9, 120, 0);
+					for (int i = 0; i < 3; i++) {
+						syn.midi(0x90, 60, 100);
+						run(200);
+					}
+					const int mel_voices = syn.active_voices();
+					check(drum_voices == 1 && mel_voices == 3, "DLS のボード: ドラムの同じ鍵の連打は前の声を消し、声が積み上がらない（#237）",
+					      "ドラム 200 回のあと " + std::to_string(drum_voices) + " 声、メロディ同じ鍵 3 回で " + std::to_string(mel_voices) + " 声");
+				}
 			}
 
 			// オリジナルのボード（VBOARD_USER。src/vboard_user.h）。「波形を作る」の波形をプログラム番号に入れたもの。

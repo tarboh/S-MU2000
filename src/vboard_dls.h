@@ -401,6 +401,7 @@ public:
 	static constexpr int CHANNELS = 16;
 	static constexpr double RATE = 44100.0;
 	static constexpr int BLOCK = 16;             // 音程とエンベロープを計算し直す間隔（サンプル）
+	static constexpr double RETRIGGER_RELEASE = 0.01;   // ドラムを打ち直したときに前の声を消す速さ（96dB ぶんの秒）
 
 	void set_bank(std::shared_ptr<const dls_bank> bank)
 	{
@@ -508,6 +509,15 @@ public:
 		return false;
 	}
 
+	// 鳴っている声の数（試験用）
+	int active_voices() const
+	{
+		int n = 0;
+		for (const voice &v : m_v)
+			n += v.on;
+		return n;
+	}
+
 	// 1 サンプル。チャンネルごとの左右（パン込み）を out[チャンネル][0/1] に足す。±1.0 が全振幅
 	void render(float out[CHANNELS][2])
 	{
@@ -583,6 +593,16 @@ private:
 		const dls_instrument *ins = m_bank->find(c.drum, c.msb, c.lsb, c.program);
 		if (!ins)
 			return;
+		// ドラムで同じ鍵をもう一度打ったら、前の声を短く消す（GM の音源と同じ）。ドラムの余韻が長い DLS
+		// （SoundMAX の 4 MB General MIDI.dls はループした音で 40 秒）だと、これをしないとハイハットや
+		// スネアの連打が 128 の声を使い切り、ほかのパートの声が押し出されて抜ける（#237）。
+		// ばっさり止めるとプツッと鳴るので、10ms で消す
+		if (c.drum)
+			for (voice &o : m_v)
+				if (o.on && o.chan == chan && o.key == key && !(o.released && o.art.eg1_release <= RETRIGGER_RELEASE)) {
+					release(o);
+					o.art.eg1_release = RETRIGGER_RELEASE;
+				}
 		for (const dls_region &r : ins->regions) {
 			if (key < r.key_lo || key > r.key_hi || vel < r.vel_lo || vel > r.vel_hi)
 				continue;
