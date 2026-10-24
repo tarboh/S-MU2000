@@ -66,8 +66,6 @@ static constexpr float g_table[256] = {
 // 式と表はその分を直したもの（2026-10-19、mr_fscale.py の録音で確かめた。レゾナンス 32・感度 0 で q = 0.511）。
 // 線形の模型なので、実機が発振して飽和する所（本当のレゾナンスで、4 段の型は 33〜41、2 段の型は 73、LPF18 は 81 から上）は表せない。
 static constexpr float reso_points[17] = { 0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 127 };
-static constexpr float q_lpf24a[17] = { 1.374f, 1.192f, 0.987f, 0.846f, 0.713f, 0.622f, 0.545f, 0.494f, 0.441f, 0.407f, 0.377f,
-                                        0.356f, 0.342f, 0.331f, 0.319f, 0.307f, 0.298f };   // 112 から上は飽和するので、その手前の下がり方で延ばした
 static constexpr float q_bef12[17]  = { 1.975f, 1.488f, 1.022f, 0.776f, 0.553f, 0.422f, 0.334f, 0.266f, 0.204f, 0.165f, 0.133f,
                                         0.114f, 0.096f, 0.086f, 0.079f, 0.074f, 0.070f };
 static constexpr float q_bef6[17]   = { 2.094f, 1.603f, 1.123f, 0.853f, 0.609f, 0.472f, 0.343f, 0.275f, 0.212f, 0.175f, 0.138f,
@@ -171,12 +169,19 @@ static inline int resonance_with_velocity(int reso, int sens, int velocity)
 	return r < 0 ? 0 : int(r + 0.5);
 }
 
+// LPF24A は SVF 2 段のうち 1 段目が q = 1.0 のまま動かず、2 段目だけがレゾナンスで鋭くなる（2026-10-24、capture/reso の
+// 目盛り 96・128・160・192 × レゾナンス 0〜96 に 2 段の q を別々に当てはめ、誤差 0.01〜0.6dB。2 段目の q は 2.1 × 2^(-reso/16)、
+// 1 段目は 0.99〜1.04。2 段を同じ q にした前の表では、レゾナンス 56 から上で山が 2〜11dB 低く、裾が広かった）
+// 上の端では 1 段目の g を q 1.0 のまま 1.0 で止める（q を削ると余計な山が立ち、目盛り 240・250 で 3〜8dB 大きく出た。
+// 安定の境目に近い 1.2 ではナイキストの近くに山が立ち、Sadness・Crazy Mod の 18〜22kHz が 7〜15dB 出すぎた）
+static constexpr float LPF24A_Q0 = 2.1f, LPF24A_Q1 = 1.0f, LPF24A_G1MAX = 1.0f;
+
 // 型とレゾナンス（0-127）から SVF の q
 static inline float type_q(int t, int reso)
 {
 	reso = reso < 0 ? 0 : reso > 127 ? 127 : reso;
 	switch (canonical_type(t)) {
-	case LPF24A: return q_from_table(q_lpf24a, reso);
+	case LPF24A: return LPF24A_Q0 * std::exp2(-reso / 16.0f);
 	case BPFW:   return q_from_table(q_bpfw, reso);
 	case BEF12:  return q_from_table(q_bef12, reso);
 	case BEF6: case DUAL_BEF: return q_from_table(q_bef6, reso);
@@ -269,13 +274,13 @@ static inline float op_g(double c)
 }
 // レゾナンスのある LPF 系の上の端（2026-10-24。mr_filter_top.py --res、LPF24D・LPF24A を目盛り 200〜250 × レゾナンス 8〜96 で測り、
 // SVF の g と減衰を安定な範囲で当てはめた。ラダー（1 次 4 段＋帰還）は山が足りず 2〜12dB 外れた）:
-// 減衰はレゾナンスの表（type_q）のまま（型 0 で r16・24・32 が 1.0・0.75・0.5、型 1 で 1.0・0.875・0.725、表は 1.0・0.71・0.5 / 0.99・0.85・0.71）で削らない。
+// 減衰はレゾナンスの表（type_q）のまま（型 0 で r16・24・32 が 1.0・0.75・0.5、表は 1.0・0.71・0.5）で削らない。
 // g は目盛りとともに上がり（200・210・220・230・234・236・238・240・245・250 で 0.45・0.65・0.85・1.02・1.23・1.32・1.42・1.49・1.68・1.75。
 // 230 から上は実機の山の周波数から当てはめた。型 0 の目盛り 240 はレゾナンス 48・64・96 で 1.50・1.49・1.49 とそろう。
 // LPF12・LPF18・LPF12+BPF6 も目盛り 200〜255 × レゾナンス 24〜127 で山の周波数が LPF24D と同じ（同じ g と上限で 0〜20Hz の差））、
 // 1.872 − 0.997 q0 + 0.145 q0²（q0 は LPF24D の減衰。目盛り 240・250 の型 0 で r16・24・32・48・64 が 1.02・1.24・1.41・1.63・1.75 に当たる。
 // r16 は山が無いので、細かい帯の形で 0.97 と 1.11 の間）で頭打ち。
-// 型 1 は山の周波数が型 0 と同じだが減衰が大きく、この g では発散するので、安定の上限 −q + √(q² + 4) の 0.9 倍でも止める。減衰が 1.1 より大きい（レゾナンスが低い）ときは
+// 型 1 も山の周波数は型 0 と同じ（1 段目は q 1.0 のまま g を LPF24A_G1MAX で止める）。減衰が 1.1 より大きい（レゾナンスが低い）ときは
 // 上の端で素通しに近づくので、下の 1 次の形を使う（型 0 の r8 も 230 から上は素通し）
 static inline float lpf_top_g(double c)
 {
@@ -304,6 +309,7 @@ struct element_filter {
 	int   type = THRU;
 	float g = 0.999f;
 	float q = 2.0f;
+	float ga = 0.999f;                                   // LPF24A の 1 段目の g（LPF24A_G1MAX で止める）
 	float hg = 0;                                        // HPF の g（0 = 切）
 	float g2 = 0.999f;                                   // Dual 系の 2 つめの g
 	svf   s1, s2, s3, sh;
@@ -348,10 +354,8 @@ struct element_filter {
 		if (op_stages(type) > 0) {
 			if (c > 200 && qr <= 1.1f) {
 				// レゾナンスのある LPF 系: 減衰は削らず、g は目盛りの値と上限の小さいほう。
-				// 上限は LPF24D の減衰 q0 から 1.872 − 0.997 q0 + 0.145 q0²（LPF 系のどの型でも同じ）。LPF24A は減衰が大きいので、安定の上限の 0.9 倍でも止める
-				const float q0 = type_q(LPF24D, reso), gm = -qr + std::sqrt(qr * qr + 4.0f);
-				const float c1 = 1.872f + q0 * (-0.997f + 0.145f * q0), c2 = 0.9f * (gm < 1.9f / qr ? gm : 1.9f / qr);
-				const float cap = type != LPF24A || c1 < c2 ? c1 : c2;
+				// 上限は LPF24D の減衰 q0 から 1.872 − 0.997 q0 + 0.145 q0²（LPF 系のどの型でも同じ）
+				const float q0 = type_q(LPF24D, reso), cap = 1.872f + q0 * (-0.997f + 0.145f * q0);
 				const float gc = lpf_top_g(c);
 				gtop = gc < cap ? gc : cap;
 				lpf_top = true;
@@ -363,6 +367,7 @@ struct element_filter {
 		}
 		const float gs = gtop > 0 ? gtop : g < 0.82f ? g : 0.82f;
 		q = lpf_top ? qr : stable_q(gs, qr);
+		ga = gs < LPF24A_G1MAX ? gs : LPF24A_G1MAX;
 		wop = 0.0f;
 		gop = op_g(c > 0 ? c : 0);
 		if (gtop == 0.0f && op_stages(type) > 0 && c > 205)
@@ -409,7 +414,8 @@ struct element_filter {
 		const float gs = gtop > 0 ? gtop : g < 0.82f ? g : 0.82f;   // q = 2 の SVF が不安定にならない所まで。上の端は q を削って g を上げる
 		float l, b, h, l2, b2, h2;
 		switch (type) {
-		case LPF24D: case LPF24A: s1.step(x, gs, q, l, b, h); s2.step(l, gs, q, l2, b2, h2); return l2;
+		case LPF24D: s1.step(x, gs, q, l, b, h); s2.step(l, gs, q, l2, b2, h2); return l2;
+		case LPF24A: s1.step(x, ga, LPF24A_Q1, l, b, h); s2.step(l, gs, q, l2, b2, h2); return l2;
 		case LPF18:  s1.step(x, gs, q, l, b, h); p1 += g * (l - p1); return p1;
 		case LPF18S: { p1 += g * (x - p1); const float g2 = g * 5.657f < 0.999f ? g * 5.657f : 0.999f; p2 += g2 * (p1 - p2); return p2; }
 		case LPF12: case LPF12_BPF6: s1.step(x, gs, q, l, b, h); return l;
@@ -449,7 +455,8 @@ static inline double response_db(int t, int cutoff, double f, int reso = 0, int 
 	const double g2a = g_at(cutoff + DISTANCE_STEPS * (distance - 128)), g2 = g2a < 0.82 ? g2a : 0.82;
 	cd h = 1.0;
 	switch (t) {
-	case LPF24D: case LPF24A: h = sv(gs, q, 0) * sv(gs, q, 0); break;
+	case LPF24D: h = sv(gs, q, 0) * sv(gs, q, 0); break;
+	case LPF24A: h = sv(gs < LPF24A_G1MAX ? gs : LPF24A_G1MAX, LPF24A_Q1, 0) * sv(gs, q, 0); break;
 	case LPF18:  h = sv(gs, q, 0) * lp1(g0); break;
 	case LPF18S: h = lp1(g0) * lp1(g0 * 5.657 < 0.999 ? g0 * 5.657 : 0.999); break;
 	case LPF12: case LPF12_BPF6: h = sv(gs, q, 0); break;

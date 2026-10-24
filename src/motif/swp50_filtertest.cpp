@@ -63,7 +63,7 @@ int main()
 	CHECK(std::fabs(response_db(LPF12, 128, 458.4, 41) - 8.98) < 0.8);
 	CHECK(std::fabs(response_db(LPF12, 128, 458.4, 57) - 14.94) < 0.8);
 	CHECK(std::fabs(response_db(BPF6, 128, 458.4, 57) - 14.87) < 0.8);
-	CHECK(std::fabs(response_db(LPF24A, 128, 458.4, 57) - 14.97) < 3.0);  // LPF24A は山の頂上が 2.7dB 低く出る（全体の RMS は 0.8dB）
+	CHECK(std::fabs(response_db(LPF24A, 128, 458.4, 57) - 14.97) < 0.8);  // LPF24A は 1 段目 q 1.0、2 段目だけ鋭い（14.84dB）
 	CHECK(std::fabs(response_db(LPF18, 128, 458.4, 57) - 12.07) < 1.0);
 	CHECK(std::fabs(response_db(LPF24D, 128, 458.4, 25) - 5.85) < 1.0);
 	CHECK(std::fabs(type_q(LPF12, 0) - 2.0f) < 1e-6 && std::fabs(type_q(LPF12, 32) - 0.5f) < 1e-6);         // 16 ごとに半分

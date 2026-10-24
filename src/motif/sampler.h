@@ -354,6 +354,7 @@ struct voice {
 			flt.g = flt_r.g = tmp.g;
 			flt.g2 = flt_r.g2 = tmp.g2;
 			flt.q = flt_r.q = tmp.q;
+			flt.ga = flt_r.ga = tmp.ga;
 			flt.gtop = flt_r.gtop = tmp.gtop;
 			flt.wop = flt_r.wop = tmp.wop;
 			flt.gop = flt_r.gop = tmp.gop;
