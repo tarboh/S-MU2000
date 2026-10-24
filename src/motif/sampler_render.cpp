@@ -127,6 +127,17 @@ static double key_on_delay_ms(int v)
 	return y[15];
 }
 
+// Key On Delay のテンポ同期（41 ee 12 = 1）のとき、長さ（41 ee 1C）→ 拍。正弦波の雛形でテンポ 120 で測った（tools/motif/mr_keydelay_sync.py、2026-10-24）。
+// 6 から上は音符の長さ（3 連 8 分・付点 16 分・8 分・3 連 4 分・付点 8 分・4 分・3 連 2 分・付点 4 分・2 分・3 連全音・付点 2 分・4 分 × 4・× 5・× 6）で、
+// テンポ 60 でも同じ拍数。0〜5 はどれも 0.23 拍。20 から上は 1 拍ずつ延ばした
+static double key_on_delay_beats(int v)
+{
+	static const double b[20] = {0.235, 0.242, 0.234, 0.230, 0.236, 0.229, 0.327, 0.351, 0.504, 0.651, 0.723, 0.992, 1.319, 1.500, 1.987, 2.660, 2.992, 3.974, 5.001, 5.994};
+	if (v < 0)
+		return b[0];
+	return v < 20 ? b[v] : b[19] + (v - 19);
+}
+
 int main(int argc, char **argv)
 {
 	if (argc < 6) {
@@ -324,7 +335,10 @@ int main(int argc, char **argv)
 		voices.emplace_back();
 		voices.back().start(*samples.back(), p, note, vel);
 		vgroup.push_back(std::max(0, std::min(2, geti(e.f, "ins"))));
-		vdelay.push_back(int(key_on_delay_ms(geti(e.f, "kdelay")) / 1000.0 * 44100 + 0.5));
+		// テンポ同期なら音色のテンポ（fx の tempo）で拍を秒に直す（Willows のエレメント 3 は 2 分音符・テンポ 48 で 2.5 秒遅れ、2 秒押さえでは鳴らない）
+		const double kd_ms = geti(e.f, "ksync") ? key_on_delay_beats(geti(e.f, "klen")) * 60000.0 / std::max(1, geti(fxline, "tempo", 120))
+		                                        : key_on_delay_ms(geti(e.f, "kdelay"));
+		vdelay.push_back(int(kd_ms / 1000.0 * 44100 + 0.5));
 	}
 	const int n = int((hold + 3.0) * 44100), off_at = int(hold * 44100);
 	std::vector<float> l(n), r(n);

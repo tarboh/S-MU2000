@@ -88,7 +88,7 @@ def main():
         f = {
             "wave": w, "ins": osc.get("insertion_effect_switch", 0), "lbox": osc.get("lfo_box_sw", 0),
             "lratio": "%d,%d,%d,%d" % tuple(e.get("common_lfo_ratio", {}).get(k, d) for k, d in (("common_lfo_phase_offset", 0),
-                ("common_lfo_box1_depth_ratio", 127), ("common_lfo_box2_depth_ratio", 127), ("common_lfo_box3_depth_ratio", 127))), "kdelay": osc.get("key_on_delay", 0), "note_lo": osc["note_limit_low"], "note_hi": osc["note_limit_high"],
+                ("common_lfo_box1_depth_ratio", 127), ("common_lfo_box2_depth_ratio", 127), ("common_lfo_box3_depth_ratio", 127))), "kdelay": osc.get("key_on_delay", 0), "ksync": osc.get("key_on_delay_tempo_sync", 0), "klen": osc.get("key_on_delay_tempo", 0), "note_lo": osc["note_limit_low"], "note_hi": osc["note_limit_high"],
             "vel_lo": osc["velocity_limit_low"], "vel_hi": osc["velocity_limit_high"], "pan": osc["pan"], "span": osc.get("scaling_pan_depth", 64),
             "level": amp["element_level"], "fgain": flt["filter_gain"], "release": amp["aeg_release_time"],
             "aegt": "%d,%d,%d,%d" % tuple(amp["aeg_%s_time" % n] for n in ("attack", "decay1", "decay2", "release")),
