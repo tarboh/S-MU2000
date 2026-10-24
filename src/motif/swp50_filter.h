@@ -262,6 +262,25 @@ static inline float op_g(double c)
 		i++;
 	return float(y[i] + (c - x[i]) / (x[i + 1] - x[i]) * (y[i + 1] - y[i]));
 }
+// レゾナンスのある LPF 系の上の端（2026-10-24。mr_filter_top.py --res、LPF24D・LPF24A を目盛り 200〜250 × レゾナンス 8〜96 で測り、
+// SVF の g と減衰を安定な範囲で当てはめた。ラダー（1 次 4 段＋帰還）は山が足りず 2〜12dB 外れた）:
+// 減衰はレゾナンスの表（type_q）のまま（型 0 で r16・24・32 が 1.0・0.75・0.5、型 1 で 1.0・0.875・0.725、表は 1.0・0.71・0.5 / 0.99・0.85・0.71）で削らない。
+// g は目盛りとともに上がり（200・210・220・230 で表の 0.45・0.65・0.85・1.0）、安定の上限 −q + √(q² + 4) の 0.9 倍で頭打ち
+// （目盛り 240 の型 0 で r24・32・48 が 1.21・1.41・1.49、上限の 0.9 倍は 1.22・1.40・1.57）。減衰が 1.1 より大きい（レゾナンスが低い）ときは
+// 上の端で素通しに近づくので、下の 1 次の形を使う（型 0 の r8 も 230 から上は素通し）
+static inline float lpf_top_g(double c)
+{
+	static const double x[6] = { 200, 210, 220, 230, 240, 250 }, y[6] = { 0.45, 0.65, 0.85, 1.0, 1.7, 1.9 };
+	if (c <= x[0])
+		return g_at(c);
+	if (c >= x[5])
+		return float(y[5]);
+	int i = 0;
+	while (i < 4 && c > x[i + 1])
+		i++;
+	return float(y[i] + (c - x[i]) / (x[i + 1] - x[i]) * (y[i + 1] - y[i]));
+}
+
 static inline int op_stages(int t)
 {
 	switch (t) {
@@ -315,13 +334,23 @@ struct element_filter {
 		// 上の端: 実機の山の周波数の g を、減衰を削らずに（1 割のゆとりで）安定なときだけ使う。レゾナンスのある所は実機と合う
 		// （LPF24D・レゾナンス 28・目盛り 220 で 6.35kHz の山 +9.1 対 +8.1dB）。レゾナンス 0 で上げると減衰を削って山が立ち、FEG で発散した
 		gtop = 0.0f;
-		if (c > 219) {
-			const float gt = top_g(c), qr = type_q(type, reso);
+		const float qr = type_q(type, reso);
+		bool lpf_top = false;
+		if (op_stages(type) > 0) {
+			if (c > 200 && qr <= 1.1f) {
+				// レゾナンスのある LPF 系: 減衰は削らず、g は目盛りの値と安定の上限の 0.9 倍の小さいほう
+				const float gm = -qr + std::sqrt(qr * qr + 4.0f), cap = 0.9f * (gm < 1.9f / qr ? gm : 1.9f / qr);
+				const float gc = lpf_top_g(c);
+				gtop = gc < cap ? gc : cap;
+				lpf_top = true;
+			}
+		} else if (c > 219) {
+			const float gt = top_g(c);
 			if (stable_q(gt, qr * 1.1f) >= qr * 1.1f)
 				gtop = gt;
 		}
 		const float gs = gtop > 0 ? gtop : g < 0.82f ? g : 0.82f;
-		q = stable_q(gs, type_q(type, reso));
+		q = lpf_top ? qr : stable_q(gs, qr);
 		wop = 0.0f;
 		gop = op_g(c > 0 ? c : 0);
 		if (gtop == 0.0f && op_stages(type) > 0 && c > 205)
