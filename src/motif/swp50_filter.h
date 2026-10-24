@@ -204,13 +204,18 @@ static constexpr double DISTANCE_STEPS = 1.6;
 // 目盛り → g はカットオフと同じ表。キーフォローもカットオフと同じ決まり（中心の鍵 60、100% で 1 半音 2.13 目盛り）。目盛り 0 は効かない
 static constexpr float HPF_Q = 1.05f;
 
+// SVF の状態の上限（2026-10-24、tools/motif/mr_filter_sat.py）。実機の LPF24D はレゾナンス 96 と 127 で同じ大きさ（差 0.7dB）の
+// 正弦波で発振し、その大きさはカットオフ 128・200 で同じ、フィルターゲインに比例する。状態を ±6.5 で止めると、発振の大きさが
+// フィルターゲイン 202 で実機の −4.6dB に合う。レゾナンス 64 までは状態がここまで届かず、線形のまま
+static constexpr float SVF_LIMIT = 6.5f;
 struct svf {
 	float lp = 0, bp = 0;
+	static float clip(float v) { return v > SVF_LIMIT ? SVF_LIMIT : v < -SVF_LIMIT ? -SVF_LIMIT : v; }
 	void step(float x, float g, float q, float &olp, float &obp, float &ohp)
 	{
 		const float hp = x - lp - q * bp;
-		bp = g * hp + bp;
-		lp = g * bp + lp;
+		bp = clip(g * hp + bp);
+		lp = clip(g * bp + lp);
 		olp = lp; obp = bp; ohp = hp;
 	}
 };

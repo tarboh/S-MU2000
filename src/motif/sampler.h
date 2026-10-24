@@ -358,25 +358,29 @@ struct voice {
 			flt.wop = flt_r.wop = tmp.wop;
 			flt.gop = flt_r.gop = tmp.gop;
 		}
-		l = eq.process(flt.process(float(l)));
-		r = eq_r.process(flt_r.process(float(r)));
+		// フィルターゲインはフィルターのあとで掛け、そこで ±2.0（出口の最大の 2 倍）で頭打ちにする
+		// （2026-10-24、tools/motif/mr_filter_sat.py: 発振した LPF24D の大きさがフィルターゲインに比例し、
+		// フィルターのあとのエレメントの音量を 64・32 に下げても四角い頭打ちの形が残る。頭打ちは出口の基準で振幅 2 倍の所）
+		l = eq.process(std::fmax(-FILTER_CLIP, std::fmin(FILTER_CLIP, flt.process(float(l)) * float(p.gain))));
+		r = eq_r.process(std::fmax(-FILTER_CLIP, std::fmin(FILTER_CLIP, flt_r.process(float(r)) * float(p.gain))));
 		const double eg = p.aeg.step();
 		if (p.aeg.finished()) {
 			done = true;
 			return;
 		}
-		const double g = eg * vel_gain * p.gain * level_gain(level - co.drop) * (p.lfo.amod ? std::pow(10.0, p.lfo.amp_db_now() / 20.0) : 1.0);
+		const double g = eg * vel_gain * level_gain(level - co.drop) * (p.lfo.amod ? std::pow(10.0, p.lfo.amp_db_now() / 20.0) : 1.0);
 		if (co.panning)
 			pan_gains(pan_offset + co.pan);
 		// 離したあと出力がほぼ聞こえない（倍率 −80dB 未満）間は、実機はリリースを 4 倍の速さで進める
 		// （tools/motif/mr_clfo_gate_release.py: コモン LFO の AMD で消している間に離すと、開いたあとが小さい・鳴らない。Eclipse 03_087）
-		if (released && g < QUIET_GAIN)
+		if (released && g * p.gain < QUIET_GAIN)
 			for (int k = 0; k < 3 && !p.aeg.finished(); k++)
 				p.aeg.step();
 		outl += float(l * gl * g);
 		outr += float(r * gr * g);
 	}
 	static constexpr double QUIET_GAIN = 1e-4;
+	static constexpr float FILTER_CLIP = 2.0f;
 };
 
 } // namespace motif_sampler

@@ -396,6 +396,11 @@ int main(int argc, char **argv)
 			r[i] = float(oR[i]);
 		}
 	}
+	// 実機の出口（デジタル出力）は ±1.0 で頭打ち（発振した LPF24D をフィルターゲイン 250 で鳴らすと、山が 0dBFS の四角い波になる）
+	for (size_t i = 0; i < l.size(); i++) {
+		l[i] = std::fmax(-1.0f, std::fmin(1.0f, l[i]));
+		r[i] = std::fmax(-1.0f, std::fmin(1.0f, r[i]));
+	}
 	write_wav(argv[5], l, r);
 	std::printf("鳴らしたエレメント %zu\n", voices.size());
 	return 0;
