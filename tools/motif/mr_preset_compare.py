@@ -72,9 +72,20 @@ def env_db(path, win=0.01):
     return 10 * np.log10(4 * p + 1e-18), x
 
 
-def onset(x):
+def onset(x, hw=False):
     # 前の音の名残り（実機の録音で −70〜−80dB）を出だしと取り違えないよう、いちばん大きい所から −40dB も見る
-    return int(np.argmax(np.abs(x) > max(1e-4, 0.01 * float(np.max(np.abs(x))))))
+    ax = np.abs(x)
+    th = max(1e-4, 0.01 * float(np.max(ax)))
+    if not hw or len(ax) < int(0.3 * FS):
+        return int(np.argmax(ax > th))
+    # 実機の録音はノートの前に 0.3 秒の間がある（鳴り出すのは 0.27 秒ほど）。小さい音（ベロシティ 40 など）では名残りが閾値を越え、
+    # 0.27 秒早い所を出だしにしていた（2026-10-24、Flangewall のベロシティ 40 で 4.2 → 0.6dB）。0.2 秒より後で、0.1〜0.2 秒の名残りの 2 倍
+    # （いちばん大きい所の −20dB まで）を越えた所にする
+    a = int(0.2 * FS)
+    res = float(np.max(ax[int(0.1 * FS):a]))
+    th = max(th, min(2.0 * res, 0.1 * float(np.max(ax))))
+    hit = ax[a:] > th
+    return a + int(np.argmax(hit)) if hit.any() else int(0.27 * FS)
 
 
 def third_octave(x, on, at=None):
@@ -92,7 +103,7 @@ def third_octave(x, on, at=None):
 def compare(hw, sm):
     eh, xh = env_db(hw)
     es, xs = env_db(sm)
-    oh, os_ = onset(xh) // 441, onset(xs) // 441
+    oh, os_ = onset(xh, True) // 441, onset(xs) // 441
     n = min(len(eh) - oh, len(es) - os_)
     a, b = eh[oh:oh + n], es[os_:os_ + n]
     mask = (a > a.max() - 60) | (b > b.max() - 60)
@@ -100,7 +111,7 @@ def compare(hw, sm):
     # 芯も同じ時刻で取る
     pk = a[:180]
     at = max(0.1, min(1.3, (int(np.argmax(pk)) if len(pk) else 0) * 0.01 - 0.25))
-    th, ts = third_octave(xh, onset(xh), at), third_octave(xs, onset(xs), at)
+    th, ts = third_octave(xh, onset(xh, True), at), third_octave(xs, onset(xs), at)
     return a, b, mask, th, ts
 
 
