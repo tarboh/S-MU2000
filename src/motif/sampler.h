@@ -347,7 +347,11 @@ struct voice {
 		const double fs = p.feg.step();
 		if (p.feg.depth != 64 || p.lfo.fmod || co.filter) {
 			swp50_filter::filter_params fp = p.filter;
-			fp.cutoff = int(std::lround(swp50_filter::cutoff_with_feg(p.filter.cutoff, fs + p.lfo.filter_octaves_now() * 25.6 + co.cutoff, p.filter.type)));
+			// カットオフのベロシティ感度は FEG より前に足す（FEG で 255 を越える所で頭打ちにしてから下げると暗くなりすぎる。
+			// 2026-10-24、Crazy Mod のエレメント 1 を感度 +40・ベロシティ 40 で実機と比べた）
+			fp.cutoff = int(std::lround(swp50_filter::cutoff_with_feg(p.filter.cutoff + swp50_filter::velocity_steps(p.filter.vel_sens, velocity),
+			                                                            fs + p.lfo.filter_octaves_now() * 25.6 + co.cutoff, p.filter.type)));
+			fp.vel_sens = 64;
 			fp.reso = std::max(0, std::min(127, int(std::lround(p.filter.reso + co.reso))));
 			swp50_filter::element_filter tmp;
 			tmp.set(fp, note, velocity);
