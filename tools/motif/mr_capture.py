@@ -1,5 +1,5 @@
 """MOTIF-RACK ES の波形を、区間ごと・ベロシティの層ごとに 1 音ずつ長く録る（サンプリング方式のソフトシンセの素材）。
-  python mr_capture.py --dir 置き場 --capture 取ったものの置き場 [--waves 一覧.txt] [--hold 6] [--hours 8] [--min-free-gb 25]
+  python mr_capture.py --dir 置き場 --capture 取ったものの置き場 [--waves 一覧.txt] [--hold 6] [--hours 8] [--min-free-gb 25] [--split-lowest]
 
 鍵 48 より下の区間は、低いほどループが長くなるので、押さえる長さを 1 オクターブ下がるごとに 2 倍にする（24 秒まで）。
 区間の境目は zones_all.csv の境目と「~」の所。12 鍵より広い区間は 12 鍵ずつに分けて録る（読む速さが 3 倍で音程が折り返すので、真ん中の 1 本から区間の全部は作れない。いちばん下の区間は除く）。
@@ -21,6 +21,7 @@ import mr_ref
 import mr_sweep
 
 
+SPLIT_LOWEST = False   # --split-lowest
 MAX_ZONE = 12          # これより広い区間は 12 鍵ずつに分けて録る（3 倍で折り返すので、1 本から広くは作れない）
 LAYER_CORR = 0.98      # 隣のベロシティとの相関がこれを下回る所を層の境目とする（velzones.csv の 0.97 より厳しく）
 VELSCAN = (1, 16, 32, 48, 64, 80, 96, 104, 112, 120, 127)   # mr_velscan.py のベロシティ
@@ -38,8 +39,16 @@ def zones_of(row):
         lo, hi = edges[i], edges[i + 1]
         if hi <= lo:
             continue
-        if hi - lo <= MAX_ZONE or lo == 0:
-            out.append((lo, hi))                  # いちばん下の区間は下へ読むだけなので分けない
+        if hi - lo <= MAX_ZONE or (lo == 0 and not SPLIT_LOWEST):
+            out.append((lo, hi))                  # いちばん下の区間は下へ読むだけなので分けない（--split-lowest なら分ける）
+            continue
+        if lo == 0:
+            # いちばん下の区間も、上から 12 鍵ずつに分けて録り足す（真ん中の鍵の録音を 15 半音上げると、実機より暗かった。
+            # Flangewall の鍵 48 = 波形 573 の鍵 36。2026-10-25）。前の真ん中の 1 本も残す
+            out.append((lo, hi))
+            for a in range(hi - MAX_ZONE, 0, -MAX_ZONE):
+                if (a + min(hi, a + MAX_ZONE) - 1) // 2 > (lo + hi - 1) // 2:
+                    out.append((a, min(hi, a + MAX_ZONE)))
             continue
         for a in range(lo, hi, MAX_ZONE):
             out.append((a, min(hi, a + MAX_ZONE)))
@@ -62,6 +71,8 @@ def main():
     cap = mr_ref.opt(a, "--capture", "../../roms/motif-rack-es/capture")
     wl = mr_ref.opt(a, "--waves", os.path.join(cap, "waves_used.txt"))
     hold = float(mr_ref.opt(a, "--hold", "6"))
+    global SPLIT_LOWEST
+    SPLIT_LOWEST = "--split-lowest" in a
     hours = float(mr_ref.opt(a, "--hours", "8"))
     min_free = float(mr_ref.opt(a, "--min-free-gb", "25"))
     zones = {int(r["wave"]): r for r in csv.DictReader(open(os.path.join(cap, "zones_all.csv")))}
