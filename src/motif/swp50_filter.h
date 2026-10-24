@@ -489,8 +489,9 @@ static inline double response_db(int t, int cutoff, double f, int reso = 0, int 
 //   音量の EG の下がる側と同じ: swp50_eg::time_down(127 − p) サンプル（p = 64 で 0.79 秒、80 で 3.17 秒。測定 0.79〜0.80 / 3.1〜3.2 秒）
 // * ホールドの時間は別の表: 谷が跳ぶまでの時間はホールドの値 32・48・64・72・80 で 0.104・0.221・0.453・0.685・1.033 秒（約 14 目盛りで 2 倍）。
 //   その 5 点を対数で補間し、外は端の傾きで延ばす（hold_seconds）
-// * 時間のキーフォロー（0x30、64 が 0、中心の鍵 0x31）: 感度 +32 で鍵 ±24 半音のとき、時間の値が約 ∓13 目盛りぶん動く（鍵が高いほど速い）。
-//   時間の値のずれ = −0.0168 ×（感度 − 64）×（鍵 − 中心）とした（感度 +63・鍵 84 は区切りが粗くて確かめられていない）
+// * 時間のキーフォロー（0x30、64 が 0、中心の鍵 0x31）: AEG と同じく、段の長さに 2^(−0.002 ×（感度 − 64）×（鍵 − 中心））を掛ける（鍵が高いほど速い）。
+//   前は「時間の値を −0.0168 ×（感度 − 64）×（鍵 − 中心）ずらす」形で、中心より上の鍵で速すぎた（2026-10-24、mr_feg2.py の tkf2:
+//   感度 +20・中心 60 の鍵 72 で 90% の時刻が実機 0.60 秒、ずらす形 0.30 秒。Crazy Mod は中心 24・鍵 60 で FEG が速すぎた）
 // * 時間のベロシティ感度（0x1F、64 が 0）: ベロシティ 1 で時間はそのまま、強く弾くほど速い側へずれる。
 //   ずれ（時間の値）≒ 0.9 ×（感度 − 64）×（ベロシティ − 1）/ 126（感度 +8・+16・+32 で測り、30% ほどの誤差）。
 //   どの段に効くか（0x1E）は ALL でしか確かめていないので、全部の段に掛ける
@@ -499,6 +500,9 @@ static inline double response_db(int t, int cutoff, double f, int reso = 0, int 
 // FEG の効く量に掛かる倍率。ベロシティ 1, 8, 16, …, 120, 127 の 17 点。感度が負なら、ベロシティを 128 − v に裏返す。
 // 中間の感度は比例しない（ベロシティ 64 で感度 0・+16・+32・+63 が 1.0・0.78・0.69・0.62）ので、カーブ 0 は感度ごとの表、
 // ほかのカーブは「カーブ 0 の表 +（そのカーブ − カーブ 0）×（|感度 − 64| / 63）」とした。ベロシティ 127・感度 +63 で 1.166 になる
+// 大きい FEG では弱いベロシティの倍率が 1 割ほど小さい（2026-10-24、tools/motif/mr_feg_vel_dyn.py: 深さ 127、高さ −1・121・−39・−79・−45、
+// カーブ 2・感度 +63 で、感度 0 の動きとの比がベロシティ 20・40・70 で 0.195・0.372・0.639、表は 0.218・0.416・0.659。mr_feg2.py の lvel3 は
+// 高さ +16・+32・−32・−64 で 0.44・0.38・0.32・0.34）。FEG の大きさで変わるので表は変えていない（大きい FEG の値にすると 100 音色で良し悪しがまじった）
 static constexpr float FEG_VEL_POINTS[17] = { 1, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 127 };
 static constexpr float FEG_VEL_C0_S16[17] = { 0.677f, 0.687f, 0.697f, 0.708f, 0.729f, 0.739f, 0.749f, 0.760f, 0.781f, 0.802f, 0.812f, 0.833f, 0.843f, 0.874f, 0.885f, 0.916f, 0.937f };
 static constexpr float FEG_VEL_C0_S32[17] = { 0.614f, 0.624f, 0.624f, 0.624f, 0.635f, 0.645f, 0.656f, 0.666f, 0.687f, 0.718f, 0.749f, 0.781f, 0.812f, 0.843f, 0.885f, 0.937f, 1.010f };
@@ -542,7 +546,7 @@ static inline double feg_level_velocity_factor(int sens, int curve, int velocity
 	return c0 + (feg_vel_interp(FEG_VEL_S63[curve], v) - f63) * a / 63.0;
 }
 
-static constexpr double TIME_KF_STEPS = -0.0168;
+static constexpr double TIME_KF_OCT = 0.0020;      // 段の長さの倍率 = 2^(−これ ×（感度 − 64）×（鍵 − 中心））（AEG と同じ）
 static constexpr double TIME_VEL_STEPS = 0.9;
 
 struct filter_eg {
@@ -586,10 +590,10 @@ struct filter_eg {
 	}
 	double shifted(int t, int s = 2) const
 	{
-		return t + TIME_KF_STEPS * (time_kf - 64) * (key - time_kf_center)
-			- (vel_applies(s) ? TIME_VEL_STEPS * (time_vel_sens - 64) * (velocity - 1) / 126.0 : 0.0);
+		return t - (vel_applies(s) ? TIME_VEL_STEPS * (time_vel_sens - 64) * (velocity - 1) / 126.0 : 0.0);
 	}
-	double seg_samples(int t, int s = 2) const { return t <= 0 ? 0.0 : seg_samples_at(shifted(t, s)); }
+	double kf_factor() const { return std::exp2(-TIME_KF_OCT * (time_kf - 64) * (key - time_kf_center)); }
+	double seg_samples(int t, int s = 2) const { return t <= 0 ? 0.0 : seg_samples_at(shifted(t, s)) * kf_factor(); }
 
 	static double hold_seconds(double t)
 	{
@@ -600,7 +604,7 @@ struct filter_eg {
 		const double u = (t - p[i]) / (p[i + 1] - p[i]);
 		return std::exp(std::log(sec[i]) + u * (std::log(sec[i + 1]) - std::log(sec[i])));
 	}
-	double hold_samples() const { return time[0] <= 0 ? 0.0 : hold_seconds(shifted(time[0], 0)) * 44100.0; }
+	double hold_samples() const { return time[0] <= 0 ? 0.0 : hold_seconds(shifted(time[0], 0)) * kf_factor() * 44100.0; }
 
 	void begin(int s, double start, double samples)
 	{
