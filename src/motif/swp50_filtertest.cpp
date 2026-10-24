@@ -198,13 +198,15 @@ int main()
 		CHECK(std::fabs(t - want) / want < 0.05);
 	}
 	CHECK(std::fabs(cutoff_with_feg(128, -202) - 74) < 1e-9 && cutoff_with_feg(250, 30) == 255);
-	// FEG の高さのベロシティ感度（実機: 感度 +63 でベロシティ 127 は 1.104 倍、1 は 0、カーブ 0・2 のベロシティ 40 は 0.475・0.350（mr_feg_vel_size.py）。
+	// FEG の高さのベロシティ感度（実機: 感度 +63 でベロシティ 127 は 1.081 倍、1 は 0、カーブ 0・2 のベロシティ 40 は 0.517・0.372（mr_feg_vel_size.py を動く FEG で較正）。
+	// 感度 +32・カーブ 3・ベロシティ 40 は 1.01
 	// 感度 −63 は裏返し。感度 +32・ベロシティ 64 は 0.687）
-	CHECK(std::fabs(feg_level_velocity_factor(127, 0, 127) - 1.104) < 0.01);
+	CHECK(std::fabs(feg_level_velocity_factor(127, 0, 127) - 1.081) < 0.01);
 	CHECK(std::fabs(feg_level_velocity_factor(127, 0, 1)) < 0.01);
-	CHECK(std::fabs(feg_level_velocity_factor(0, 0, 1) - 1.104) < 0.01);
+	CHECK(std::fabs(feg_level_velocity_factor(0, 0, 1) - 1.081) < 0.01);
 	CHECK(std::fabs(feg_level_velocity_factor(96, 0, 64) - 0.687) < 0.01);
-	CHECK(std::fabs(feg_level_velocity_factor(127, 0, 40) - 0.475) < 0.01 && std::fabs(feg_level_velocity_factor(127, 2, 40) - 0.350) < 0.01);
+	CHECK(std::fabs(feg_level_velocity_factor(127, 0, 40) - 0.517) < 0.01 && std::fabs(feg_level_velocity_factor(127, 2, 40) - 0.372) < 0.01);
+	CHECK(std::fabs(feg_level_velocity_factor(96, 3, 40) - 1.012) < 0.01);
 	CHECK(feg_level_velocity_factor(64, 2, 30) == 1.0);
 	// FEG の時間のベロシティ感度（実機: 感度 +16 で、ベロシティ 64 の長さはベロシティ 1 の 0.51 倍）
 	{

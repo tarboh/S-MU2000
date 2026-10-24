@@ -3,7 +3,8 @@
 雛形の音色（ノイズ 705、鍵 60）で、型 BEF12、FEG の時間は全部 0（すぐ着く）、高さは 5 つとも同じ h、深さ d。
 正の h（8・16・32・64・96）はカットオフ 48、負の h（−16・−32・−64・−96）はカットオフ 200 から。深さ 80・96・127。
 それぞれ感度 64（倍率 1）のベロシティ 100 と、感度 127 のカーブ 0・2 × ベロシティ 20・40・70・100・127 を 1 秒押さえる。
-FEG なし（深さ 64）と素通しはカットオフ・ベロシティごと。谷を読むのは別。送るのはパラメーターチェンジとノートだけ（保存しない）。終わったらマルチへ戻す。"""
+FEG なし（深さ 64）と素通しはカットオフ・ベロシティごと。谷を読むのは別。送るのはパラメーターチェンジとノートだけ（保存しない）。終わったらマルチへ戻す。
+  --curves: 高さ +64・−64 × 深さ 127 だけで、感度 96・108・127 × カーブ 0〜4 × ベロシティ 20・40・70・100 を録る（cv_ で始まる名前）"""
 import os
 import sys
 import time
@@ -58,6 +59,29 @@ def main():
         for v in VELS:
             take("thru_v%03d" % v, v)
         r.el(0, 0x43, 0x00, 12)
+        if "--curves" in a:
+            for c, h in ((48, 64), (200, -64)):
+                cutoff(c)
+                r.el(0, 0x43, 0x1D, 64)
+                r.el(0, 0x43, 0x20, 64)
+                time.sleep(0.05)
+                for v in VELS:
+                    take("nofeg_c%03d_v%03d" % (c, v), v)
+                for i in range(5):
+                    lv(0x13 + 2 * i, h)
+                r.el(0, 0x43, 0x1D, 127)
+                tag = "cv_h%s%03d" % ("p" if h > 0 else "m", abs(h))
+                time.sleep(0.05)
+                take(tag + "_ref", 100)
+                for sv in (96, 108, 127):
+                    r.el(0, 0x43, 0x20, sv)
+                    for cv in range(5):
+                        r.el(0, 0x43, 0x21, cv)
+                        time.sleep(0.05)
+                        for v in VELS[:4]:
+                            take("%s_s%03d_c%d_v%03d" % (tag, sv, cv, v), v)
+                print("高さ", h, "録った", flush=True)
+            return
         for c, hs in ((48, POS), (200, NEG)):
             cutoff(c)
             r.el(0, 0x43, 0x1D, 64)
