@@ -25,6 +25,9 @@ namespace motif_fx {
 
 using cplx = std::complex<double>;
 using buf = std::vector<double>;
+#ifndef SYSCHO_WET
+#define SYSCHO_WET true    // 効いた分だけ足す（エフェクトの出口から入れた音を引く）。100 音色でこちらが少し良かった（音量の差 3.13 → 3.07dB）
+#endif
 static constexpr double FS = 44100.0;
 static constexpr double PI = 3.14159265358979323846;
 
@@ -1460,6 +1463,33 @@ inline void insertion(buf &L, buf &R, const block &a, const block &b, int connec
 		chain = connect == 2 ? "BA" : "B";
 	for (const char *c = chain; *c; c++)
 		apply_block(L, R, *c == 'A' ? a : b, fxddir, tempo);
+}
+
+// コーラスの枠（送り返しのエフェクト）。コーラスの型（05 00 系）は上の chorus。ほかの型（Tempo Cross Delay・Ensemble Detune・ディレイ系・
+// フランジャーなど。プリセットでは Tempo Cross Delay が 100 音色、Ensemble Detune が 79 音色）は、送りを掛けた音をインサーションと同じ芯
+// （apply_block）に通し、Return を掛けて足す（2026-10-25。前は何も掛けていなかった）
+inline void system_chorus(const buf &L, const buf &R, const block &ch, buf &oL, buf &oR, const std::string &fxddir, int tempo)
+{
+	if (ch.send == 0)
+		return;
+	if (chorus_type(ch)) {
+		chorus(L, R, ch, oL, oR);
+		return;
+	}
+	const size_t n = L.size();
+	const double gi = ch.send / 127.0, go = ch.ret / 96.0;
+	buf wL(n), wR(n);
+	for (size_t i = 0; i < n; i++) {
+		wL[i] = L[i] * gi;
+		wR[i] = R[i] * gi;
+	}
+	const buf dL = wL, dR = wR;
+	apply_block(wL, wR, ch, fxddir, tempo);
+	const bool wet = SYSCHO_WET;
+	for (size_t i = 0; i < n; i++) {
+		oL[i] += (wL[i] - (wet ? dL[i] : 0.0)) * go;
+		oR[i] += (wR[i] - (wet ? dR[i] : 0.0)) * go;
+	}
 }
 
 } // namespace motif_fx

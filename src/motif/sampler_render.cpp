@@ -404,7 +404,7 @@ int main(int argc, char **argv)
 		if (use_rev)
 			reverb(L, R, rv, fxdir + "/fx", oL, oR, L.size());
 		if (use_cho)
-			chorus(L, R, ch, oL, oR);
+			system_chorus(L, R, ch, oL, oR, fxdir + "/fxd", geti(fxline, "tempo", 120));
 		for (size_t i = 0; i < l.size(); i++) {
 			l[i] = float(oL[i]);
 			r[i] = float(oR[i]);
