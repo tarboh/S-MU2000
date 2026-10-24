@@ -237,6 +237,27 @@ int main()
 	for (int c = 0; c < 230; c++)
 		CHECK(g_table[c + 1] >= g_table[c]);
 
+	// 上の端（レゾナンス 0）: LPF24D は目盛り 240 で素通し、220 は 8kHz で −4〜−6dB（実機 −5.9dB、mr_filter_top.py --r0）
+	{
+		auto gain_db = [](int c, double f) {
+			element_filter e;
+			e.set(LPF24D, c, 0);
+			double in = 0, out = 0;
+			for (int n = 0; n < 44100; n++) {
+				const float x = float(std::sin(2 * PI * f * n / 44100.0));
+				const float y = e.process(x);
+				if (n >= 22050) {
+					in += double(x) * x;
+					out += double(y) * y;
+				}
+			}
+			return 10 * std::log10(out / in);
+		};
+		CHECK(std::fabs(gain_db(240, 15000)) < 0.2);
+		const double g8 = gain_db(220, 8000);
+		CHECK(g8 < -3.5 && g8 > -6.5);
+	}
+
 	std::printf("swp50_filtertest: %s\n", g_fail ? "NG" : "OK");
 	return g_fail ? 1 : 0;
 }

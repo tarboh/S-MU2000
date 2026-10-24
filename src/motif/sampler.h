@@ -355,6 +355,8 @@ struct voice {
 			flt.g2 = flt_r.g2 = tmp.g2;
 			flt.q = flt_r.q = tmp.q;
 			flt.gtop = flt_r.gtop = tmp.gtop;
+			flt.wop = flt_r.wop = tmp.wop;
+			flt.gop = flt_r.gop = tmp.gop;
 		}
 		l = eq.process(flt.process(float(l)));
 		r = eq_r.process(flt_r.process(float(r)));

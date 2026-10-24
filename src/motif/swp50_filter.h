@@ -248,6 +248,30 @@ static inline float top_g(double c)
 	return float(2.0 * std::sin(PI * f / 44100.0));
 }
 
+// レゾナンスの低い LPF 系の上の端（2026-10-24。mr_filter_top.py --r0、LPF24D・LPF24A・LPF12・LPF18 をカットオフ 150〜250、レゾナンス 0 で測った）:
+// 実機は 200 までは SVF（減衰 2）の形にぴったり（0.02〜0.09dB）、220 から上は 1 次の低域通過 y += g(x − y) を段数（LPF24 は 4、LPF18 は 3、
+// LPF12 は 2）重ねた形にぴったりで（0.01〜0.6dB）、230 から上は g = 1、つまり素通し。1 次の形の g は型によらずほぼ同じ（200・210・220・230 で
+// 0.44・0.61・0.82・1.0）。目盛り 205〜215 で SVF の形から 1 次の形へ混ぜて移る（2 つの形はこの辺りで振幅も位相も近い）
+static inline float op_g(double c)
+{
+	static const double x[5] = { 200, 210, 220, 230, 255 }, y[5] = { 0.44, 0.61, 0.82, 1.0, 1.0 };
+	if (c <= x[0])
+		return float(g_at(c));                       // 200 より下は SVF と同じ g（この形は混ぜないので、暴れなければよい）
+	int i = 0;
+	while (i < 3 && c > x[i + 1])
+		i++;
+	return float(y[i] + (c - x[i]) / (x[i + 1] - x[i]) * (y[i + 1] - y[i]));
+}
+static inline int op_stages(int t)
+{
+	switch (t) {
+	case LPF24D: case LPF24A: return 4;
+	case LPF18: return 3;
+	case LPF12: case LPF12_BPF6: return 2;
+	default: return 0;
+	}
+}
+
 struct element_filter {
 	int   type = THRU;
 	float g = 0.999f;
@@ -257,6 +281,8 @@ struct element_filter {
 	svf   s1, s2, s3, sh;
 	float p1 = 0, p2 = 0;
 	float gtop = 0;                                      // 上の端で 0.82 を越える g（0 なら使わない）
+	float wop = 0, gop = 0;                              // 上の端の 1 次の形の重みと g
+	float op[4] = { 0, 0, 0, 0 };
 
 	// reso はエレメントのレゾナンス（0-127）。LPF6 と LPF18s には効かない（LPF18s は実機では効くが、まだ模型にしていない）
 	// keyfollow はカットオフのキーフォロー（0-127、64 が 0%）、key は鳴らした鍵。
@@ -296,8 +322,23 @@ struct element_filter {
 		}
 		const float gs = gtop > 0 ? gtop : g < 0.82f ? g : 0.82f;
 		q = stable_q(gs, type_q(type, reso));
+		wop = 0.0f;
+		gop = op_g(c > 0 ? c : 0);
+		if (gtop == 0.0f && op_stages(type) > 0 && c > 205)
+			wop = float(c >= 215 ? 1.0 : (c - 205) / 10.0);
 	}
-	void reset() { s1 = s2 = s3 = sh = svf(); p1 = p2 = 0; }
+	void reset() { s1 = s2 = s3 = sh = svf(); p1 = p2 = 0; op[0] = op[1] = op[2] = op[3] = 0; }
+
+	// 上の端の 1 次の形
+	float process_op(float x)
+	{
+		const int n = op_stages(type);
+		for (int i = 0; i < n; i++) {
+			op[i] += gop * (x - op[i]);
+			x = op[i];
+		}
+		return x;
+	}
 
 	// 全部のパラメーターから（スケーリングも入れる）
 	void set(const filter_params &p, int key, int velocity)
@@ -315,6 +356,15 @@ struct element_filter {
 			sh.step(x, hg, HPF_Q, hl, hb, hh);
 			x = hh;
 		}
+		if (op_stages(type) == 0)
+			return process_svf(x);
+		// LPF 系は 2 つの形をいつも回しておく（FEG で行き来したとき、止めていた側の古い状態から鳴り出さないように）
+		const float a = process_op(x), b = process_svf(x);
+		return wop >= 1.0f ? a : wop > 0.0f ? a * wop + b * (1.0f - wop) : b;
+	}
+
+	float process_svf(float x)
+	{
 		const float gs = gtop > 0 ? gtop : g < 0.82f ? g : 0.82f;   // q = 2 の SVF が不安定にならない所まで。上の端は q を削って g を上げる
 		float l, b, h, l2, b2, h2;
 		switch (type) {
