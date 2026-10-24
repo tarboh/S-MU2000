@@ -1,5 +1,5 @@
 """エレメントのファインチューン（42 ee 01、64 が 0）の目盛りを測る（2026-10-24。Nice Bell の ±5 で、実機の音程の差が芯の半分だった件）。
-  python mr_fine.py --dir 置き場 [--wave 704] [--keys 69,48] [--dense]（--dense は −20〜+20 を 1 つずつ）
+  python mr_fine.py --dir 置き場 [--wave 704] [--keys 69,48] [--dense | --all]（--dense は −20〜+20、--all は −64〜+63 を 1 つずつ）
 雛形の音色（正弦波）で、ファイン −64・−32・−16・−8・−5・−2・−1・0・+1・+2・+5・+8・+16・+32・+63 を、鍵 69 と 48 で 1.5 秒鳴らす。
 読むのは mr_fine.py --read 置き場（瞬時の周波数の平均、0 との差のセント）。送るのはパラメーターチェンジとノートだけ（保存しない）。"""
 import os
@@ -21,6 +21,9 @@ def opts(a):
     if "--dense" in a:
         a.remove("--dense")
         FINES = DENSE
+    if "--all" in a:
+        a.remove("--all")
+        FINES = tuple(range(-64, 64))
     w = int(mr_ref.opt(a, "--wave", "704"))
     keys = tuple(int(k) for k in mr_ref.opt(a, "--keys", "69,48").split(","))
     return w, keys, "" if w == 704 else "w%04d_" % w
