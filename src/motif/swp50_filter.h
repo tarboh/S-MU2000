@@ -230,6 +230,24 @@ struct filter_params {
 	int hpf_keyfollow = 64;   // 0x2F
 };
 
+// 上の端（目盛り 220 から上）の g: 実機の LPF24D・レゾナンス 64 の山の周波数（mr_filter_top.py）から 2 sin(π f / fs)。240 から上は止める
+static inline float top_g(double c)
+{
+	static const double x[10] = { 219, 220, 224, 228, 230, 232, 234, 236, 238, 240 },
+	                    y[10] = { 5880, 6300, 7100, 7500, 8000, 9000, 10100, 10700, 11300, 12700 };
+	double f;
+	if (c >= x[9])
+		f = y[9];
+	else {
+		int i = 0;
+		while (i < 8 && c > x[i + 1])
+			i++;
+		const double u = (c - x[i]) / (x[i + 1] - x[i]);
+		f = std::exp(std::log(y[i]) + u * (std::log(y[i + 1]) - std::log(y[i])));
+	}
+	return float(2.0 * std::sin(PI * f / 44100.0));
+}
+
 struct element_filter {
 	int   type = THRU;
 	float g = 0.999f;
@@ -238,6 +256,7 @@ struct element_filter {
 	float g2 = 0.999f;                                   // Dual 系の 2 つめの g
 	svf   s1, s2, s3, sh;
 	float p1 = 0, p2 = 0;
+	float gtop = 0;                                      // 上の端で 0.82 を越える g（0 なら使わない）
 
 	// reso はエレメントのレゾナンス（0-127）。LPF6 と LPF18s には効かない（LPF18s は実機では効くが、まだ模型にしていない）
 	// keyfollow はカットオフのキーフォロー（0-127、64 が 0%）、key は鳴らした鍵。
@@ -267,7 +286,15 @@ struct element_filter {
 		}
 		type = canonical_type(t);
 		g = (keyfollow == 64 && vel_sens == 64 && cutoff >= 0) ? g_table[cutoff > 255 ? 255 : cutoff] : g_at(c);
-		const float gs = g < 0.82f ? g : 0.82f;
+		// 上の端: 実機の山の周波数の g を、減衰を削らずに（1 割のゆとりで）安定なときだけ使う。レゾナンスのある所は実機と合う
+		// （LPF24D・レゾナンス 28・目盛り 220 で 6.35kHz の山 +9.1 対 +8.1dB）。レゾナンス 0 で上げると減衰を削って山が立ち、FEG で発散した
+		gtop = 0.0f;
+		if (c > 219) {
+			const float gt = top_g(c), qr = type_q(type, reso);
+			if (stable_q(gt, qr * 1.1f) >= qr * 1.1f)
+				gtop = gt;
+		}
+		const float gs = gtop > 0 ? gtop : g < 0.82f ? g : 0.82f;
 		q = stable_q(gs, type_q(type, reso));
 	}
 	void reset() { s1 = s2 = s3 = sh = svf(); p1 = p2 = 0; }
@@ -288,7 +315,7 @@ struct element_filter {
 			sh.step(x, hg, HPF_Q, hl, hb, hh);
 			x = hh;
 		}
-		const float gs = g < 0.82f ? g : 0.82f;           // q = 2 の SVF が不安定にならない所まで
+		const float gs = gtop > 0 ? gtop : g < 0.82f ? g : 0.82f;   // q = 2 の SVF が不安定にならない所まで。上の端は q を削って g を上げる
 		float l, b, h, l2, b2, h2;
 		switch (type) {
 		case LPF24D: case LPF24A: s1.step(x, gs, q, l, b, h); s2.step(l, gs, q, l2, b2, h2); return l2;
