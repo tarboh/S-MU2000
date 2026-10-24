@@ -1,5 +1,6 @@
 """フィルターを上の端近くまで開いたときの形を測る（2026-10-24。Oxide の鍵 72 で、芯は FEG で開いた所が実機より暗い件）。
   python mr_filter_top.py --dir 置き場 [--types 1,0,4] [--fine]（--fine は目盛り 222〜240 を 2 つおきにレゾナンス 64 で）[--r0]（150〜250 を 10 おきにレゾナンス 0 で）[--res]（200〜250 を 10 おきにレゾナンス 8〜96 で）
+  [--cs 225,235 --qs 16,64]（目盛りとレゾナンスを直に。--res などの後で上書き）
 雛形の音色（ノイズ 705、鍵 60）で、型ごとにカットオフ 180・200・220・240・255、レゾナンス 0・28・64 を 1.2 秒鳴らす。基準は THRU。
 送るのはパラメーターチェンジとノートだけ（保存しない）。終わったらマルチへ戻す。"""
 import os
@@ -13,6 +14,7 @@ def main():
     a = sys.argv[1:]
     d = mr_ref.opt(a, "--dir", ".")
     types = [int(t) for t in mr_ref.opt(a, "--types", "1").split(",")]
+    ocs, oqs = mr_ref.opt(a, "--cs"), mr_ref.opt(a, "--qs")
     os.makedirs(d, exist_ok=True)
     r = mr_ref.Ref(mr_ref.opt(a, "--midi", "MOTIF-RACK ES-1"), mr_ref.opt(a, "--rec", "../../build/rec.exe"), mr_ref.opt(a, "--dev", "0"), d)
     try:
@@ -37,6 +39,10 @@ def main():
                 cs, qs = tuple(range(150, 251, 10)), (0,)
             if "--res" in a:                             # 上の端（200〜250 の 10 おき）を、いくつかのレゾナンスで
                 cs, qs = tuple(range(200, 251, 10)), (8, 16, 24, 32, 48, 64, 96)
+            if ocs:                                      # 目盛りとレゾナンスを直に（--cs 225,235 --qs 16,64）
+                cs = tuple(int(x) for x in ocs.split(","))
+            if oqs:
+                qs = tuple(int(x) for x in oqs.split(","))
             for c in cs:
                 r.el(0, 0x43, 0x01, c >> 7, c & 0x7F)
                 for q in qs:
