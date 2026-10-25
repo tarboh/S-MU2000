@@ -80,6 +80,7 @@ public:
 	static const char *const WAVE_ROM_NAMES[4];
 	// LCD の文字の絵（HD44780U B04 の CGROM 4KB）。無くても音は出る
 	bool load_lcd_font(const std::string &path);
+	void use_builtin_lcd_font();   // 字形 ROM が無いとき、内蔵の ASCII の字を使う
 
 	void reset();
 
