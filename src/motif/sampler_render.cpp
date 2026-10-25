@@ -3,9 +3,13 @@
 //
 //   g++ -std=c++17 -O2 -o sampler_render src/motif/sampler_render.cpp
 //   sampler_render 音色.patch 鍵 ベロシティ 押さえる秒 出力.wav [--fx capture の置き場] [--no-ins] [--no-reverb] [--no-chorus] [--ins-majority]
+//                  [--ctl ソース=値@秒,…]
 //
 // --fx を付けると、パッチの fx の行のエフェクト（sampler_fx.h）を掛ける。置き場の fx/*.irx（リバーブ）と fxd/*.dsx（歪み系）を使う
 // （tools/motif/mr_fx_export.py が書く）。インサーションのスイッチは、鳴ったエレメントでいちばん多いもの。
+//
+// --ctl は、コントロールセットのソース（0 PB・1 MW（CC1）・2/3 AT・6 RB（CC22）・7 BC（CC2）・8 AS1（CC16）・9 AS2（CC17）・10〜12 FC（CC4））を
+// その時刻から値（0〜127）にする。初めは PB・RB・AS1・AS2 が 64（中心）、ほかは 0。PB はピッチベンドの幅（ctrl の行の pbup・pbdown）でも音程を動かす。
 //
 // パッチのエレメントのうち、鍵とベロシティの範囲に入るものを全部鳴らす。サンプルは、そのエレメントの区間のうち
 // 鍵とベロシティを含むもの（無ければ鍵がいちばん近いもの）。出力は 44.1kHz・32bit float のステレオ。
@@ -13,6 +17,7 @@
 #include "sampler.h"
 #include "sampler_fx.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -150,6 +155,8 @@ int main(int argc, char **argv)
 	const std::string dir = patch.substr(0, patch.find_last_of("/\\") + 1);
 
 	std::string fxdir;
+	struct ctl_ev { double t; int src, val; };
+	std::vector<ctl_ev> ctl;
 	bool use_ins = true, use_rev = true, use_cho = true, majority = false;
 	for (int i = 6; i < argc; i++) {
 		if (!std::strcmp(argv[i], "--fx") && i + 1 < argc)
@@ -160,10 +167,20 @@ int main(int argc, char **argv)
 			use_rev = false;
 		else if (!std::strcmp(argv[i], "--no-chorus"))
 			use_cho = false;
+		else if (!std::strcmp(argv[i], "--ctl") && i + 1 < argc) {
+			std::istringstream ss(argv[++i]);
+			std::string t;
+			while (std::getline(ss, t, ',')) {
+				const size_t e = t.find('='), a = t.find('@');
+				if (e == std::string::npos)
+					continue;
+				ctl.push_back({ a == std::string::npos ? 0.0 : std::atof(t.c_str() + a + 1), std::atoi(t.c_str()), std::atoi(t.c_str() + e + 1) });
+			}
+		}
 		else if (!std::strcmp(argv[i], "--ins-majority"))      // エレメントのスイッチの多数決で全体を 1 つの経路に通す（前の形。mr_fx_apply と同じ）
 			majority = true;
 	}
-	kv fxline, voiceline, clfoline;
+	kv fxline, voiceline, clfoline, ctrlline;
 	std::map<int, int> ins_count;
 
 	std::vector<element> els;
@@ -180,6 +197,8 @@ int main(int argc, char **argv)
 			voiceline = parse(line);
 		else if (!std::strncmp(line, "clfo ", 5))
 			clfoline = parse(line);
+		else if (!std::strncmp(line, "ctrl ", 5))
+			ctrlline = parse(line);
 		else if (!std::strncmp(line, "element ", 8))
 			els.push_back({ parse(line), {} });
 		else if (!std::strncmp(line, "zone ", 5) && !els.empty()) {
@@ -195,6 +214,7 @@ int main(int argc, char **argv)
 	std::vector<std::unique_ptr<motif_sampler::sample>> samples;
 	std::vector<int> vgroup;                 // エレメントのインサーションのスイッチ（0・1・2）
 	std::vector<int> vdelay;                 // エレメントの Key On Delay（サンプル）
+	std::vector<int> vcbox;                  // エレメントのコントロールボックス（ビット 0〜5 = 組 1〜6）
 	std::vector<motif_sampler::voice> voices;
 	for (const element &e : els) {
 		ins_count[geti(e.f, "ins")]++;      // インサーションのスイッチは、鳴る鳴らないによらず入っているエレメント全部の多数決（mr_fx_apply.apply_insertion と同じ）
@@ -335,6 +355,7 @@ int main(int argc, char **argv)
 		voices.emplace_back();
 		voices.back().start(*samples.back(), p, note, vel);
 		vgroup.push_back(std::max(0, std::min(2, geti(e.f, "ins"))));
+		vcbox.push_back(geti(e.f, "cbox"));
 		// テンポ同期なら音色のテンポ（fx の tempo）で拍を秒に直す（Willows のエレメント 3 は 2 分音符・テンポ 48 で 2.5 秒遅れ、2 秒押さえでは鳴らない）
 		const double kd_ms = geti(e.f, "ksync") ? key_on_delay_beats(geti(e.f, "klen")) * 60000.0 / std::max(1, geti(fxline, "tempo", 120))
 		                                        : key_on_delay_ms(geti(e.f, "kdelay"));
@@ -344,7 +365,67 @@ int main(int argc, char **argv)
 	std::vector<float> l(n), r(n);
 	std::vector<float> gl[3] = {std::vector<float>(n), std::vector<float>(n), std::vector<float>(n)};
 	std::vector<float> gr[3] = {std::vector<float>(n), std::vector<float>(n), std::vector<float>(n)};
+	// コントロールセット: 組ごとに（ソース・行き先・深さ）。ソースの値が変わる時刻だけ、エレメントごとのずれを決め直す
+	struct cset { int src, dest, depth; };
+	std::vector<cset> sets;
+	{
+		std::istringstream ss(ctrlline.count("sets") ? ctrlline.at("sets") : "");
+		std::string t;
+		while (std::getline(ss, t, ',')) {
+			int a = 0, b = 0, c = 64;
+			if (std::sscanf(t.c_str(), "%d:%d:%d", &a, &b, &c) == 3)
+				sets.push_back({ a, b, c });
+		}
+	}
+	auto bipolar = [](int src) { return src == 0 || src == 6 || src == 8 || src == 9; };
+	int srcval[16];
+	for (int k = 0; k < 16; k++)
+		srcval[k] = bipolar(k) ? 64 : 0;
+	std::sort(ctl.begin(), ctl.end(), [](const ctl_ev &a, const ctl_ev &b) { return a.t < b.t; });
+	size_t ci = 0;
+	double vol_off = 0;                      // 行き先 1（Volume）: 音色の音量の値のずれ（エレメントのボックスによらない）
+	std::vector<float> voff(n);
+	auto apply_ctl = [&]() {
+		vol_off = 0;
+		for (size_t k = 0; k < sets.size() && k < 6; k++) {
+			const cset &c = sets[k];
+			if (c.dest != 1 || c.depth == 64 || c.src < 0 || c.src > 15)
+				continue;
+			const int v = srcval[c.src];
+			vol_off += (c.depth - 64) / 64.0 * (bipolar(c.src) ? (v - 64) / 64.0 : v / 127.0) * motif_sampler::CTRL_VOLUME_SCALE;
+		}
+		for (size_t vi = 0; vi < voices.size(); vi++) {
+			motif_sampler::ctrl_mod m;
+			for (size_t k = 0; k < sets.size() && k < 6; k++) {
+				const cset &c = sets[k];
+				if (c.dest <= 1 || c.depth == 64 || c.src < 0 || c.src > 15)
+					continue;
+				if (c.dest >= 41 && !(vcbox[vi] >> k & 1))     // 41 から上はエレメントの行き先（36〜40 はコモン LFO などの音色全体）
+					continue;
+				const int v = srcval[c.src];
+				const double x = bipolar(c.src) ? (v - 64) / 64.0 : v / 127.0;
+				motif_sampler::ctrl_add(m, c.dest, (c.depth - 64) / 64.0 * x);
+			}
+			// ピッチベンド: 上は pbup − 64、下は 64 − pbdown 半音
+			const int pb = srcval[0];
+			if (pb != 64)
+				m.cents += pb > 64 ? (pb - 64) / 63.0 * (geti(ctrlline, "pbup", 66) - 64) * 100.0 : (pb - 64) / 64.0 * (64 - geti(ctrlline, "pbdown", 62)) * 100.0;
+			voices[vi].cm = m;
+		}
+	};
+	auto next_ctl = [&](int i) {
+		bool ch = i == 0;
+		while (ci < ctl.size() && ctl[ci].t * 44100 <= i) {
+			srcval[std::max(0, std::min(15, ctl[ci].src))] = std::max(0, std::min(127, ctl[ci].val));
+			ci++;
+			ch = true;
+		}
+		if (ch)
+			apply_ctl();
+	};
 	for (int i = 0; i < n; i++) {
+		next_ctl(i);
+		voff[i] = float(vol_off);
 		if (i == off_at)
 			for (auto &v : voices)
 				v.release();
@@ -362,10 +443,13 @@ int main(int argc, char **argv)
 	}
 	// 共通の音量（0〜127）は 40·log10(値 / 127) dB（プリセット 29 音色の実機と芯の音量の差から）。実機ではインサーションの後で掛かる
 	// （強く歪む Still Blue で、前に掛けると 11dB 大きく出た）ので、インサーションを通すときは前で戻して後で掛け直す
-	const double vg = std::pow(geti(voiceline, "volume", 127) / 127.0, 2.0);
+	// コントロールセットの Volume は、音量の値をずらしてから同じ式で掛ける
+	std::vector<double> vgv(n);
+	for (int i = 0; i < n; i++)
+		vgv[i] = std::pow(std::max(0.0, std::min(127.0, geti(voiceline, "volume", 127) + double(voff[i]))) / 127.0, 2.0);
 	for (int i = 0; i < n; i++) {
-		l[i] = float(l[i] * vg);
-		r[i] = float(r[i] * vg);
+		l[i] = float(l[i] * vgv[i]);
+		r[i] = float(r[i] * vgv[i]);
 	}
 	if (!fxdir.empty() && !fxline.empty()) {
 		using namespace motif_fx;
@@ -378,10 +462,11 @@ int main(int argc, char **argv)
 				sw = kc.first;
 			}
 		buf L(l.begin(), l.end()), R(r.begin(), r.end());
-		if (use_ins && vg > 0) {
+		if (use_ins) {
 			for (size_t i = 0; i < L.size(); i++) {
-				L[i] /= vg;
-				R[i] /= vg;
+				const double g = i < vgv.size() && vgv[i] > 0 ? vgv[i] : 1.0;
+				L[i] /= g;
+				R[i] /= g;
 			}
 			if (majority)
 				insertion(L, R, ia, ib, geti(fxline, "connect"), sw, fxdir + "/fxd", geti(fxline, "tempo", 120));
@@ -396,8 +481,9 @@ int main(int argc, char **argv)
 				insertion_groups(g, ia, ib, geti(fxline, "connect"), fxdir + "/fxd", geti(fxline, "tempo", 120), L, R);
 			}
 			for (size_t i = 0; i < L.size(); i++) {
-				L[i] *= vg;
-				R[i] *= vg;
+				const double g = i < vgv.size() ? vgv[i] : vgv.back();
+				L[i] *= g;
+				R[i] *= g;
 			}
 		}
 		buf oL(L), oR(R);

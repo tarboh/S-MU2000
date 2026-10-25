@@ -169,6 +169,70 @@ static inline double level_gain(double level)
 	return d <= swp50_aeg::SILENT ? 0.0 : std::pow(10.0, d / 20.0);
 }
 
+// コントロールセット（40 05 00、6 組の ソース・行き先・深さ）の、今のソースの値で決まるずれ（tools/motif/mr_ctrl.py・mr_ctrl_depth.py、2026-10-25）。
+// どの行き先も「パラメーターの値に p × R を足す」形で、p は 深さ − 64 を 64 で割り、片側のソース（MW・AT・BC・FC）は 値 / 127、
+// 中心から両側へ振れるソース（PB・AS1・AS2・RB）は（値 − 64）/ 64 を掛けたもの。R は行き先ごと（ctrl_dest_scale）。
+// エレメントの行き先（41 から上）は、エレメントのコントロールボックス（41 ee 18、2 バイト）のビットが立っている組だけ受ける
+struct ctrl_mod {
+	double level = 0, pan = 0, cents = 0, cutoff = 0, reso = 0, hpf = 0, pmod = 0, amod = 0, fmod = 0, lfo_speed = 0;
+	double clfo[3] = {0, 0, 0};               // コモン LFO の箱 1〜3 の深さのずれ
+};
+
+// 行き先の番号（ファームウェアの名前の表の順: 1 Volume・2 RevSend・3 ChoSend・4〜19 INS1・20〜35 INS2・36 CLFOSpd・37〜39 CLFO の深さ・40 PorTime・
+// 41 ELM-Lvl・42 ELM-Pan・43 ELM-Dly・44 ELFOSpd・45〜47 ELFO-PM/AM/FM・48 PCH-Crs・49 PCH-Fin・50〜55 PEG・56〜59 AEG・60〜65 FEG・66 FLT-Frq・67 FLT-Rez・68 HPF-Frq）
+// ごとに、p = 1 のときのずれ。正弦波とノイズの雛形で深さ 0・32・48・80・96・127 とソースの値 0〜127 を振って測った:
+//   音量（41）: エレメントの音量の値を 265（127 から 深さ −16・−32 × 値 127・96 で −13.1・−25.2dB、p = −0.5 で無音）。上げる側は 127 で頭打ちなので確かめていない
+//   Volume（1）: 音色の音量の値を 265（CTRL_VOLUME_SCALE。音量は 40·log10(値 / 127) dB。雛形の 127 と、02_049 の 87 で MW × −13 が −16.3dB の両方に合う）。鳴らす側で掛ける
+//   パン（42）: パンの目盛りを 128（深さ +16 × 値 127 でパン 32 ずれ、−6.3dB）
+//   コース（48）: 48 半音、±24 半音で頭打ち。ファイン（49）: 128 目盛り（1.5625 セント）、±64 目盛り（100 セント）で頭打ち
+//   エレメント LFO の深さ（45〜47）: 180（もと 32 の音程の揺れが p = 0.25・0.378・0.5 で ±66・179・470 セント相当）
+//   カットオフ（66）: 512 目盛り（もと 100 から p = ±0.0625・0.125 で ±32・64 目盛り。ノイズの重心を、カットオフを振って録った表で目盛りに直した）
+//   コモン LFO の深さ（37〜39）: 240、127 で頭打ち（箱 1 を音程・深さ 16 にして、p = 0.125・0.25・0.378 で深さ 44・76・110 相当）。
+//                      音色全体の行き先なので、エレメントのボックスによらない
+//   レゾナンス（67）: 128、+63 で頭打ち（もと 0 から p = 0.25・0.378 で +31・+47 相当、p = 0.5 から上は 62 のまま）
+// EG の時間・深さ（50〜65）・ディレイ（43）は、鳴っている間に CC を動かしても変わらなかった（キーオンのときだけ読むらしい。入れていない）。
+// HPF（68）も雛形（LPF24D）では変わらなかったが、HPF は LPF12・LPF6 の型だけで効くため。カットオフと同じ 512 とした
+static constexpr double CTRL_VOLUME_SCALE = 265;
+
+static inline bool ctrl_dest_scale(int dest, double &r)
+{
+	switch (dest) {
+	case 41: r = 265; return true;
+	case 42: r = 128; return true;
+	case 48: r = 48 * 100; return true;          // セント
+	case 49: r = 128 * 1.5625; return true;      // セント
+	case 44: r = 128; return true;               // 測っていない
+	case 45: case 46: case 47: r = 180; return true;
+	case 66: r = 512; return true;
+	case 67: r = 128; return true;
+	case 37: case 38: case 39: r = 240; return true;
+	case 68: r = 512; return true;               // カットオフと同じとした（03_014 で確かめた）
+	}
+	return false;
+}
+
+static inline void ctrl_add(ctrl_mod &m, int dest, double p)
+{
+	double r;
+	if (!ctrl_dest_scale(dest, r))
+		return;
+	const double x = p * r;
+	switch (dest) {
+	case 41: m.level += x; break;
+	case 42: m.pan += x; break;
+	case 48: m.cents += std::max(-2400.0, std::min(2400.0, x)); break;
+	case 49: m.cents += std::max(-100.0, std::min(100.0, x)); break;
+	case 44: m.lfo_speed += x; break;
+	case 45: m.pmod += x; break;
+	case 46: m.amod += x; break;
+	case 47: m.fmod += x; break;
+	case 66: m.cutoff += x; break;
+	case 67: m.reso += std::min(63.0, x); break;
+	case 68: m.hpf += x; break;
+	case 37: case 38: case 39: m.clfo[dest - 37] += x; break;
+	}
+}
+
 struct voice {
 	const sample *smp = nullptr;
 	element_params p;
@@ -181,6 +245,8 @@ struct voice {
 	swp50_eq::element_eq eq, eq_r;
 	double gl = 1, gr = 1, pan_offset = 0;
 	long tick = 0;                        // 鳴り始めからのサンプル数（コモン LFO）
+	ctrl_mod cm;                          // コントロールセットのずれ（鳴らす側が毎サンプル入れる）
+	int lfo_base[4] = {0, 0, 0, 32};      // エレメント LFO の音程・音量・フィルターの深さと速さのもと
 
 	// コモン LFO の今の値。音程（セント）と音量の値の下げ幅（エレメントの音量の目盛り。AMD は深さ × 負の側の振れだけ音量を下げる）、
 	// カットオフとレゾナンスとパンのずれ（目盛り）、エレメント LFO の速さの倍率
@@ -211,9 +277,10 @@ struct voice {
 		const double ph = x - std::floor(x);
 		const double w = c.wave_at(ph, long(std::floor(x)));
 		for (int b = 0; b < 3; b++) {
-			if (!(p.lbox >> b & 1) || c.depth[b] == 0)
+			const double db = std::max(0.0, std::min(127.0, c.depth[b] + cm.clfo[b]));
+			if (!(p.lbox >> b & 1) || db <= 0)
 				continue;
-			const double d = c.depth[b] * p.lratio[b + 1] / 127.0;
+			const double d = db * p.lratio[b + 1] / 127.0;
 			switch (c.dest[b]) {
 			case 0: o.drop += d * std::max(0.0, -w) * f; break;
 			case 1: o.cents += common_lfo::pmd_cents(d) * w * f; break;
@@ -235,6 +302,7 @@ struct voice {
 		p.aeg.velocity = v;
 		p.aeg.key_on();
 		p.lfo.key_on();
+		lfo_base[0] = p.lfo.pmod; lfo_base[1] = p.lfo.amod; lfo_base[2] = p.lfo.fmod; lfo_base[3] = p.lfo.speed;
 		p.peg.key = n;
 		p.peg.velocity = v;
 		p.peg.key_on();
@@ -328,6 +396,13 @@ struct voice {
 			return ((c3 * t + c2) * t + c1) * t + y1;
 		};
 		double l = herm(s.L), r = herm(s.R);
+		{   // 深さを毎サンプル もと + ずれ に戻す（ずれが 0 に戻ったときも、もとの深さに戻る）
+			auto clamp127 = [](double v) { return std::max(0, std::min(127, int(std::lround(v)))); };
+			p.lfo.pmod = clamp127(lfo_base[0] + cm.pmod);
+			p.lfo.amod = clamp127(lfo_base[1] + cm.amod);
+			p.lfo.fmod = clamp127(lfo_base[2] + cm.fmod);
+			p.lfo.speed = clamp127(lfo_base[3] + cm.lfo_speed);
+		}
 		p.lfo.step(44100.0);
 		p.peg.step();
 		double cents = static_cents;
@@ -337,7 +412,7 @@ struct voice {
 			cents += p.lfo.pitch_cents_now();
 		clfo_out co;
 		common_lfo_now(co);
-		cents += co.cents;
+		cents += co.cents + cm.cents;
 		p.lfo.speed_mul = co.speed_mul;
 		tick++;
 		pos += cents != 0.0 ? step * std::exp2(cents / 1200.0) : step;
@@ -345,16 +420,23 @@ struct voice {
 			done = true;
 		// FEG を目盛りに足してフィルターの g を決め直すのは重いので、FEG の深さが 0 でなければ毎サンプル（芯の試しなので素直に書く）
 		const double fs = p.feg.step();
-		if (p.feg.depth != 64 || p.lfo.fmod || co.filter) {
+		if (p.feg.depth != 64 || p.lfo.fmod || co.filter || cm.cutoff != 0 || cm.reso != 0 || cm.hpf != 0) {
 			swp50_filter::filter_params fp = p.filter;
 			// カットオフのベロシティ感度は FEG より前に足す（FEG で 255 を越える所で頭打ちにしてから下げると暗くなりすぎる。
 			// 2026-10-24、Crazy Mod のエレメント 1 を感度 +40・ベロシティ 40 で実機と比べた）
-			fp.cutoff = int(std::lround(swp50_filter::cutoff_with_feg(p.filter.cutoff + swp50_filter::velocity_steps(p.filter.vel_sens, velocity),
-			                                                            fs + p.lfo.filter_octaves_now() * 25.6 + co.cutoff, p.filter.type)));
+			// コントロールセットのずれは、目盛りに足して 0〜255 で止めてから FEG を足す（00_060 の AS1 × +63 を最小へ回すと、実機は −12dB で
+			// 明るさはほぼそのまま。止めずに FEG と一緒に足すと 0 より下へ延びて、暗く・大きくなりすぎた）
+			double base = p.filter.cutoff + swp50_filter::velocity_steps(p.filter.vel_sens, velocity);
+			if (cm.cutoff != 0)
+				base = std::max(0.0, std::min(255.0, base + cm.cutoff));
+			fp.cutoff = int(std::lround(swp50_filter::cutoff_with_feg(base, fs + p.lfo.filter_octaves_now() * 25.6 + co.cutoff, p.filter.type)));
 			fp.vel_sens = 64;
-			fp.reso = std::max(0, std::min(127, int(std::lround(p.filter.reso + co.reso))));
+			fp.reso = std::max(0, std::min(127, int(std::lround(p.filter.reso + co.reso + cm.reso))));
+			if (cm.hpf != 0)
+				fp.hpf = std::max(0, std::min(255, int(std::lround(p.filter.hpf + cm.hpf))));
 			swp50_filter::element_filter tmp;
 			tmp.set(fp, note, velocity);
+			flt.hg = flt_r.hg = tmp.hg;
 			flt.g = flt_r.g = tmp.g;
 			flt.g2 = flt_r.g2 = tmp.g2;
 			flt.q = flt_r.q = tmp.q;
@@ -373,9 +455,9 @@ struct voice {
 			done = true;
 			return;
 		}
-		const double g = eg * vel_gain * level_gain(level - co.drop) * (p.lfo.amod ? std::pow(10.0, p.lfo.amp_db_now() / 20.0) : 1.0);
-		if (co.panning)
-			pan_gains(pan_offset + co.pan);
+		const double g = eg * vel_gain * level_gain(std::min(127.0, level + cm.level) - co.drop) * (p.lfo.amod ? std::pow(10.0, p.lfo.amp_db_now() / 20.0) : 1.0);
+		if (co.panning || cm.pan != 0)
+			pan_gains(pan_offset + co.pan + cm.pan);
 		// 離したあと出力がほぼ聞こえない（倍率 −80dB 未満）間は、実機はリリースを 4 倍の速さで進める
 		// （tools/motif/mr_clfo_gate_release.py: コモン LFO の AMD で消している間に離すと、開いたあとが小さい・鳴らない。Eclipse 03_087）
 		if (released && g * p.gain < QUIET_GAIN)

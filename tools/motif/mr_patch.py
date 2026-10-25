@@ -49,6 +49,18 @@ def voice_common_lfo(json_path):
             "usteps": x[19], "uvals": ",".join(str(v) for v in x[21:21 + 16])}
 
 
+def voice_ctrl(json_path):
+    """音色のコントロールセット（ダンプの 40 05 00、5 バイト × 6 組: ソース・行き先の上下・深さ（64 が 0）・0）を「ソース:行き先:深さ」の並びにする"""
+    import mr_voice
+    syx = os.path.join(os.path.dirname(json_path), "..", "voice", os.path.basename(json_path).replace(".json", ".syx"))
+    if not os.path.exists(syx):
+        return None
+    x = mr_voice.blocks(syx).get((0x40, 0x05, 0x00))
+    if not x or len(x) < 30:
+        return None
+    return ",".join("%d:%d:%d" % (x[5 * i], x[5 * i + 1] << 7 | x[5 * i + 2], x[5 * i + 3]) for i in range(6))
+
+
 def main():
     vpath, sdir, odir = sys.argv[1:4]
     os.makedirs(odir, exist_ok=True)
@@ -79,6 +91,10 @@ def main():
     cl = voice_common_lfo(vpath)
     if cl:
         lines.append("clfo " + " ".join("%s=%s" % kv for kv in cl.items()))
+    cs = voice_ctrl(vpath)
+    if cs:
+        c = v.get("common", {})
+        lines.append("ctrl sets=%s pbup=%d pbdown=%d" % (cs, c.get("pitch_bend_range_upper", 64), c.get("pitch_bend_range_lower", 64)))
     missing = []
     for e in v["elements"]:
         osc, amp, pit, flt, eq, lfo = e["oscillator"], e["amplitude"], e["pitch"], e["filter"], e["eq"], e["lfo"]
@@ -86,7 +102,7 @@ def main():
             continue
         w = osc["wave_number"]
         f = {
-            "wave": w, "ins": osc.get("insertion_effect_switch", 0), "lbox": osc.get("lfo_box_sw", 0),
+            "wave": w, "ins": osc.get("insertion_effect_switch", 0), "lbox": osc.get("lfo_box_sw", 0), "cbox": osc.get("control_box_sw", 0),
             "lratio": "%d,%d,%d,%d" % tuple(e.get("common_lfo_ratio", {}).get(k, d) for k, d in (("common_lfo_phase_offset", 0),
                 ("common_lfo_box1_depth_ratio", 127), ("common_lfo_box2_depth_ratio", 127), ("common_lfo_box3_depth_ratio", 127))), "kdelay": osc.get("key_on_delay", 0), "ksync": osc.get("key_on_delay_tempo_sync", 0), "klen": osc.get("key_on_delay_tempo", 0), "note_lo": osc["note_limit_low"], "note_hi": osc["note_limit_high"],
             "vel_lo": osc["velocity_limit_low"], "vel_hi": osc["velocity_limit_high"], "pan": osc["pan"], "span": osc.get("scaling_pan_depth", 64),
