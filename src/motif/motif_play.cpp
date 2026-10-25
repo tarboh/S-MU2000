@@ -29,6 +29,7 @@
 #include <d3d11.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -810,6 +811,7 @@ int main(int argc, char **argv)
 	std::vector<int> shot_keys;
 	int selftest_voice = 0, selftest_multi = -1;
 	std::vector<std::pair<int, int>> selftest_pc, selftest_ins;
+	std::vector<std::array<int, 3>> selftest_instype;
 	bool selftest_arp = false;
 	for (int i = 1; i < argc; i++) {
 		const std::string a = argv[i];
@@ -817,7 +819,12 @@ int main(int argc, char **argv)
 			selftest_arp = true;
 		else if (a == "--multi" && i + 1 < argc)
 			selftest_multi = std::atoi(argv[++i]);
-		else if (a == "--ins" && i + 1 < argc) {
+		else if (a == "--instype" && i + 1 < argc) {
+			// --instype パート:A か B（0・1）:型の番号（MSB × 128 + LSB）。画面の選びと同じ道で、初期値は ins_types.txt
+			int x = 0, y = 0, z = 0;
+			if (std::sscanf(argv[++i], "%d:%d:%d", &x, &y, &z) == 3)
+				selftest_instype.push_back({x - 1, y, z});
+		} else if (a == "--ins" && i + 1 < argc) {
 			// --ins 行:パート（1 から。パート 0 で外す）。画面の表と同じ道で、Ins の行をパートへ
 			int x = 0, y = 0;
 			if (std::sscanf(argv[++i], "%d:%d", &x, &y) == 2)
@@ -860,6 +867,8 @@ int main(int argc, char **argv)
 	std::vector<voice_entry> list = scan_patches(dir);
 	// マルチ（tools/motif/mr_multi_export.py が capture/multis に書く）
 	std::vector<std::pair<std::string, std::string>> mlist = motif_multi::scan(dir / ".." / "multis");
+	// インサーションの型の一覧（mr_ins_types.py）
+	const std::vector<motif_multi::ins_type> ins_types = motif_multi::load_ins_types((dir / ".." / "ins_types.txt").string());
 
 	auto pl = std::make_unique<player>();
 	// アルペジオの型の表（mr_arp_fit.py が作る。パッチの置き場の 1 つ上）
@@ -903,6 +912,12 @@ int main(int argc, char **argv)
 			for (auto &x : selftest_ins)
 				pl->mul->set_ins_slot(x.first, x.second);
 			pl->mul->sync_ins(pl->mtx);
+			for (auto &x : selftest_instype) {
+				const auto types = motif_multi::load_ins_types((dir / ".." / "ins_types.txt").string());
+				for (auto &t : types)
+					if (t.code == x[2])
+						pl->mul->set_ins_block(pl->mtx, x[0], x[1], std::to_string(t.code) + "," + t.params);
+			}
 			std::vector<s16> pcm(44100 * 3 * 2);
 			const u32 block = 441;
 			for (u32 i = 0; i < 44100 * 3; i += block) {
@@ -1399,6 +1414,52 @@ int main(int argc, char **argv)
 						}
 					}
 					ImGui::EndTable();
+				}
+				// パートのインサーションの型（A・B・つなぎ方）。型の一覧は capture/ins_types.txt（mr_ins_types.py。初期値はプリセットでいちばん多い設定）
+				if (!ins_types.empty()) {
+					static int ins_part = 0;
+					ImGui::SetNextItemWidth(120);
+					if (ImGui::BeginCombo("パート##inspart", (std::to_string(ins_part + 1) + " " + M.parts[size_t(ins_part)]->label).c_str())) {
+						for (int i = 0; i < 16; i++)
+							if (ImGui::Selectable((std::to_string(i + 1) + " " + M.parts[size_t(i)]->label + "##ip" + std::to_string(i)).c_str(), i == ins_part))
+								ins_part = i;
+						ImGui::EndCombo();
+					}
+					motif_multi::part &IP = *M.parts[size_t(ins_part)];
+					auto type_label = [&](int code) {
+						for (auto &t : ins_types)
+							if (t.code == code) {
+								char b[64];
+								std::snprintf(b, sizeof b, "%02X %02X %s", code >> 7, code & 0x7F, t.name.c_str());
+								return std::string(b);
+							}
+						char b[32];
+						std::snprintf(b, sizeof b, "%02X %02X", code >> 7, code & 0x7F);
+						return std::string(b);
+					};
+					for (int ab = 0; ab < 2; ab++) {
+						ImGui::SameLine(0, 20);
+						const int code = M.ins_code(ins_part, ab);
+						ImGui::SetNextItemWidth(200);
+						if (ImGui::BeginCombo(ab ? "B##insb" : "A##insa", code < 0 ? "-" : type_label(code).c_str())) {
+							for (auto &t : ins_types)
+								if (ImGui::Selectable((type_label(t.code) + "##t" + std::to_string(ab) + "_" + std::to_string(t.code)).c_str(), t.code == code))
+									M.set_ins_block(pl->mtx, ins_part, ab, std::to_string(t.code) + "," + t.params);
+							ImGui::EndCombo();
+						}
+					}
+					ImGui::SameLine(0, 20);
+					static const char *conns[] = {"並列", "A→B", "B→A"};
+					int con = IP.pt ? motif_sampler::geti(IP.pt->fxline, "connect") : 0;
+					con = std::min(2, std::max(0, con));
+					ImGui::SetNextItemWidth(90);
+					if (ImGui::Combo("つなぎ方##inscon", &con, conns, 3))
+						M.set_ins_block(pl->mtx, ins_part, 2, std::to_string(con));
+					if (IP.has_ins && IP.ins) {
+						auto st = [](const motif_fx_rt::block_rt &b) { return b.thru() ? "" : !b.supported() ? "素通し" : b.approx() ? "近似" : "回せる"; };
+						ImGui::TextDisabled("A %s・B %s（素通しは、芯でまだ回せない型）", st(IP.ins->block_a()), st(IP.ins->block_b()));
+					} else
+						ImGui::TextDisabled("このパートにはインサーションを掛けていない（上の表で Ins を付けると掛かる）");
 				}
 			}
 		} else

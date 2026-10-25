@@ -96,6 +96,38 @@ struct config {
 	}
 };
 
+// インサーションの型（tools/motif/mr_ins_types.py が書く capture/ins_types.txt）: 番号（MSB × 128 + LSB）・名前・プリセットで使っている数・初期値（パラメーター 1〜16）
+struct ins_type {
+	int code = 0;
+	std::string name, params;
+	int uses = 0;
+};
+
+inline std::vector<ins_type> load_ins_types(const std::string &path)
+{
+	std::vector<ins_type> v;
+	FILE *f = std::fopen(path.c_str(), "rb");
+	if (!f)
+		return v;
+	char line[512];
+	while (std::fgets(line, sizeof line, f)) {
+		if (line[0] == '#')
+			continue;
+		char name[64] = {}, params[256] = {};
+		ins_type t;
+		if (std::sscanf(line, "%d %63s %d %255s", &t.code, name, &t.uses, params) == 4) {
+			t.name = name;
+			for (char &c : t.name)
+				if (c == '_')
+					c = ' ';
+			t.params = params;
+			v.push_back(t);
+		}
+	}
+	std::fclose(f);
+	return v;
+}
+
 // 置き場の .multi を（ファイル, 名前）の並びで
 inline std::vector<std::pair<std::string, std::string>> scan(const std::filesystem::path &dir)
 {
@@ -311,6 +343,36 @@ public:
 			ins_on[size_t(i)] = std::find(ins_slot.begin(), ins_slot.end(), i) != ins_slot.end();
 	}
 	int ins_slot_of(int s) const { return ins_slot[size_t(s)]; }
+
+	// パート i のインサーションの型を替える（画面の糸で）。which: 0 = A、1 = B（value は「型,パラメーター 1〜16」）、2 = つなぎ方（0 並列・1 A→B・2 B→A）。
+	// 音色の設定（パッチの fx 行）を書き換えるので、プログラムチェンジで音色が替わると、その音色のものに戻る
+	template <class Mutex>
+	void set_ins_block(Mutex &mtx, int i, int which, const std::string &value)
+	{
+		part &P = *parts[size_t(i)];
+		if (!P.pt)
+			return;
+		{
+			std::lock_guard<Mutex> lk(mtx);
+			P.pt->fxline[which == 0 ? "insa" : which == 1 ? "insb" : "connect"] = value;
+		}
+		if (!P.has_ins)
+			return;
+		std::string name;
+		auto ins = make_ins(*P.pt, name);
+		std::lock_guard<Mutex> lk(mtx);
+		std::swap(P.ins, ins);
+		P.ins_name = name;
+	}
+	// パート i の A・B の型の番号（−1 は音色が無い）
+	int ins_code(int i, int which) const
+	{
+		const part &P = *parts[size_t(i)];
+		if (!P.pt)
+			return -1;
+		auto it = P.pt->fxline.find(which ? "insb" : "insa");
+		return it == P.pt->fxline.end() ? 0 : std::atoi(it->second.c_str());
+	}
 	// 割り当てとパートのインサーションがずれていたら直す（画面の糸で毎回。作るのは mtx の外、入れ替えは中）
 	template <class Mutex>
 	void sync_ins(Mutex &mtx)
