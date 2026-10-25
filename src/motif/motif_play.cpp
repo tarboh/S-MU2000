@@ -6,11 +6,13 @@
 // パッチの置き場は、tools/motif/mr_patch.py が全部の音色を書いた所（既定は exe の置き場から ../roms/motif-rack-es/capture/patches_all）。
 // 弾き方: 画面の鍵盤をマウスで、PC のキーボード（Z〜M・Q〜I の 2 段）で、MIDI 入力（ノート・CC1/2/4/16/17/22・CC64・CC7/11・
 // アフタータッチ・ピッチベンド・プログラムチェンジ）で。MIDI の出力は開かない（実機へは何も送らない）。
-// 音はドライ（インサーション・リバーブ・コーラスは掛けない。sampler_fx.h は音全体をまとめて処理する作りで、その場では回せない）。
+// エフェクトは sampler_fx_rt.h で掛ける（オフラインの sampler_fx.h と同じ音。fxrt_test.cpp で比べた）: インサーションの 3 Band EQ・2 Band EQ・
+// Cross Delay・コンプ（組とつなぎ方ごと）、リバーブ、コーラスの枠のコーラスの型・Cross Delay。ほかの型はまだ回せない（インサーションは素通し）。
 // --shot 絵.bmp は、音色を読み終えてから画面を 1 枚 BMP に書いて終わる（試験用。--shot-keys 60,64,67 でその鍵を押した絵）。
 // --selftest は、画面を出さずに音色を 1 つ読み、音の糸と同じ道（fill）で和音を 2 秒鳴らして WAV に書いて終わる（試験用）。
 
 #include "sampler_engine.h"
+#include "sampler_fx_rt.h"
 #include "ui/audio_out.h"
 #include "ui/midi_in.h"
 
@@ -108,7 +110,10 @@ std::string dest_name(int d)
 struct loaded {
 	motif_sampler::patch pt;
 	std::unique_ptr<motif_sampler::engine> eg;
-	std::string label;
+	motif_fx_rt::insertion_rt ins;
+	motif_fx_rt::reverb_rt rev;
+	motif_fx_rt::chorus_rt cho;
+	std::string label, ins_name, rev_name, cho_name;
 };
 
 struct player {
@@ -120,6 +125,7 @@ struct player {
 	bool sustained[128] = {};
 	int cc7 = 127, cc11 = 127;
 	float master = 0.8f;
+	bool use_ins = true, use_rev = true, use_cho = true;
 	std::atomic<float> peak{0};
 	std::atomic<int> voices{0};
 	std::atomic<int> pending_program{-1};   // MIDI のプログラムチェンジ（画面の糸で読み込む）
@@ -270,12 +276,41 @@ struct player {
 		while (done < frames) {
 			const int n = int(std::min<u32>(256, frames - done));
 			float l[256] = {}, r[256] = {}, voff[256] = {};
+			float g0[256] = {}, g1[256] = {}, g2[256] = {}, h0[256] = {}, h1[256] = {}, h2[256] = {};
+			float *gl[3] = {g0, g1, g2}, *gr[3] = {h0, h1, h2};
 			if (cur)
-				cur->eg->render(n, l, r, nullptr, nullptr, voff);
+				cur->eg->render(n, l, r, gl, gr, voff);
 			for (int j = 0; j < n; j++) {
-				const double g = cur ? cur->eg->volume_gain(voff[j]) * part : 0.0;
+				// 共通の音量まで掛けたドライに、リバーブとコーラスの枠の wet を足し、パートの音量（CC7・CC11）と全体の音量を掛ける
+				double dl = 0, dr = 0;
+				if (cur) {
+					// インサーションは組（エレメントのスイッチ）ごとの音に掛け、そのあとで共通の音量を掛ける
+					const double g = cur->eg->volume_gain(voff[j]);
+					if (use_ins) {
+						const double xl[3] = {g0[j], g1[j], g2[j]}, xr[3] = {h0[j], h1[j], h2[j]};
+						cur->ins.tick(xl, xr, dl, dr);
+					} else {
+						dl = l[j];
+						dr = r[j];
+					}
+					dl *= g;
+					dr *= g;
+					double wl = 0, wr = 0, xl = 0, xr = 0;
+					if (cur->rev.active()) {
+						cur->rev.tick(dl, dr, xl, xr);
+						if (use_rev)
+							wl += xl, wr += xr;
+					}
+					if (cur->cho.active()) {
+						cur->cho.tick(dl, dr, xl, xr);
+						if (use_cho)
+							wl += xl, wr += xr;
+					}
+					dl += wl;
+					dr += wr;
+				}
 				// 実機の出口は ±1.0 で頭打ち
-				const float a = float(std::fmax(-1.0, std::fmin(1.0, l[j] * g))), b = float(std::fmax(-1.0, std::fmin(1.0, r[j] * g)));
+				const float a = float(std::fmax(-1.0, std::fmin(1.0, dl * part))), b = float(std::fmax(-1.0, std::fmin(1.0, dr * part)));
 				pk = std::max(pk, std::max(std::fabs(a), std::fabs(b)));
 				out[2 * (done + j)] = s16(std::lround(a * 32767.0f));
 				out[2 * (done + j) + 1] = s16(std::lround(b * 32767.0f));
@@ -302,6 +337,21 @@ std::unique_ptr<loaded> load_voice(const voice_entry &v)
 	L->eg = std::make_unique<motif_sampler::engine>(L->pt);
 	L->eg->preload();
 	L->label = v.bank + ":" + std::to_string(v.number) + " " + v.name;
+	// リバーブとコーラスの枠（応答は capture の置き場の fx/・fxd/。パッチの置き場の 1 つ上）
+	const std::string cap = L->pt.dir + "..";
+	auto get = [&](const char *k) { auto it = L->pt.fxline.find(k); return it == L->pt.fxline.end() ? motif_fx::block() : motif_fx::parse_block(it->second); };
+	const motif_fx::block rv = get("reverb"), ch = get("chorus");
+	char t[96];
+	const motif_fx::block ia = get("insa"), ib = get("insb");
+	L->ins.init(ia, ib, motif_sampler::geti(L->pt.fxline, "connect"), motif_sampler::geti(L->pt.fxline, "tempo", 120));
+	std::snprintf(t, sizeof t, "A %02X %02X・B %02X %02X・つなぎ %d", ia.msb, ia.lsb, ib.msb, ib.lsb, motif_sampler::geti(L->pt.fxline, "connect"));
+	L->ins_name = L->ins.supported() ? t : std::string(t) + "（まだ回せない型は素通し）";
+	L->rev.init(rv, cap + "/fx");
+	std::snprintf(t, sizeof t, "%02X %02X・送り %d", rv.msb, rv.lsb, rv.send);
+	L->rev_name = rv.send ? (L->rev.active() ? t : std::string(t) + "（応答が無い）") : "送り 0";
+	L->cho.init(ch, motif_sampler::geti(L->pt.fxline, "tempo", 120));
+	std::snprintf(t, sizeof t, "%02X %02X・送り %d", ch.msb, ch.lsb, ch.send);
+	L->cho_name = ch.send ? (L->cho.active() ? t : std::string(t) + "（この型はまだ）") : "送り 0";
 	return L;
 }
 
@@ -888,7 +938,13 @@ int main(int argc, char **argv)
 			ImGui::SameLine();
 			ImGui::TextDisabled("ピーク");
 		}
-		ImGui::TextDisabled("エフェクトは掛けていない（ドライ）。PC キーボード: Z〜M が下の段、Q〜I が上の段");
+		if (pl->cur) {
+			ImGui::Checkbox(("インサーション（" + pl->cur->ins_name + "）").c_str(), &pl->use_ins);
+			ImGui::Checkbox(("リバーブ（" + pl->cur->rev_name + "）").c_str(), &pl->use_rev);
+			ImGui::SameLine(0, 30);
+			ImGui::Checkbox(("コーラスの枠（" + pl->cur->cho_name + "）").c_str(), &pl->use_cho);
+		}
+		ImGui::TextDisabled("PC キーボード: Z〜M が下の段、Q〜I が上の段。マウスで鍵盤を押したまま滑らせると次の鍵");
 		ImGui::EndChild();
 
 		// 下: 鍵盤
