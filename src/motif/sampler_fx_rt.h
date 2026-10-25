@@ -2,10 +2,11 @@
 // sampler_fx.h のエフェクトを、その場で（1 サンプルずつ）回せる形にしたもの（2026-10-25。motif_play が使う。試験は fxrt_test.cpp）。
 //
 // * たたみ込み（conv_rt）: 頭の 128 タップはそのまま、4096 タップまでは 128 ずつ、その後ろは 4096 ずつに分けた FFT で掛ける。遅れは出ない
-// * リバーブ: 応答（fx/reverb_*.irx、Table 4 の型は reshape で残響の長さを合わせる）は sampler_fx.h の reverb と同じ。−100dB より下の尾は切る
+// * リバーブ: 応答（fx/reverb_*.irx、Table 4 の型は reshape で残響の長さを合わせる）は sampler_fx.h の reverb と同じ。絶対値の合計で 1e-6 ぶんの尾は切る
 // * コーラスの枠: コーラスの型（05 系）は chorus と同じ揺れる遅れ、Cross Delay（02 30・02 60）は cross_delay の wet（出口 − 入れた音）
 // * インサーションとコーラスの枠のほかの型（block_rt）: 3 Band EQ・2 Band EQ・Harmonic Enhancer（周波数応答から作ったインパルス応答のたたみ込み）、
-//   Cross Delay、コンプ、インサーションのコーラス、フランジャー、Ensemble Detune。インサーションの組（エレメントのスイッチ 0・1・2）とつなぎ方は
+//   Cross Delay、コンプ、インサーションのコーラス、フランジャー、Ensemble Detune、歪み（09 00・01・10・20・30・31。録った応答 → 頭打ち → LPF）、
+//   LTI（ディレイ・リバーブ系などプリセットの組のまま録った応答、fxlti）。インサーションの組（エレメントのスイッチ 0・1・2）とつなぎ方は
 //   insertion_groups と同じ。ほかの型は、インサーションでは素通し（supported() が偽）、コーラスの枠では掛けない（active() が偽）。
 //   コーラス系とフランジャーは、オフラインが録った応答（.ltv）を使う型なら近似（approx()。ltv はその場では 93ms 遅れるので式の作りで回す）
 #pragma once
@@ -159,13 +160,17 @@ public:
 			ir.R = motif_fx::reshape(ir.R, rt, target);
 		}
 		const double g = rv.ret / 96.0 * rv.send / 127.0;
-		// −100dB より下の尾を切る
-		double peak = 0;
+		// 尾を切る: 切る部分の絶対値の合計が、全体の 1e-6 より小さい所まで（1 サンプルずつの大きさで切ると、小さくても長く続く尾
+		// （01 40 の MelodicTom）が足し合わさって 4e-3 ずれた）
+		double total = 0;
 		for (size_t i = 0; i < ir.L.size(); i++)
-			peak = std::max(peak, std::max(std::fabs(ir.L[i]), std::fabs(ir.R[i])));
+			total += std::fabs(ir.L[i]) + std::fabs(ir.R[i]);
 		size_t len = ir.L.size();
-		while (len > 0 && std::fabs(ir.L[len - 1]) < peak * 1e-5 && std::fabs(ir.R[len - 1]) < peak * 1e-5)
-			len--;
+		for (double tail = 0; len > 0; len--) {
+			tail += std::fabs(ir.L[len - 1]) + std::fabs(ir.R[len - 1]);
+			if (tail > total * 1e-6)
+				break;
+		}
 		if (len == 0)
 			return false;
 		std::vector<double> hl(len), hr(len);
@@ -245,8 +250,10 @@ private:
 };
 
 // 周波数応答 H（f >= 0 で与え、負の側は共役）から、4096 タップのインパルス応答を作る（filter_freq と同じ応答）
+// pre を渡すと、負の時刻（オフラインの filter_freq は音全体の円のたたみ込みなので、先の音も使う）の pre タップを頭へ回す。
+// その応答で掛けた音は pre サンプル遅れる
 template <class F>
-std::vector<double> fir_from(F H, size_t taps = 4096)
+std::vector<double> fir_from(F H, size_t taps = 4096, size_t pre = 0)
 {
 	const size_t Nf = 1 << 15;
 	std::vector<cplx> a(Nf);
@@ -259,7 +266,7 @@ std::vector<double> fir_from(F H, size_t taps = 4096)
 	motif_fx::fft(a, true);
 	std::vector<double> h(taps);
 	for (size_t i = 0; i < taps; i++)
-		h[i] = a[i].real();
+		h[i] = i < pre ? a[Nf - pre + i].real() : a[i - pre].real();
 	return h;
 }
 
@@ -365,15 +372,27 @@ public:
 			fl_y[1].assign(1 << 16, 0.0);
 			eq_init(b, 6);
 			kind = 5;
+		} else if (motif_fx::dist_type(b) && !fxddir.empty() && dist_init(b, fxddir)) {
+			kind = 8;
+		} else if (motif_fx::lti_type(b) && !fxddir.empty() && lti_init(b, fxddir + "/../fxlti", tempo)) {
+			kind = 9;
 		} else
 			kind = -1;                       // まだ回せない型（素通し）
 	}
 	bool supported() const { return kind >= 0; }
 	bool thru() const { return kind == 0; }
 	bool approx() const { return approx_; }
+	// この枠の出口の遅れ（サンプル。歪みだけ DIST_PRE）
+	int latency() const { return kind == 8 ? int(DIST_PRE) : 0; }
+	// 前の枠の遅れで音が n サンプル遅れて届くとき、揺れなどの時計もその分遅らせて始める（オフラインと同じ位相にする）
+	void delay_start(int n) { skip = n; }
 
 	void tick(double &L, double &R)
 	{
+		if (skip > 0) {
+			skip--;
+			return;
+		}
 		const size_t mask = ring_l.size() - 1;
 		switch (kind) {
 		case 1:
@@ -443,6 +462,41 @@ public:
 			eq(L, R);
 			break;
 		}
+		case 8: {
+			// 歪み（distortion と同じ）: 左右を足した音 → 録った応答 → 柔らかい頭打ち → 2 次の LPF →（V-Distortion はディレイ）→ 元の音と混ぜる。
+			// LPF は負の時刻のタップ（DIST_PRE）を頭へ回したので、出口はこの枠の中で DIST_PRE サンプル遅れる（元の音も遅らせて混ぜる）
+			const double x = (L + R) / 2;
+			ring_l[t & mask] = L;
+			ring_r[t & mask] = R;
+			const double L0 = t >= DIST_PRE ? ring_l[(t - DIST_PRE) & mask] : 0.0, R0 = t >= DIST_PRE ? ring_r[(t - DIST_PRE) & mask] : 0.0;
+			double y[2];
+			for (int c = 0; c < 2; c++) {
+				double u = (c == 0 ? fl : fr).tick(x) * dk;
+				u = u / std::pow(1 + std::pow(std::fabs(u / dc), dp), 1 / dp);
+				y[c] = (c == 0 ? el : er).tick(u);
+				if (vd_on) {
+					std::vector<double> &line = c == 0 ? fl_y[0] : fl_y[1];
+					const double back = t >= vd_df ? line[(t - vd_df) & mask] : 0.0;
+					vd_lp[c] = (1 - vd_a) * back + vd_a * vd_lp[c];
+					line[t & mask] = y[c] + vd_fb * vd_lp[c];
+					const size_t dt = vd_dt[c];
+					y[c] += vd_mix * (t >= dt ? line[(t - dt) & mask] : 0.0);
+				}
+			}
+			L = gdry * L0 + gwet * y[0] * og;
+			R = gdry * R0 + gwet * y[1] * og;
+			t++;
+			break;
+		}
+		case 9: {
+			// LTI（lti と同じ）: 左右から左右への 4 本の録った応答
+			if (lti_thru)
+				break;
+			const double l = L, r = R;
+			L = l4[0].tick(l) + l4[2].tick(r);
+			R = l4[1].tick(l) + l4[3].tick(r);
+			break;
+		}
 		case 6: {
 			push(L, R);
 			double w[2];
@@ -471,6 +525,7 @@ private:
 	int kind = 0;
 	size_t t = 0;
 	bool stereo_in = false, eq_on = false, approx_ = false;
+	int skip = 0;
 	conv_rt fl, fr, el, er;
 	cross_delay_rt cd;
 	std::vector<double> ring_l, ring_r, fl_y[2];
@@ -479,6 +534,132 @@ private:
 	std::vector<double> sq;
 	double gd = 1, gw = 0, hz = 0, depth = 0, off = 0, fb = 0, dph = 0;
 	double ens_init[2] = {0, 0}, ens_rate[2] = {0, 0}, ens_span[2] = {0, 0};
+	// オフラインの LPF（filter_freq の 2 次）の応答には先の音を使う尾がある。角がナイキストに近い組（V-Distortion の 20000Hz）では 1/n でゆっくり減り、
+	// 先読み 64・256・1024 で差が 1.3e-3・3.4e-4・9.8e-5。弾くときの遅れを小さくしたいので 64（1.45ms）
+	conv_rt l4[4];
+	bool lti_thru = false;
+
+	// lti と同じ: プリセットの組のまま録った応答（fxlti/<名前>.lti、左→左・左→右・右→左・右→右）。Dry/Wet 1 は素通し
+	bool lti_init(const block &b, const std::string &ltidir, int tempo)
+	{
+		lti_thru = !b.is(14, 0x40) && b.p[10] <= 1;
+		if (lti_thru)
+			return true;
+		std::string k = "t" + std::to_string(b.msb) + "_" + std::to_string(b.lsb);
+		for (int i = 1; i <= 16; i++)
+			k += "_" + std::to_string(b.p[i]);
+		k += "_" + std::to_string(b.is(2, 0x50) || b.is(2, 0x58) ? tempo : 0);
+		FILE *f = std::fopen((ltidir + "/" + k + ".lti").c_str(), "rb");
+		if (!f)
+			return false;
+		char head[128];
+		if (!std::fgets(head, sizeof head, f)) {
+			std::fclose(f);
+			return false;
+		}
+		size_t frames = 0;
+		std::sscanf(head, "LTI frames=%zu", &frames);
+		std::vector<float> raw(frames * 4);
+		frames = std::fread(raw.data(), sizeof(float) * 4, frames, f);
+		std::fclose(f);
+		for (int c = 0; c < 4; c++) {
+			std::vector<double> h(frames);
+			for (size_t i = 0; i < frames; i++)
+				h[i] = raw[i * 4 + c];
+			l4[c].init(h);
+		}
+		return true;
+	}
+
+	static constexpr size_t DIST_PRE = 64;
+	double dk = 1, dc = 1, dp = 2, og = 1, gdry = 1, gwet = 0, vd_fb = 0, vd_a = 0, vd_mix = 0, vd_lp[2] = {0, 0};
+	size_t vd_df = 1, vd_dt[2] = {1, 1};
+	bool vd_on = false;
+
+	// distortion と同じ値の決め方（応答は fxd の既定の組か、fxds のプリセットの組のまま録ったもの）
+	bool dist_init(const block &b, const std::string &fxddir)
+	{
+		static const motif_fx::dist_set amp[] = {{1, 30, "insa_t9_48_lev16"}, {0, 30, "insa_t9_48_amptype0_lev16"}, {2, 30, "insa_t9_48_amptype2_lev16"},
+			{3, 30, "insa_t9_48_amptype3_lev16"}, {1, 0, "insa_t9_48_drive0_lev16"}, {1, 64, "insa_t9_48_drive64_lev16"},
+			{1, 5, "insa_t9_48_drive5_lev16"}, {1, 10, "insa_t9_48_drive10_lev16"}, {1, 15, "insa_t9_48_drive15_lev16"},
+			{1, 20, "insa_t9_48_drive20_lev16"}};
+		const int NAMP = int(sizeof amp / sizeof amp[0]);
+		std::string name;
+		int drive_s;
+		if (b.is(9, 48)) {
+			int best = -1;
+			long key = 1L << 30;
+			for (int i = 0; i < NAMP; i++) {
+				const long k2 = (amp[i].amp != b.p[2]) * 1000L + std::abs(amp[i].drive - b.p[1]);
+				if (k2 < key) {
+					key = k2;
+					best = i;
+				}
+			}
+			name = amp[best].name;
+			drive_s = amp[best].drive;
+		} else {
+			name = b.is(9, 49) ? "insa_t9_49_amp2def_lev16" : b.is(9, 0) ? "insa_t9_0_distdef_lev16" : "insa_t9_16_vdistdef_lev16";
+			drive_s = -1;
+		}
+		bool per_set = false;
+		motif_fx::stereo_ir ir;
+		if (!b.is(9, 48)) {
+			std::string k = "t" + std::to_string(b.msb) + "_" + std::to_string(b.lsb);
+			for (int i = 1; i <= 16; i++)
+				k += "_" + std::to_string(i == 10 ? 127 : (i == 11 && b.is(9, 16)) ? 0 : b.p[i]);
+			ir = motif_fx::load_ir(fxddir + "/../fxds/" + k + ".dsx");
+			per_set = ir.ok;
+		}
+		if (!per_set) {
+			if (b.is(9, 1) || b.is(9, 32))
+				name = "insa_t9_0_distdef_lev16";
+			ir = motif_fx::load_ir(fxddir + "/" + name + ".dsx");
+		}
+		if (!ir.ok)
+			return false;
+		if (drive_s < 0)
+			drive_s = std::atoi(ir.head["drive"].c_str());
+		dc = std::atof(ir.head["c"].c_str());
+		dp = std::atof(ir.head["p"].c_str());
+		if (b.is(9, 48) && !per_set) {
+			dc = motif_fx::drive_clip(b.p[1]);
+			if (b.p[1] >= 15)
+				dp = motif_fx::edge_p(b.p[11]);
+		}
+		double fc = std::atof(ir.head["fc"].c_str());
+		if ((b.is(9, 48) || b.is(9, 49)) && b.p[3] > 0 && !per_set)
+			fc = motif_fx::t3(b.p[3]);
+		dk = per_set ? 1.0 : std::pow(10.0, (motif_fx::drive_gain_db(b.p[1]) - motif_fx::drive_gain_db(drive_s)) / 20);
+		og = 1.0;
+		if (b.is(9, 48) && !per_set)
+			og = std::pow(10.0, 40 * std::log10(std::max(1, b.p[4]) / 80.0) / 20);
+		const double ang = motif_fx::PI / 2 * (std::max(1, b.p[10]) - 1) / 126.0;
+		size_t pk = 0;
+		for (size_t i = 0; i < ir.L.size(); i++)
+			if (std::fabs(ir.L[i]) > std::fabs(ir.L[pk]))
+				pk = i;
+		gdry = (ir.L.empty() || ir.L[pk] >= 0 ? 1.0 : -1.0) * std::cos(ang);
+		gwet = std::sin(ang);
+		fl.init(std::vector<double>(ir.L.begin(), ir.L.end()));
+		fr.init(std::vector<double>(ir.R.begin(), ir.R.end()));
+		const auto h = fir_from([fc](double f) { return 1.0 / cplx(1 - (f / fc) * (f / fc), (f / fc) / 1.6); }, 4096, DIST_PRE);
+		el.init(h);
+		er.init(h);
+		vd_on = b.is(9, 16) && b.p[11] > 0;
+		if (vd_on) {
+			vd_dt[0] = size_t(std::max(1, b.p[6])) * FS / 10000;
+			vd_dt[1] = size_t(std::max(1, b.p[7])) * FS / 10000;
+			vd_df = size_t(std::max(1, b.p[8])) * FS / 10000;
+			vd_fb = (b.p[9] - 64) / 64.0;
+			vd_a = std::pow(1 - std::max(1, b.p[12]) / 10.0, 2);
+			vd_mix = b.p[11] / 95.0;
+			vd_lp[0] = vd_lp[1] = 0;
+			fl_y[0].assign(1 << 16, 0.0);
+			fl_y[1].assign(1 << 16, 0.0);
+		}
+		return true;
+	}
 
 	// 揺れる系のエフェクトの EQ（fx_eq と同じ。利きが両方 64 なら掛けない）
 	void eq_init(const block &b, int base)
@@ -549,10 +730,16 @@ public:
 	}
 	bool active() const { return kind != 0; }
 	bool approx() const { return kind == 2 && bk.approx(); }
+	// インサーションの遅れで音が n サンプル遅れて届くとき、時計もその分遅らせて始める
+	void delay_start(int n) { skip = n; }
 
 	void tick(double l, double r, double &ol, double &orr)
 	{
 		ol = orr = 0;
+		if (skip > 0) {
+			skip--;
+			return;
+		}
 		if (kind == 1) {
 			const size_t mask = ring.size() - 1;
 			ring[t & mask] = (l + r) / 2;
@@ -584,10 +771,43 @@ private:
 	size_t t = 0;
 	std::vector<double> ring;
 	double hz = 0, depth = 0, off = 0, g = 0, gi = 0, go = 0;
+	int skip = 0;
 	block_rt bk;
 };
 
-// インサーション全体: 組（エレメントのスイッチ 0・1・2）ごとの音を、つなぎ方（0 並列・1 A → B・2 B → A）どおりに通して足す（insertion_groups と同じ）
+// 決まった長さの遅れ（左右）
+class delay2 {
+public:
+	void init(int d)
+	{
+		n = d;
+		size_t sz = 1;
+		while (sz < size_t(d) + 1)
+			sz <<= 1;
+		l.assign(sz, 0.0);
+		r.assign(sz, 0.0);
+		t = 0;
+	}
+	void tick(double &L, double &R)
+	{
+		if (n == 0)
+			return;
+		const size_t mask = l.size() - 1;
+		l[t & mask] = L;
+		r[t & mask] = R;
+		L = t >= size_t(n) ? l[(t - n) & mask] : 0.0;
+		R = t >= size_t(n) ? r[(t - n) & mask] : 0.0;
+		t++;
+	}
+
+private:
+	int n = 0;
+	size_t t = 0;
+	std::vector<double> l, r;
+};
+
+// インサーション全体: 組（エレメントのスイッチ 0・1・2）ごとの音を、つなぎ方（0 並列・1 A → B・2 B → A）どおりに通して足す（insertion_groups と同じ）。
+// 枠に遅れ（歪み）があれば、足し合わせる所で遅れの少ない側を遅らせてそろえる。出口全体は latency() サンプル遅れる
 class insertion_rt {
 public:
 	void init(const block &a, const block &b, int connect, int tempo, const std::string &fxddir = std::string())
@@ -595,19 +815,44 @@ public:
 		A.init(a, tempo, fxddir);
 		Bk.init(b, tempo, fxddir);
 		con = connect;
+		const int la = A.latency(), lb = Bk.latency();
+		if (con == 1) {
+			lat = la + lb;
+			Bk.delay_start(la);
+			d_in.init(la);         // 組 2 を A の出口にそろえてから B へ
+			d0.init(lat);
+			da.init(0);
+			db.init(0);
+		} else if (con == 2) {
+			lat = la + lb;
+			A.delay_start(lb);
+			d_in.init(lb);         // 組 1 を B の出口にそろえてから A へ
+			d0.init(lat);
+			da.init(0);
+			db.init(0);
+		} else {
+			lat = std::max(la, lb);
+			d_in.init(0);
+			d0.init(lat);
+			da.init(lat - la);
+			db.init(lat - lb);
+		}
 	}
 	bool supported() const { return A.supported() && Bk.supported(); }
 	bool approx() const { return A.approx() || Bk.approx(); }
 	const block_rt &block_a() const { return A; }
 	const block_rt &block_b() const { return Bk; }
+	int latency() const { return lat; }
 
 	void tick(const double gl[3], const double gr[3], double &L, double &R)
 	{
 		L = gl[0];
 		R = gr[0];
+		d0.tick(L, R);
 		double aL = gl[1], aR = gr[1], bL = gl[2], bR = gr[2];
 		if (con == 1) {
 			A.tick(aL, aR);
+			d_in.tick(bL, bR);
 			bL += aL;
 			bR += aR;
 			Bk.tick(bL, bR);
@@ -615,6 +860,7 @@ public:
 			R += bR;
 		} else if (con == 2) {
 			Bk.tick(bL, bR);
+			d_in.tick(aL, aR);
 			aL += bL;
 			aR += bR;
 			A.tick(aL, aR);
@@ -623,6 +869,8 @@ public:
 		} else {
 			A.tick(aL, aR);
 			Bk.tick(bL, bR);
+			da.tick(aL, aR);
+			db.tick(bL, bR);
 			L += aL + bL;
 			R += aR + bR;
 		}
@@ -630,7 +878,8 @@ public:
 
 private:
 	block_rt A, Bk;
-	int con = 0;
+	int con = 0, lat = 0;
+	delay2 d0, d_in, da, db;
 };
 
 } // namespace motif_fx_rt

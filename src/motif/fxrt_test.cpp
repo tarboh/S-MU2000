@@ -2,8 +2,9 @@
 // sampler_fx_rt.h（その場で回すエフェクト）を、sampler_fx.h（音全体をまとめて処理する形）と比べる試験（2026-10-25）。
 //   fxrt_test capture の置き場 音色.patch [音色.patch …]
 // 音色を鍵 60 で 1 秒鳴らした音に、両方の形でインサーション（組とつなぎ方ごと）・リバーブ・コーラスの枠を掛け、差（最大の振幅に対する比）を出す。
-// リバーブは −100dB より下の尾を切ったので 2e-4、インサーションの EQ は 4096 タップに切ったので 1e-4、ほかは 1e-6 を越えたら失敗。
-// オフラインが録った応答（.ltv）を使う型は、こちらが式で回す近似なので数に入れない。
+// リバーブは尾を切ったので 2e-4、インサーションの EQ は 4096 タップに切ったので 1e-4、ほかは 1e-6 を越えたら失敗。
+// オフラインが録った応答（.ltv）を使う型は、こちらが式で回す近似なので数に入れない。歪みの枠は、オフラインの LPF の応答に
+// 先の音を使う尾（角がナイキストに近いと 1/n でゆっくり減る）があり、こちらは 64 サンプルだけ先読みするので 1e-2 まで許す（V-Distortion で 1.3e-3）。
 #include "sampler_engine.h"
 #include "sampler_fx_rt.h"
 
@@ -51,7 +52,10 @@ int main(int argc, char **argv)
 			const double xl[3] = {gl[0][i], gl[1][i], gl[2][i]}, xr[3] = {gr[0][i], gr[1][i], gr[2][i]};
 			double a1, b1;
 			irt.tick(xl, xr, a1, b1);
-			ei = std::max(ei, std::max(std::fabs(a1 - IL[i]), std::fabs(b1 - IR[i])));
+			// 歪みの枠があると、その場の出口は latency() サンプル遅れる
+			const int li = i - irt.latency();
+			if (li >= 0)
+				ei = std::max(ei, std::max(std::fabs(a1 - IL[li]), std::fabs(b1 - IR[li])));
 			mi = std::max(mi, std::max(std::fabs(IL[i]), std::fabs(IR[i])));
 			// リバーブ・コーラスの枠へは、インサーションを通して共通の音量を掛けた音（オフラインと同じ）
 			const double vg = eg.volume_gain(voff[i]);
@@ -79,7 +83,7 @@ int main(int argc, char **argv)
 		const double rr = mr > 0 ? er / mr : 0, rc = mc > 0 ? ec / mc : 0, ri = mi > 0 ? ei / mi : 0;
 		// 近似（オフラインは録った応答の STFT、こちらは式）は数に入れない
 		const bool ins_ok = irt.supported() && !irt.approx(), cho_ok = cok && !crt.approx();
-		const bool bad = (rok && rr > 2e-4) || (cho_ok && rc > 1e-6) || (!cok && mc > 0 && ch.send) || (ins_ok && ri > 1e-4);
+		const bool bad = (rok && rr > 2e-4) || (cho_ok && rc > 1e-6) || (!cok && mc > 0 && ch.send) || (ins_ok && ri > (irt.latency() ? 1e-2 : 1e-4));
 		fails += bad;
 		std::printf("%s %s: インサーション %02X%02X→%02X%02X つなぎ %d %s（差 %.1e）・リバーブ %02X%02X %s（差 %.1e）・コーラスの枠 %02X%02X %s（差 %.1e）\n",
 		            bad ? "失敗" : "ok", pt.name.c_str(), ia.msb, ia.lsb, ib.msb, ib.lsb, connect,

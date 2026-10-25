@@ -250,8 +250,11 @@ inline buf reshape(const buf &h, const double rt[7], double target)
 		fft(a, true);
 		const double rm = (std::isfinite(rt[b]) && rt[b] > 0.05 && rt[b] < 60) ? rt[b] : rt[3];
 		const double d = 6.9078 * (1.0 / (rm * k) - 1.0 / rm);
+		// 延ばす向き（d < 0）の持ち上げは、その帯がもとの応答で 90dB 減るまで（1.5 × rm 秒）で止める。そこから先は録った応答の雑音で、
+		// 持ち上げ続けると 8 秒の応答の末尾が頭の山の 1e12 倍まで育った（01 40・p1 22 の MelodicTom など 117 組のうち 11 組は 2〜4 秒で山を越えた。2026-10-25）
+		const double tcap = d < 0 ? 1.5 * rm : 1e30;
 		for (size_t i = 0; i < h.size(); i++)
-			out[i] += a[i].real() * std::exp(-d * double(i) / FS);
+			out[i] += a[i].real() * std::exp(-d * std::min(double(i) / FS, tcap));
 	}
 	return out;
 }

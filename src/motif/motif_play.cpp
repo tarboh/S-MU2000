@@ -30,6 +30,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -353,6 +354,7 @@ std::unique_ptr<loaded> load_voice(const voice_entry &v)
 	std::snprintf(t, sizeof t, "%02X %02X・送り %d", rv.msb, rv.lsb, rv.send);
 	L->rev_name = rv.send ? (L->rev.active() ? t : std::string(t) + "（応答が無い）") : "送り 0";
 	L->cho.init(ch, motif_sampler::geti(L->pt.fxline, "tempo", 120), cap + "/fxd");
+	L->cho.delay_start(L->ins.latency());     // インサーションの遅れ（歪み）の分、コーラスの枠の揺れの時計も遅らせる
 	std::snprintf(t, sizeof t, "%02X %02X・送り %d", ch.msb, ch.lsb, ch.send);
 	L->cho_name = ch.send ? (L->cho.active() ? (L->cho.approx() ? std::string(t) + "（近似）" : std::string(t)) : std::string(t) + "（この型はまだ）") : "送り 0";
 	return L;
@@ -578,6 +580,43 @@ bool save_backbuffer(const std::string &path)
 	return ok;
 }
 
+// 最後に選んだ音色と MIDI 入力を、exe の横の motif_play.ini に覚える（「名前=値」の行）
+fs::path ini_path()
+{
+	wchar_t buf[MAX_PATH];
+	GetModuleFileNameW(nullptr, buf, MAX_PATH);
+	return fs::path(buf).parent_path() / "motif_play.ini";
+}
+
+std::map<std::string, std::string> load_ini()
+{
+	std::map<std::string, std::string> m;
+	FILE *f = _wfopen(ini_path().wstring().c_str(), L"r");
+	if (!f)
+		return m;
+	char line[512];
+	while (std::fgets(line, sizeof line, f)) {
+		std::string t = line;
+		while (!t.empty() && (t.back() == '\n' || t.back() == '\r'))
+			t.pop_back();
+		const size_t e = t.find('=');
+		if (e != std::string::npos)
+			m[t.substr(0, e)] = t.substr(e + 1);
+	}
+	std::fclose(f);
+	return m;
+}
+
+void save_ini(const std::map<std::string, std::string> &m)
+{
+	FILE *f = _wfopen(ini_path().wstring().c_str(), L"w");
+	if (!f)
+		return;
+	for (const auto &kv : m)
+		std::fprintf(f, "%s=%s\n", kv.first.c_str(), kv.second.c_str());
+	std::fclose(f);
+}
+
 fs::path default_patch_dir()
 {
 	wchar_t buf[MAX_PATH];
@@ -689,6 +728,12 @@ int main(int argc, char **argv)
 	const bool audio_ok = audio.start(40, [&](s16 *out, u32 frames) { pl->fill(out, frames); }, audio_err);
 	std::vector<std::string> midi_names = nomidi ? std::vector<std::string>() : ui::midi_in::list();
 	std::string midi_err;
+	// 覚えている MIDI 入力（名前で探す。番号は挿し直すとずれる）。--shot・--nomidi では使わない
+	std::map<std::string, std::string> ini = shot.empty() ? load_ini() : std::map<std::string, std::string>();
+	if (!nomidi && midi_dev < 0 && ini.count("midi"))
+		for (size_t i = 0; i < midi_names.size(); i++)
+			if (midi_names[i] == ini["midi"])
+				midi_dev = int(i);
 	if (!nomidi && midi_dev >= 0) {
 		std::lock_guard<std::mutex> lk(pl->mtx);
 		pl->midi.open(midi_dev, midi_err);
@@ -700,6 +745,10 @@ int main(int argc, char **argv)
 	std::unique_ptr<loaded> ready;
 	std::mutex ready_mtx;
 	int selected = -1, want = list.empty() ? -1 : 0;
+	if (ini.count("voice"))
+		for (size_t i = 0; i < list.size(); i++)
+			if (fs::path(list[i].file).filename().string() == ini["voice"])
+				want = int(i);
 	std::string status;
 
 	char filter[64] = "";
@@ -975,6 +1024,14 @@ int main(int argc, char **argv)
 		g_swap->Present(1, 0);
 	}
 
+	// 覚える（試験の --shot では書かない）
+	if (shot.empty()) {
+		if (selected >= 0)
+			ini["voice"] = fs::path(list[selected].file).filename().string();
+		if (!nomidi)
+			ini["midi"] = pl->midi.is_open() ? pl->midi.device_name() : std::string();
+		save_ini(ini);
+	}
 	// 片付け: 音を止めてから出口を閉じる
 	{
 		std::lock_guard<std::mutex> lk(pl->mtx);
