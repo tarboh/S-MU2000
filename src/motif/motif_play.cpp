@@ -194,6 +194,18 @@ struct player {
 		if (cur)
 			cur->eg->note_off(key);
 	}
+	// 同時発音数（mtx の中で）。今の音色と、マルチの全パートへ
+	int poly = 128;
+	void set_polyphony(int n)
+	{
+		poly = n;
+		if (cur)
+			cur->eg->set_polyphony(n);
+		if (mul)
+			for (auto &P : mul->parts)
+				if (P->eg)
+					P->eg->set_polyphony(n);
+	}
 	// アルペジオの出す音（サステインは、押した音と同じく掛かる）
 	void arp_out(int type, int a, int b)
 	{
@@ -1074,6 +1086,7 @@ int main(int argc, char **argv)
 
 	// アルペジオ: スイッチは覚えておき、ほかの設定は音色を読むたびに音色のものにする
 	bool arp_on = ini.count("arp") && ini["arp"] == "1";
+	int polyphony = ini.count("poly") ? std::max(1, std::atoi(ini["poly"].c_str())) : 128;
 	motif_arp::settings arp_ui;
 	char filter[64] = "";
 	int octave = 3, velocity = 100, mouse_key = -1;
@@ -1126,6 +1139,7 @@ int main(int argc, char **argv)
 					for (auto &c : pl->key_count)
 						c = 0;
 					pl->arp.all_off();
+					pl->set_polyphony(polyphony);
 					arp_ui = motif_arp::settings_from(pl->cur->pt.arpline);
 					arp_ui.sw = arp_on;
 					pl->arp.set(arp_ui);
@@ -1146,8 +1160,10 @@ int main(int argc, char **argv)
 					pv_loader.join();
 				{
 					std::lock_guard<std::mutex> lk(pl->mtx);
-					if (pl->mul.get() == pv_multi)
+					if (pl->mul.get() == pv_multi) {
 						pl->mul->swap_voice(*pl->mul->parts[size_t(pv_part)], pv_new);
+						pl->set_polyphony(polyphony);
+					}
 				}
 				pv_new = motif_multi::part_voice();     // 前の音色は mtx の外で捨てる
 				pv_ready = false;
@@ -1206,6 +1222,7 @@ int main(int argc, char **argv)
 					old = std::move(pl->mul);
 					pl->mul = std::move(nw);
 					pl->multi_mode = multi_ui;
+					pl->set_polyphony(polyphony);
 					arp_ui = motif_arp::settings_from(pl->mul->cfg.arpline);
 					arp_ui.sw = arp_on;
 					pl->mul->arp.set(arp_ui);
@@ -1583,6 +1600,21 @@ int main(int argc, char **argv)
 		ImGui::SliderInt("ベロシティ", &velocity, 1, 127);
 		ImGui::SliderInt("オクターブ（PC キーボードの Z の段）", &octave, 0, 7);
 		ImGui::SliderFloat("全体の音量", &pl->master, 0.0f, 1.0f);
+		{
+			// 同時に鳴らすエレメントの数（ボイス 1 つ・マルチのパート 1 つあたり。実機は 128）
+			static const int polys[] = {64, 128, 256, 512};
+			int pi = 1;
+			for (int k = 0; k < 4; k++)
+				if (polys[k] == polyphony)
+					pi = k;
+			static const char *pn[] = {"64", "128（実機）", "256", "512"};
+			ImGui::SetNextItemWidth(160);
+			if (ImGui::Combo("同時発音数（エレメント、ボイス・パートごと）", &pi, pn, 4)) {
+				polyphony = polys[pi];
+				std::lock_guard<std::mutex> lk(pl->mtx);
+				pl->set_polyphony(polyphony);
+			}
+		}
 		ImGui::Separator();
 		auto knob = [&](const char *name, int &v, std::initializer_list<int> srcs) {
 			if (ImGui::SliderInt(name, &v, 0, 127)) {
@@ -1769,6 +1801,7 @@ int main(int argc, char **argv)
 		if (!nomidi)
 			ini["midi"] = pl->midi.is_open() ? pl->midi.device_name() : std::string();
 		ini["arp"] = arp_on ? "1" : "0";
+		ini["poly"] = std::to_string(polyphony);
 		ini["mode"] = multi_ui ? "multi" : "voice";
 		if (mselected >= 0)
 			ini["multi"] = fs::path(mlist[mselected].first).filename().string();

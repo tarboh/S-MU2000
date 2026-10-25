@@ -247,6 +247,9 @@ public:
 		return std::pow(std::max(0.0, std::min(127.0, geti(pt.voiceline, "volume", 127) + voff)) / 127.0, 2.0);
 	}
 	double volume_offset() const { return vol_off; }
+	// 同時に鳴らすエレメントの数の上限（実機は 128。motif_play では画面で増やせる）
+	void set_polyphony(int n) { polyphony = std::max(1, n); }
+	int get_polyphony() const { return polyphony; }
 	// マルチのパートのパン（− 64）。次に鳴らす音から効く
 	void set_pan_offset(int o) { pan_off = o; }
 
@@ -503,6 +506,7 @@ private:
 	int nidx;
 	int pan_off;
 	bool fixed_pan;
+	int polyphony = 128;
 	std::vector<cset> sets;
 	int srcval[16];
 	double vol_off = 0;                      // 行き先 1（Volume）: 音色の音量の値のずれ（エレメントのボックスによらない）
@@ -741,7 +745,7 @@ private:
 			for (const auto &v : voices)
 				if (!v.done && !v.kill)
 					busy++;
-			if (busy + need <= 128)
+			if (busy + need <= polyphony)
 				return;
 			int lowest = -1;
 			for (size_t k = 0; k < notes.size(); k++)
