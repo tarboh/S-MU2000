@@ -171,6 +171,34 @@ bool fx_editor::where(const xg::fx_param &fp, u32 &addr, int &size) const
 }
 
 
+// 値を送る。リンクしていれば、相手のインサーションの同じ番地（中の桁だけ違う）にも同じ値を
+void fx_editor::send_raw(xg::model &m, bridge &br, u32 addr, int size, int v)
+{
+	drag_send(br, m.set_raw(addr, size, v));
+	if (m_link_ad && m_partner && m_slot <= 4)
+		drag_send(br, m.set_raw(xg::pack(0x03, u8(m_partner - 1), u8(addr & 0x7f)), size, v));
+}
+
+// 種類を先に送ってから（種類を書くと firmware がパラメータを既定に戻すので）、表にあるつまみを 1 つずつ
+void fx_editor::copy_to_partner(xg::model &m, bridge &br, int type)
+{
+	if (!m_partner || m_slot > 4)
+		return;
+	char key[24];
+	std::snprintf(key, sizeof(key), "insertion%d.type", m_partner);
+	br.send(m.set(P(key), 0, type));
+	const xg::fx_def *def = xg::fx_find(type);
+	if (!def)
+		return;
+	for (int i = 0; i < def->count; i++) {
+		const xg::fx_param &fp = def->params[i];
+		u32 addr = 0;
+		int size = 0, v = 0;
+		if (where(fp, addr, size) && m.get_raw(addr, size, v))
+			br.send(m.set_raw(xg::pack(0x03, u8(m_partner - 1), u8(addr & 0x7f)), size, v));
+	}
+}
+
 // EQ の特性のグラフ。横が周波数（20Hz-20kHz の対数）、縦がゲイン（±15dB）。
 // 帯の点をつまんで、横で周波数、縦でゲイン。真ん中の帯は点の近くでホイールを回すと幅。
 // パラメータは LCD の名前で見分ける（EQ LowFreq / Low Freq など）
@@ -266,8 +294,8 @@ void fx_editor::eq_graph(const xg::fx_def &def, xg::model &m, bridge &br, ImVec2
 		const int ng = std::clamp(int(std::lround(64 + db)), int(pg.lo), int(pg.hi));
 		u32 a = 0;
 		int size = 0;
-		if (nf != b.vf && where(pf, a, size)) drag_send(br, m.set_raw(a, size, nf));
-		if (ng != b.vg && where(pg, a, size)) drag_send(br, m.set_raw(a, size, ng));
+		if (nf != b.vf && where(pf, a, size)) send_raw(m, br, a, size, nf);
+		if (ng != b.vg && where(pg, a, size)) send_raw(m, br, a, size, ng);
 		m_focus = b.gain;
 	}
 	const int hot = active ? grab : hovered ? nearest() : -1;
@@ -281,7 +309,7 @@ void fx_editor::eq_graph(const xg::fx_def &def, xg::model &m, bridge &br, ImVec2
 				const int nw = std::clamp(b.vw + (io.MouseWheel > 0 ? 1 : -1) * (io.KeyCtrl ? 10 : 2), int(pw.lo), int(pw.hi));
 				u32 a = 0;
 				int size = 0;
-				if (nw != b.vw && where(pw, a, size)) drag_send(br, m.set_raw(a, size, nw));
+				if (nw != b.vw && where(pw, a, size)) send_raw(m, br, a, size, nw);
 				m_focus = b.width;
 			}
 		}
@@ -372,6 +400,18 @@ void fx_editor::draw(xg::model &m, const xg_snapshot &, bridge &br)
 	int type = 0, part = 127;
 	const bool has_type = m.get(ptype, 0, type);
 	m.get(ppart, 0, part);
+	// AD1 / AD2 の相手（もう片方の AD に掛かっているインサーション）
+	m_partner = 0;
+	if (!sys && (part == XG_PARTS || part == XG_PARTS + 1)) {
+		const int other = part == XG_PARTS ? XG_PARTS + 1 : XG_PARTS;
+		for (int j = 1; j <= 4 && !m_partner; j++) {
+			char key[24];
+			std::snprintf(key, sizeof(key), "insertion%d.part", j);
+			int pj = 127;
+			if (j != slot && m.get(P(key), 0, pj) && pj == other)
+				m_partner = j;
+		}
+	}
 	const std::vector<xg::fx_type> &types = slot == 5 ? xg::rev_types() : slot == 6 ? xg::cho_types() : xg::ins_types();
 
 	// ---- 種類と掛けるパート
@@ -385,6 +425,11 @@ void fx_editor::draw(xg::model &m, const xg_snapshot &, bridge &br)
 		int chosen = 0;
 		if (fx_type_menu(types, has_type ? type : -1, chosen)) {
 			br.send(m.set(ptype, 0, chosen));
+			if (m_link_ad && m_partner) {
+				char key[24];
+				std::snprintf(key, sizeof(key), "insertion%d.type", m_partner);
+				br.send(m.set(P(key), 0, chosen));
+			}
 			ImGui::CloseCurrentPopup();
 		}
 		ImGui::EndCombo();
@@ -436,6 +481,21 @@ void fx_editor::draw(xg::model &m, const xg_snapshot &, bridge &br)
 	else
 		std::snprintf(sub, sizeof(sub), "INSERTION %d  →  %s", slot, part < XG_PARTS + 2 ? part_name(part).c_str() : "OFF");
 	dl->AddText(ImVec2(pos.x + fs * 1.9f, pos.y + fs * 3.0f), IM_COL32(250, 250, 240, 150), sub);
+	// AD1 / AD2 のリンク。上の帯は種類・パート・説明で埋まっているので、パネルの「INSERTION n → ADn」の横に置く
+	if (m_partner) {
+		ImGui::SetCursorScreenPos(ImVec2(pos.x + fs * 1.9f + ImGui::CalcTextSize(sub).x + fs * 1.2f, pos.y + fs * 2.75f));
+		if (ImGui::Checkbox(UI_TEXT(fxe_link_ad, "Link AD1/AD2"), &m_link_ad) && m_link_ad && has_type)
+			copy_to_partner(m, br, type);
+		if (ImGui::IsItemHovered()) {
+			char tip[512];
+			std::snprintf(tip, sizeof(tip), UI_TEXT(fxe_link_ad_tip_fmt, "Edits here also go to INS %d, which is on the other A/D input: the same type and the same knob values on both. Turning it on copies this effect to INS %d once. Pan each AD part to taste in the part list (for a stereo source, hard left and hard right)."), m_partner, m_partner);
+			ImGui::BeginTooltip();
+			ImGui::PushTextWrapPos(fs * 30.0f);
+			ImGui::TextUnformatted(tip);
+			ImGui::PopTextWrapPos();
+			ImGui::EndTooltip();
+		}
+	}
 	// 動作ランプ（インサーションはパートに掛かっていれば、システムエフェクトは種類があれば点く）
 	const bool lit = sys ? has_type && msb != 0 : part < XG_PARTS + 2;
 	const ImVec2 lamp(end.x - fs * 2.2f, pos.y + fs * 1.8f);
@@ -491,7 +551,7 @@ void fx_editor::draw(xg::model &m, const xg_snapshot &, bridge &br)
 			char id[8];
 			std::snprintf(id, sizeof(id), "p%d", i);
 			if (knob(id, v, fp.lo, fp.hi, ksize, fp.label, text.c_str()) && known)
-				drag_send(br, m.set_raw(addr, size, v));
+				send_raw(m, br, addr, size, v);
 			if (ImGui::IsItemHovered() || ImGui::IsItemActive())
 				m_focus = i;
 		}

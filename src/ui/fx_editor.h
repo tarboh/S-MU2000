@@ -41,6 +41,15 @@ private:
 	// パラメータの番地とバイト数。見ているエフェクト（m_slot）の塊に無ければ false
 	bool where(const xg::fx_param &fp, u32 &addr, int &size) const;
 	int m_slot = 1;                       // 1-4 がインサーション、5-7 がリバーブ・コーラス・バリエーション
+	// AD1 と AD2 のリンク（discussion #236）。見ているインサーションが AD1 か AD2 に掛かっていて、ほかのインサーションが
+	// もう片方の AD に掛かっているとき、その番号が m_partner（1-4。無ければ 0）。m_link_ad が立っていれば、
+	// ここでの種類とつまみの変更を、相手にも同じ値で送る
+	bool m_link_ad = false;
+	int m_partner = 0;
+	// つまみの値を送る（drag_send で間引く）。リンクしていれば相手のインサーションの同じパラメータにも
+	void send_raw(xg::model &m, bridge &br, u32 addr, int size, int v);
+	// 見ているインサーションの種類とつまみを、相手へ丸ごと写す（リンクを入れたとき）
+	void copy_to_partner(xg::model &m, bridge &br, int type);
 };
 
 } // namespace ui
