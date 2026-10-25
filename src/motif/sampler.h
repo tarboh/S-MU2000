@@ -14,6 +14,7 @@
 #pragma once
 
 #include <cmath>
+#include <random>
 #include <cstdint>
 #include <vector>
 
@@ -155,6 +156,39 @@ struct element_params {
 	swp50_filter::filter_eg feg;
 	int eq_type = swp50_eq::THRU, eq_res = 16, eq_f1 = 100, eq_g1 = 0x40, eq_f2 = 200, eq_g2 = 0x40;
 };
+
+// 1 音ごとに変わるもの（正弦波の雛形で 1 本に 16〜48 音続けて鳴らして測った。tools/motif/mr_pernote.py、2026-10-25）
+// オルタネートパン（41 ee 0A、64 が 0）: 音色を選んでから偶数番目の音（0 から）はパンを 値 − 64 ずらし、奇数番目は逆へ（80・96・127 で ±1.2・±6.3dB・片側無音）
+static inline int alternate_pan_offset(int v, int note_index)
+{
+	return (note_index & 1) ? 64 - v : v - 64;
+}
+
+// ランダムパン（41 ee 09）: パンのずれが 1 音ごとにでたらめ。深さ 127・64 で標準偏差 29.5・13.1（一様なら ±51・±23）なので ±0.4 × 深さの一様とした。
+// 実機の並びは音色を選び直しても毎回違う
+template <class R>
+static inline int random_pan_offset(int depth, R &rng)
+{
+	if (depth <= 0)
+		return 0;
+	const int a = int(std::lround(0.4 * depth));
+	return std::uniform_int_distribution<int>(-a, a)(rng);
+}
+
+// ランダムピッチ（42 ee 04）: 18.75 セント（1/64 オクターブ）刻みで、±S 刻みの中から一様に選ぶ。S は深さ 8・16・32・64・96・127 で
+// 1・3・6・15・24・27（16〜48 音で見た最大。64 は 48 音で ±15 = ±282 セント）
+template <class R>
+static inline int random_pitch_steps(int depth, R &rng)
+{
+	if (depth <= 0)
+		return 0;
+	static const double x[7] = {0, 8, 16, 32, 64, 96, 127}, y[7] = {0, 1, 3, 6, 15, 24, 27};
+	int i = 0;
+	while (i < 5 && depth > x[i + 1])
+		i++;
+	const int s = int(std::lround(y[i] + (depth - x[i]) / (x[i + 1] - x[i]) * (y[i + 1] - y[i])));
+	return std::uniform_int_distribution<int>(-s, s)(rng);
+}
 
 // 鍵 note を、録った鍵 key のサンプルで鳴らすときの 1 サンプルあたりの進み
 static inline double step_for(const sample &s, int note, int coarse, int fine)

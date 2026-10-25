@@ -184,12 +184,13 @@ def main():
             patch = os.path.join(pdir, "%s_%s.patch" % (v, tweak))
             open(patch, "w", newline="\n").write(t)
         rows = []
-        for k, vel in notes:
+        for ni, (k, vel) in enumerate(notes):
             hw = os.path.join(d, "%s_k%03d_v%03d%s_hw.wav" % (v, k, vel, sfx))
             sm = os.path.join(d, "%s_k%03d_v%03d%s_sm.wav" % (v, k, vel, sfx))
             if not os.path.exists(hw):
                 continue
-            cmd = [render, patch, str(k), str(vel), str(hold), sm]
+            # 実機は音色を選んでから notes の順に鳴らしたので、何音目か（オルタネートパンの向き）はその順番
+            cmd = [render, patch, str(k), str(vel), str(hold), sm, "--note-index", str(ni)]
             if cfx:
                 # エフェクトを全部芯（C++）で掛ける（リバーブ・コーラスの枠も。コーラスの枠のディレイなども sampler_fx.h の system_chorus で掛かる）
                 cmd += ["--fx", cap] + ([] if ins else ["--no-ins"]) + ([] if reverb else ["--no-reverb"]) + ([] if chorus else ["--no-chorus"])

@@ -85,6 +85,9 @@ def main():
                 if os.path.exists(os.path.join(d, name + ".wav")):
                     continue
                 reset(r)
+                # 前の本の音の尾を切る（リリースの長い音色は、0.7 秒の間では尾が次の本の頭に残り、音の頭の読みがずれた。2026-10-25）
+                r.all_off()
+                time.sleep(0.2)
                 ev = [(0.3, lambda: r.note_on(key, 100)), (2.7, lambda: r.note_off(key))]
                 if m not in ("none", "nonez"):
                     ev.insert(0 if m.endswith("pre") else 1, (0.1 if m.endswith("pre") else 1.3, lambda m=m: send(r, m)))

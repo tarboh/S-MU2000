@@ -3,13 +3,16 @@
 //
 //   g++ -std=c++17 -O2 -o sampler_render src/motif/sampler_render.cpp
 //   sampler_render 音色.patch 鍵 ベロシティ 押さえる秒 出力.wav [--fx capture の置き場] [--no-ins] [--no-reverb] [--no-chorus] [--ins-majority]
-//                  [--ctl ソース=値@秒,…]
+//                  [--ctl ソース=値@秒,…] [--note-index n] [--seed s]
 //
 // --fx を付けると、パッチの fx の行のエフェクト（sampler_fx.h）を掛ける。置き場の fx/*.irx（リバーブ）と fxd/*.dsx（歪み系）を使う
 // （tools/motif/mr_fx_export.py が書く）。インサーションのスイッチは、鳴ったエレメントでいちばん多いもの。
 //
 // --ctl は、コントロールセットのソース（0 PB・1 MW（CC1）・2/3 AT・6 RB（CC22）・7 BC（CC2）・8 AS1（CC16）・9 AS2（CC17）・10〜12 FC（CC4））を
 // その時刻から値（0〜127）にする。初めは PB・RB・AS1・AS2 が 64（中心）、ほかは 0。PB はピッチベンドの幅（ctrl の行の pbup・pbdown）でも音程を動かす。
+//
+// --note-index は、音色を選んでから何音目か（0 から。オルタネートパンの向き）。--seed を付けると、ランダムパンとランダムピッチをその種で振る
+// （付けなければ 0。実機は毎回違う並びなので、1 本ずつは合わせられない）。
 //
 // パッチのエレメントのうち、鍵とベロシティの範囲に入るものを全部鳴らす。サンプルは、そのエレメントの区間のうち
 // 鍵とベロシティを含むもの（無ければ鍵がいちばん近いもの）。出力は 44.1kHz・32bit float のステレオ。
@@ -23,6 +26,7 @@
 #include <cstring>
 #include <map>
 #include <memory>
+#include <random>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -157,6 +161,8 @@ int main(int argc, char **argv)
 	std::string fxdir;
 	struct ctl_ev { double t; int src, val; };
 	std::vector<ctl_ev> ctl;
+	int note_index = 0;
+	long seed = -1;
 	bool use_ins = true, use_rev = true, use_cho = true, majority = false;
 	for (int i = 6; i < argc; i++) {
 		if (!std::strcmp(argv[i], "--fx") && i + 1 < argc)
@@ -177,6 +183,10 @@ int main(int argc, char **argv)
 				ctl.push_back({ a == std::string::npos ? 0.0 : std::atof(t.c_str() + a + 1), std::atoi(t.c_str()), std::atoi(t.c_str() + e + 1) });
 			}
 		}
+		else if (!std::strcmp(argv[i], "--note-index") && i + 1 < argc)
+			note_index = std::atoi(argv[++i]);
+		else if (!std::strcmp(argv[i], "--seed") && i + 1 < argc)
+			seed = std::atol(argv[++i]);
 		else if (!std::strcmp(argv[i], "--ins-majority"))      // エレメントのスイッチの多数決で全体を 1 つの経路に通す（前の形。mr_fx_apply と同じ）
 			majority = true;
 	}
@@ -216,6 +226,7 @@ int main(int argc, char **argv)
 	std::vector<int> vdelay;                 // エレメントの Key On Delay（サンプル）
 	std::vector<int> vcbox;                  // エレメントのコントロールボックス（ビット 0〜5 = 組 1〜6）
 	std::vector<motif_sampler::voice> voices;
+	std::mt19937 rng(seed < 0 ? 0u : unsigned(seed));
 	// コントロールセット: 組ごとに（ソース・行き先・深さ）。ソースの値が変わる時刻だけ、エレメントごとのずれを決め直す
 	struct cset { int src, dest, depth; };
 	std::vector<cset> sets;
@@ -282,6 +293,12 @@ int main(int argc, char **argv)
 		// Filter Gain は 1 あたり 0.375dB。サンプルは雛形の音色（250）で録ったので、その差だけ掛ける
 		p.gain = std::pow(10.0, (swp50_filter::filter_gain_db(geti(e.f, "fgain", 250)) - swp50_filter::filter_gain_db(250)) / 20.0);
 		p.pan = geti(e.f, "pan", 64);
+		// 1 音ごとに変わるもの（tools/motif/mr_pernote.py、2026-10-25）
+		p.pan += motif_sampler::alternate_pan_offset(geti(e.f, "apan", 64), note_index);
+		if (seed >= 0) {
+			p.pan += motif_sampler::random_pan_offset(geti(e.f, "rpan"), rng);
+			p.fine += 12 * motif_sampler::random_pitch_steps(geti(e.f, "rpitch"), rng);     // 1 刻み 18.75 セント = ファイン 12
+		}
 		p.scaling_pan = geti(e.f, "span", 64);
 		if (!clfoline.empty()) {
 			motif_sampler::common_lfo &c = p.clfo;
