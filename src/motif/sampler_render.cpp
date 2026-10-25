@@ -3,7 +3,7 @@
 //
 //   g++ -std=c++17 -O2 -o sampler_render src/motif/sampler_render.cpp
 //   sampler_render 音色.patch 鍵 ベロシティ 押さえる秒 出力.wav [--fx capture の置き場] [--no-ins] [--no-reverb] [--no-chorus] [--ins-majority]
-//                  [--ctl ソース=値@秒,…] [--note-index n] [--seed s] [--events on@秒:鍵:ベロシティ,off@秒:鍵,…]
+//                  [--ctl ソース=値@秒,…] [--note-index n] [--seed s] [--events on@秒:鍵:ベロシティ,off@秒:鍵,…] [--threads n]
 //
 // --fx を付けると、パッチの fx の行のエフェクト（sampler_fx.h）を掛ける。置き場の fx/*.irx（リバーブ）と fxd/*.dsx（歪み系）を使う
 // （tools/motif/mr_fx_export.py が書く）。インサーションのスイッチは、鳴ったエレメントでいちばん多いもの。
@@ -13,6 +13,8 @@
 //
 // --events を付けると、鍵・ベロシティ・押さえる秒の代わりにその並びを鳴らす（和音・モノ・ポルタメント・同じ鍵の重ね・発音数の奪い合い。
 // 音色の voice の行の mono・same・porta・pmode・ptime・ptmode を使う。tools/motif/mr_multi.py、2026-10-25）。出力はいちばん遅い出来事から 3 秒。
+//
+// --threads は、エレメントを描く糸の数（結果は変わらない。速くなるだけ）。
 //
 // --note-index は、音色を選んでから何音目か（0 から。オルタネートパンの向き）。--seed を付けると、ランダムパンとランダムピッチをその種で振る
 // （付けなければ 0。実機は毎回違う並びなので、1 本ずつは合わせられない）。
@@ -61,7 +63,7 @@ int main(int argc, char **argv)
 	std::string fxdir;
 	struct ctl_ev { double t; int src, val; };
 	std::vector<ctl_ev> ctl;
-	int note_index = 0;
+	int note_index = 0, threads = 1;
 	long seed = -1;
 	struct note_ev { double t; bool on; int key, vel; };
 	std::vector<note_ev> nev;
@@ -99,6 +101,8 @@ int main(int argc, char **argv)
 		}
 		else if (!std::strcmp(argv[i], "--note-index") && i + 1 < argc)
 			note_index = std::atoi(argv[++i]);
+		else if (!std::strcmp(argv[i], "--threads") && i + 1 < argc)
+			threads = std::atoi(argv[++i]);
 		else if (!std::strcmp(argv[i], "--seed") && i + 1 < argc)
 			seed = std::atol(argv[++i]);
 		else if (!std::strcmp(argv[i], "--ins-majority"))      // エレメントのスイッチの多数決で全体を 1 つの経路に通す（前の形。mr_fx_apply と同じ）
@@ -118,6 +122,7 @@ int main(int argc, char **argv)
 	opt.note_index = note_index;
 	opt.seed = seed;
 	motif_sampler::engine eg(pt, opt);
+	eg.set_threads(threads);
 
 	// 鳴らす音の並び（--events が無ければ、鍵・ベロシティを 0 秒から押さえる秒まで）
 	if (nev.empty()) {

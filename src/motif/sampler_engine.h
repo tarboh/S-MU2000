@@ -14,7 +14,12 @@
 #include "sampler.h"
 
 #include <algorithm>
+#include <atomic>
+#include <condition_variable>
 #include <cstdio>
+#include <functional>
+#include <mutex>
+#include <thread>
 #include <cstdlib>
 #include <cstring>
 #include <map>
@@ -306,28 +311,71 @@ public:
 				kill_note(int(k));
 	}
 
+	// エレメントごとに n サンプル描いてから、サンプルごとにエレメントの順に足す（足す順は 1 サンプルずつ全部のエレメントを回すのと同じなので、
+	// 結果も同じ）。エレメントを描く所は互いに関わらないので、set_threads で糸を増やすと分けて描く
 	void render(int n, float *l, float *r, float *const *gl = nullptr, float *const *gr = nullptr, float *voff = nullptr)
 	{
-		for (int j = 0; j < n; j++, pos++) {
-			if (voff)
+		// エレメントごとの描きだめがキャッシュに乗るように、1024 サンプルずつに区切る（オフラインは次の出来事まで一度に頼むので長い）
+		for (int off = 0; off < n; off += 1024) {
+			const int m = std::min(1024, n - off);
+			float *g2[3], *r2[3];
+			for (int k = 0; k < 3; k++) {
+				g2[k] = gl ? gl[k] + off : nullptr;
+				r2[k] = gr ? gr[k] + off : nullptr;
+			}
+			render_chunk(m, l + off, r + off, gl ? g2 : nullptr, gr ? r2 : nullptr, voff ? voff + off : nullptr);
+		}
+	}
+
+private:
+	void render_chunk(int n, float *l, float *r, float *const *gl, float *const *gr, float *voff)
+	{
+		const size_t nv = voices.size();
+		if (va.size() < nv) {
+			va.resize(nv);
+			vb.resize(nv);
+			vs.resize(nv);
+		}
+		for (size_t vi = 0; vi < nv; vi++) {
+			va[vi].resize(n);
+			vb[vi].resize(n);
+			vs[vi].resize(n);
+		}
+		block_n = n;
+		if (pool && nv > 1)
+			pool->run(nv, [this](size_t vi) { render_voice(vi); });
+		else
+			for (size_t vi = 0; vi < nv; vi++)
+				render_voice(vi);
+		if (voff)
+			for (int j = 0; j < n; j++)
 				voff[j] = float(vol_off);
-			const int i = int(pos);
-			for (size_t vi = 0; vi < voices.size(); vi++) {
-				// Key On Delay: 遅れが過ぎるまで鳴らさない。遅れより先に鍵を離したエレメントは鳴らない（実機で確かめた）
-				if (i < vdelay[vi])
+		// 外側をエレメントにしても、どのサンプルでもエレメントの順に足すのは同じ
+		for (size_t vi = 0; vi < nv; vi++) {
+			const float *a = va[vi].data(), *b = vb[vi].data();
+			const char *on = vs[vi].data();
+			float *g0 = gl ? gl[vgroup[vi]] : nullptr, *h0 = gr ? gr[vgroup[vi]] : nullptr;
+			for (int j = 0; j < n; j++) {
+				if (!on[j])
 					continue;
-				if (i == vdelay[vi] && !notes[vnote[vi]].held && vdelay[vi] > notes[vnote[vi]].t0)
-					voices[vi].done = true;
-				float a = 0, b = 0;
-				voices[vi].render(a, b);
-				if (gl)
-					gl[vgroup[vi]][j] += a;
-				if (gr)
-					gr[vgroup[vi]][j] += b;
-				l[j] += a;
-				r[j] += b;
+				if (g0)
+					g0[j] += a[j];
+				if (h0)
+					h0[j] += b[j];
+				l[j] += a[j];
+				r[j] += b[j];
 			}
 		}
+		pos += n;
+	}
+
+public:
+	// エレメントを描く糸の数（1 なら今の糸だけ）
+	void set_threads(int n)
+	{
+		pool.reset();
+		if (n > 1)
+			pool = std::make_unique<worker_pool>(n - 1);
 	}
 
 	// 鳴り終わったエレメントと音を片付ける（GUI で長く弾き続けるとき。オフラインの描き出しでは呼ばなくてよい）
@@ -403,6 +451,107 @@ private:
 	int last_key = -1;                       // いちばん最後に鳴らした鍵（ポルタメントの出どころ）
 	std::vector<int> held_stack;             // モノで押さえている鍵の並び（後が新しい）
 	size_t started = 0;
+	std::vector<std::vector<float>> va, vb;      // エレメントごとに描いた左右（render の中だけ）
+	std::vector<std::vector<char>> vs;           // そのサンプルで鳴らしたか（Key On Delay の前は足さない）
+	int block_n = 0;
+
+	// エレメント vi を block_n サンプル描く
+	void render_voice(size_t vi)
+	{
+		voice &v = voices[vi];
+		float *a = va[vi].data(), *b = vb[vi].data();
+		char *on = vs[vi].data();
+		for (int j = 0; j < block_n; j++) {
+			const int i = int(pos) + j;
+			// Key On Delay: 遅れが過ぎるまで鳴らさない。遅れより先に鍵を離したエレメントは鳴らない（実機で確かめた）
+			if (i < vdelay[vi]) {
+				on[j] = 0;
+				continue;
+			}
+			if (i == vdelay[vi] && !notes[vnote[vi]].held && vdelay[vi] > notes[vnote[vi]].t0)
+				v.done = true;
+			// 手元の変数で受けてから書く（配列の要素を直接渡すと、エレメントの中身と重なるかもしれないとみなされて 3 割遅くなった）
+			float x = 0, y = 0;
+			v.render(x, y);
+			a[j] = x;
+			b[j] = y;
+			on[j] = 1;
+		}
+	}
+
+	// 決まった数の糸で、0〜count − 1 の仕事を分けてやる（呼んだ糸も手伝う）
+	class worker_pool {
+	public:
+		explicit worker_pool(int n)
+		{
+			for (int k = 0; k < n; k++)
+				th.emplace_back([this] { loop(); });
+		}
+		~worker_pool()
+		{
+			{
+				std::lock_guard<std::mutex> lk(m);
+				quit = true;
+				gen++;
+			}
+			cv.notify_all();
+			for (auto &t : th)
+				t.join();
+		}
+		template <class F>
+		void run(size_t count, F f)
+		{
+			{
+				std::lock_guard<std::mutex> lk(m);
+				job = f;
+				total = count;
+				next = 0;
+				busy = int(th.size());
+				gen++;
+			}
+			cv.notify_all();
+			work();
+			std::unique_lock<std::mutex> lk(m);
+			done_cv.wait(lk, [this] { return busy == 0; });
+		}
+
+	private:
+		std::vector<std::thread> th;
+		std::mutex m;
+		std::condition_variable cv, done_cv;
+		std::function<void(size_t)> job;
+		std::atomic<size_t> next{0};
+		size_t total = 0;
+		int busy = 0;
+		unsigned gen = 0;
+		bool quit = false;
+
+		void work()
+		{
+			for (size_t k; (k = next.fetch_add(1)) < total;)
+				job(k);
+		}
+		void loop()
+		{
+			unsigned seen = 0;
+			for (;;) {
+				{
+					std::unique_lock<std::mutex> lk(m);
+					cv.wait(lk, [&] { return gen != seen; });
+					seen = gen;
+					if (quit)
+						return;
+				}
+				work();
+				{
+					std::lock_guard<std::mutex> lk(m);
+					busy--;
+				}
+				done_cv.notify_one();
+			}
+		}
+	};
+	std::unique_ptr<worker_pool> pool;
 
 	const sample *get_sample(const std::string &file)
 	{

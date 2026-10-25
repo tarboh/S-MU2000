@@ -320,6 +320,7 @@ struct voice {
 	double glide = 0, glide_to = 0, glide_rate = 0;
 	// 奪われた音: kill サンプルで 0 までまっすぐ下げて止める（実機は次の音を押さえてから 3ms ほどで −50dB）
 	int kill = 0;
+	int last_cut = -1 << 30, last_reso = -1, last_hpf = -1;   // 前のサンプルでフィルターの係数を作ったときの値
 	static constexpr int KILL_LEN = 132;
 	void steal() { if (!done && !kill) kill = KILL_LEN; }
 	int lfo_base[4] = {0, 0, 0, 32};      // エレメント LFO の音程・音量・フィルターの深さと速さのもと
@@ -515,16 +516,23 @@ struct voice {
 			fp.reso = std::max(0, std::min(127, int(std::lround(p.filter.reso + co.reso + cm.reso))));
 			if (cm.hpf != 0)
 				fp.hpf = std::max(0, std::min(255, int(std::lround(p.filter.hpf + cm.hpf))));
-			swp50_filter::element_filter tmp;
-			tmp.set(fp, note, velocity);
-			flt.hg = flt_r.hg = tmp.hg;
-			flt.g = flt_r.g = tmp.g;
-			flt.g2 = flt_r.g2 = tmp.g2;
-			flt.q = flt_r.q = tmp.q;
-			flt.ga = flt_r.ga = tmp.ga;
-			flt.gtop = flt_r.gtop = tmp.gtop;
-			flt.wop = flt_r.wop = tmp.wop;
-			flt.gop = flt_r.gop = tmp.gop;
+			// 係数は整数のカットオフ・レゾナンス・HPF だけで決まる（ほかの欄と鍵・ベロシティは音の間は変わらない）ので、前のサンプルと
+			// 同じなら作り直さない（同じ値になる。32 音の和音で 3 倍ほど速くなった）
+			if (fp.cutoff != last_cut || fp.reso != last_reso || fp.hpf != last_hpf) {
+				last_cut = fp.cutoff;
+				last_reso = fp.reso;
+				last_hpf = fp.hpf;
+				swp50_filter::element_filter tmp;
+				tmp.set(fp, note, velocity);
+				flt.hg = flt_r.hg = tmp.hg;
+				flt.g = flt_r.g = tmp.g;
+				flt.g2 = flt_r.g2 = tmp.g2;
+				flt.q = flt_r.q = tmp.q;
+				flt.ga = flt_r.ga = tmp.ga;
+				flt.gtop = flt_r.gtop = tmp.gtop;
+				flt.wop = flt_r.wop = tmp.wop;
+				flt.gop = flt_r.gop = tmp.gop;
+			}
 		}
 		// フィルターゲインはフィルターのあとで掛け、そこで ±2.0（出口の最大の 2 倍）で頭打ちにする
 		// （2026-10-24、tools/motif/mr_filter_sat.py: 発振した LPF24D の大きさがフィルターゲインに比例し、

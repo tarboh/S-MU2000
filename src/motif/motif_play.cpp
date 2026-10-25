@@ -338,6 +338,8 @@ std::unique_ptr<loaded> load_voice(const voice_entry &v)
 		return nullptr;
 	L->eg = std::make_unique<motif_sampler::engine>(L->pt);
 	L->eg->preload();
+	// エレメントを描く糸（結果は変わらない。32 音 × 3 エレメントで 1 本の 6 倍ほど速い）
+	L->eg->set_threads(int(std::min(8u, std::max(1u, std::thread::hardware_concurrency() - 1))));
 	L->label = v.bank + ":" + std::to_string(v.number) + " " + v.name;
 	// リバーブとコーラスの枠（応答は capture の置き場の fx/・fxd/。パッチの置き場の 1 つ上）
 	const std::string cap = L->pt.dir + "..";
