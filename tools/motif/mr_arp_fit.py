@@ -37,7 +37,7 @@ def events(probe, beat):
         for n in notes:
             if n[3] is not None and abs(n[0] + n[3] - off / beat) < 0.05:
                 n[3] = None
-    notes.sort()
+    notes.sort(key=lambda n: (n[0], n[1], n[2]))
     return notes, ctl
 
 
@@ -267,11 +267,14 @@ def fit_type(j, g):
         for n in ns:
             if -0.1 <= n[0] < L - 0.05 and not (rhythm and n[0] * PPQ - rhythm[-1][0] < TOL * 2 * PPQ):
                 rhythm.append((int(round(max(0, n[0]) * PPQ)), None if n[3] is None else int(round(n[3] * PPQ)), n[2]))
-        out["kind"] = "walk" if voices else "walk?"
-        out["walk"] = voices
-        out["score"] = score
-        out["rhythm"] = rhythm
-        return out
+        if voices:
+            out["kind"] = "walk"
+            out["walk"] = voices
+            out["score"] = score
+            out["rhythm"] = rhythm
+            return out
+        # 歩き方が見つからなければ、表の型として 1 周ぶんを持つ（周をまたいだ続きは合わないが、1 周目は録ったとおりに鳴る）
+        out["walk_fail"] = score
     # n1 と d1（2 半音上）を比べ、押さえた音に依らない音（a）を決める
     fixed = []
     if "n1" in raw and "d1" in raw:
