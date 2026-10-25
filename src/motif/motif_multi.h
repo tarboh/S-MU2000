@@ -7,6 +7,7 @@
 // ドラムのパートは、鍵ごとのリバーブ・コーラスの送り（とインサーションを通った音の Ins-EF の送り）に、パートの送り / 127 を掛けて送る（実機では測っていない）。
 // プログラムチェンジ: そのチャンネルのパート（Receive Program Change が入ったもの）の音色を、チャンネルのバンク（CC0・CC32、Receive Bank Select）と番号で替える。
 // 音色は画面の糸で読んでから入れ替える（読む間は前の音色が鳴る）。
+// インサーションを掛けるパートは、画面の表（Ins1〜8 × パート 1〜16）で替えられる（set_ins_slot・sync_ins）。
 // まだ無いもの: パートのフィルターと EG のずらし・デチューン、マスター EQ・マスターエフェクト、
 // コーラスからリバーブへの送り、パートの出口の割り当て。ベロシティの効き（深さ × 値 / 64 + オフセット − 64）は Data List の説明からで、実機では測っていない。
 #pragma once
@@ -190,6 +191,16 @@ public:
 	bool load(const config &c, const std::string &patch_dir, const std::string &cap, int threads)
 	{
 		cfg = c;
+		// インサーションの割り当て（Ins1〜8 → パート）。マルチの設定のパートを若い順に
+		ins_slot.fill(-1);
+		{
+			std::vector<int> v = cfg.ins;
+			std::sort(v.begin(), v.end());
+			for (size_t k = 0; k < v.size() && k < ins_slot.size(); k++)
+				ins_slot[k] = v[k];
+		}
+		for (int i = 0; i < 16; i++)
+			ins_on[size_t(i)] = std::find(ins_slot.begin(), ins_slot.end(), i) != ins_slot.end();
 		pdir = patch_dir;
 		capdir = cap;
 		tempo = std::max(1, geti(cfg.fxline, "tempo", 120));
@@ -262,19 +273,64 @@ public:
 		v.ins_rev = geti(v.pt->fxline, "insrev") / 127.0;
 		v.ins_cho = geti(v.pt->fxline, "inscho") / 127.0;
 		v.ins = std::make_unique<motif_fx_rt::insertion_rt>();
-		if (std::find(cfg.ins.begin(), cfg.ins.end(), i) != cfg.ins.end()) {
-			auto get = [&](const char *k) {
-				auto it = v.pt->fxline.find(k);
-				return it == v.pt->fxline.end() ? motif_fx::block() : motif_fx::parse_block(it->second);
-			};
-			const motif_fx::block ia = get("insa"), ib = get("insb");
-			v.ins->init(ia, ib, geti(v.pt->fxline, "connect"), tempo, capdir + "/fxd");
+		if (ins_on[size_t(i)]) {
+			v.ins = make_ins(*v.pt, v.ins_name);
 			v.has_ins = true;
-			char t[64];
-			std::snprintf(t, sizeof t, "%02X %02X・%02X %02X", ia.msb, ia.lsb, ib.msb, ib.lsb);
-			v.ins_name = t;
 		}
 		return v;
+	}
+
+	// 音色のインサーション（A・B とつなぎ方）を作る（読む糸・画面の糸で）
+	std::unique_ptr<motif_fx_rt::insertion_rt> make_ins(const motif_sampler::patch &pt, std::string &name) const
+	{
+		auto ins = std::make_unique<motif_fx_rt::insertion_rt>();
+		auto get = [&](const char *k) {
+			auto it = pt.fxline.find(k);
+			return it == pt.fxline.end() ? motif_fx::block() : motif_fx::parse_block(it->second);
+		};
+		const motif_fx::block ia = get("insa"), ib = get("insb");
+		ins->init(ia, ib, geti(pt.fxline, "connect"), tempo, capdir + "/fxd");
+		char t[64];
+		std::snprintf(t, sizeof t, "%02X %02X・%02X %02X", ia.msb, ia.lsb, ib.msb, ib.lsb);
+		name = t;
+		return ins;
+	}
+
+	// ---- インサーションの割り当て（画面の糸だけが触る。鳴らす糸へは sync_ins で渡す） ----
+	// Ins s（0〜7）をパート p（0〜15、−1 で外す）に。1 つのパートには 1 つだけ（ほかの行のそのパートは外す）
+	void set_ins_slot(int s, int p)
+	{
+		if (s < 0 || s >= int(ins_slot.size()))
+			return;
+		if (p >= 0)
+			for (int &x : ins_slot)
+				if (x == p)
+					x = -1;
+		ins_slot[size_t(s)] = p;
+		for (int i = 0; i < 16; i++)
+			ins_on[size_t(i)] = std::find(ins_slot.begin(), ins_slot.end(), i) != ins_slot.end();
+	}
+	int ins_slot_of(int s) const { return ins_slot[size_t(s)]; }
+	// 割り当てとパートのインサーションがずれていたら直す（画面の糸で毎回。作るのは mtx の外、入れ替えは中）
+	template <class Mutex>
+	void sync_ins(Mutex &mtx)
+	{
+		for (size_t i = 0; i < parts.size(); i++) {
+			part &P = *parts[i];
+			const bool want = ins_on[i];
+			if (!P.pt || want == P.has_ins)
+				continue;
+			std::unique_ptr<motif_fx_rt::insertion_rt> ins;
+			std::string name;
+			if (want)
+				ins = make_ins(*P.pt, name);
+			std::lock_guard<Mutex> lk(mtx);
+			if (want) {
+				std::swap(P.ins, ins);
+				P.ins_name = name;
+			}
+			P.has_ins = want;
+		}
 	}
 
 	// パートの音色を v と入れ替える（mtx の中で）。前の音色は v に残るので、mtx の外で捨てる。コントローラーの値は引き継ぐ
@@ -504,6 +560,8 @@ private:
 	int bank_msb[16] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
 	int bank_lsb[16] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
 	std::vector<pc_request> requests;
+	std::array<int, 8> ins_slot{};                 // Ins1〜8 → パート（−1 は無し）
+	std::array<std::atomic<bool>, 16> ins_on{};    // パートにインサーションを掛けるか（読む糸の build_voice も見る）
 	int arp_ch = -1;
 	int compact_count = 0;
 

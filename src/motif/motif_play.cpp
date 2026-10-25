@@ -809,7 +809,7 @@ int main(int argc, char **argv)
 	std::string selftest, shot;
 	std::vector<int> shot_keys;
 	int selftest_voice = 0, selftest_multi = -1;
-	std::vector<std::pair<int, int>> selftest_pc;
+	std::vector<std::pair<int, int>> selftest_pc, selftest_ins;
 	bool selftest_arp = false;
 	for (int i = 1; i < argc; i++) {
 		const std::string a = argv[i];
@@ -817,7 +817,12 @@ int main(int argc, char **argv)
 			selftest_arp = true;
 		else if (a == "--multi" && i + 1 < argc)
 			selftest_multi = std::atoi(argv[++i]);
-		else if (a == "--pc" && i + 1 < argc) {
+		else if (a == "--ins" && i + 1 < argc) {
+			// --ins 行:パート（1 から。パート 0 で外す）。画面の表と同じ道で、Ins の行をパートへ
+			int x = 0, y = 0;
+			if (std::sscanf(argv[++i], "%d:%d", &x, &y) == 2)
+				selftest_ins.push_back({x - 1, y - 1});
+		} else if (a == "--pc" && i + 1 < argc) {
 			// --pc ch:番号 または ch:msb:lsb:番号（ch は 1〜16）
 			int c = 0, x = 0, y = 0, z = 0;
 			const int n = std::sscanf(argv[++i], "%d:%d:%d:%d", &c, &x, &y, &z);
@@ -895,6 +900,9 @@ int main(int argc, char **argv)
 					pl->mul->swap_voice(*pl->mul->parts[size_t(r.part)], v);
 				}
 			}
+			for (auto &x : selftest_ins)
+				pl->mul->set_ins_slot(x.first, x.second);
+			pl->mul->sync_ins(pl->mtx);
 			std::vector<s16> pcm(44100 * 3 * 2);
 			const u32 block = 441;
 			for (u32 i = 0; i < 44100 * 3; i += block) {
@@ -923,7 +931,7 @@ int main(int argc, char **argv)
 			std::printf("マルチ %s（リバーブ %s・コーラス %s）\n", pl->mul->cfg.name.c_str(), pl->mul->rev_name.c_str(), pl->mul->cho_name.c_str());
 			for (size_t i = 0; i < pl->mul->parts.size(); i++) {
 				const motif_multi::part &P = *pl->mul->parts[i];
-				std::printf("  パート %2zu ch %2d %s%s%s\n", i + 1, P.ch + 1, P.label.c_str(), P.has_ins ? "・インサーション " : "", P.ins_name.c_str());
+				std::printf("  パート %2zu ch %2d %s%s%s\n", i + 1, P.ch + 1, P.label.c_str(), P.has_ins ? "・インサーション " : "", P.has_ins ? P.ins_name.c_str() : "");
 			}
 			return 0;
 		}
@@ -1143,6 +1151,9 @@ int main(int argc, char **argv)
 				}
 			}
 		}
+		// インサーションの割り当てをパートへ（表で替えたもの・プログラムチェンジで読んだ音色）
+		if (pl->mul && !pv_busy)
+			pl->mul->sync_ins(pl->mtx);
 		// マルチの読み終わったもの
 		{
 			std::unique_ptr<motif_multi::multi> nw;
@@ -1297,7 +1308,7 @@ int main(int argc, char **argv)
 			ImGui::Text("マルチ: %s", mstatus.c_str());
 			if (pl->mul) {
 				motif_multi::multi &M = *pl->mul;
-				ImGui::TextDisabled("リバーブ %s・コーラス %s・インサーションを使うパート %zu・テンポ %d", M.rev_name.c_str(), M.cho_name.c_str(), M.cfg.ins.size(),
+				ImGui::TextDisabled("リバーブ %s・コーラス %s・テンポ %d", M.rev_name.c_str(), M.cho_name.c_str(),
 				                    motif_sampler::geti(M.cfg.fxline, "tempo", 120));
 				int kc = pl->key_ch + 1;
 				ImGui::SetNextItemWidth(160);
@@ -1368,6 +1379,27 @@ int main(int argc, char **argv)
 					ImGui::EndTable();
 				}
 				ImGui::TextDisabled("パンは次に鳴らす音から。プログラムチェンジ（とバンクの CC0・CC32）でパートの音色が替わる");
+				// インサーションを掛けるパート: Ins1〜8 の行 × パート 1〜16 の列。1 つの行に 1 パート、1 つのパートに 1 行
+				if (ImGui::BeginTable("insmatrix", 17, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
+					ImGui::TableSetupColumn("インサーション");
+					for (int p = 0; p < 16; p++)
+						ImGui::TableSetupColumn(std::to_string(p + 1).c_str());
+					ImGui::TableHeadersRow();
+					for (int sl = 0; sl < 8; sl++) {
+						ImGui::TableNextRow();
+						ImGui::TableNextColumn();
+						ImGui::Text("Ins%d", sl + 1);
+						for (int p = 0; p < 16; p++) {
+							ImGui::TableNextColumn();
+							bool on = M.ins_slot_of(sl) == p;
+							ImGui::PushID(sl * 16 + p);
+							if (ImGui::Checkbox("##ins", &on))
+								M.set_ins_slot(sl, on ? p : -1);
+							ImGui::PopID();
+						}
+					}
+					ImGui::EndTable();
+				}
 			}
 		} else
 			ImGui::Text("音色: %s%s", status.c_str(), loading ? "" : "");
