@@ -1,5 +1,5 @@
 """ドラムの鍵の欄の効き方を実機で測る（2026-10-25）。
-  python mr_drum_cal.py 置き場 [--kit 0] [--key 36] [--vsweep]
+  python mr_drum_cal.py 置き場 [--kit 0] [--key 36] [--vsweep | --eq | --layer]
 ボイスモードで PRE のドラム（63/32）を選び、編集バッファの 1 鍵（Data List の DRUM VOICE KEY、47・49・4A ee）を変えながら鳴らして録る。
 はじめに「素の鍵」（レベル 127・ベロシティ感度 0・パン中央・EQ thru・カットオフ 255・レゾナンス 0・送り 0・インサーション thru）にし、
 1 つずつ変える: ベロシティ感度 × ベロシティ、レベル、パン、レゾナンスとカットオフ、AEG（波形を 704 Sine にして）とノートオフのリリース。
@@ -62,6 +62,21 @@ def main():
         r.cc(93, 0)
         base()
         take("base_v100")
+        if "--layer" in a:
+            # ベロシティの層の境目（--layer。ほかは録らない）: ベロシティ感度 64・96・127 で、ベロシティを細かく
+            for sv in (64, 96, 32):
+                r.param(0x47, ee, 0x21, sv)
+                time.sleep(0.1)
+                for v in (60, 70, 80, 85, 90, 95, 100, 103, 104, 110, 120, 127):
+                    take("ly_s%03d_v%03d" % (sv, v), vel=v, vsens=sv, hold=0.5, tail=0.3)
+            return
+        if "--eq" in a:
+            # EQ の型（--eq。ほかは録らない）: thru と Boost6・12・18、EQ L/H と P.EQ（周波数・ゲインは鍵のまま）
+            for t in (5, 2, 3, 4, 0, 1):
+                k(0x4A, 0x00, t)
+                time.sleep(0.1)
+                take("eq%d" % t, eqtype=t)
+            return
         if "--vsweep" in a:
             # ベロシティ感度を 8 刻みで（--vsweep。ほかは録らない）
             for s in list(range(0, 128, 8)) + [4, 12, 124, 127]:

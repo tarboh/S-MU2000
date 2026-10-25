@@ -20,6 +20,8 @@ DNOTE = 60          # ドラムの鍵を鳴らす鍵（雛形のこの鍵と同�
 FTYPE = 4           # フィルターの型（LPF12）。ドラムの鍵には型の欄が無い
 LCURVE = 3          # レベルのベロシティカーブ（ドラムの鍵には欄が無い。カーブ 3 と 20 点で 0.4dB 以内）
 RELEASE = 0         # ノートオフを受ける鍵のリリースの時間（離すと 0.1 秒以内に消えた）
+FGAIN = 252         # ドラムの鍵は、雛形から組み立てた音より 0.8〜1.0dB 大きい（4 キット 292 鍵で、キットごとの差 1.0・0.8・0.8・0.8dB。
+                    # mr_drum_compare.py）。Filter Gain の 2 目盛り（+0.75dB）で合わせる
 BANK_NAMES = {0x20: "DR-PRE", 0x21: "DR-GM", 0x28: "DR-USR"}
 
 
@@ -75,7 +77,7 @@ def key_element(b, kk):
     fl = {
         "wave": wave, "ins": o[0x11], "lbox": 0, "cbox": 63, "lratio": "0,127,127,127", "kdelay": 0, "ksync": 0, "klen": 11,
         "note_lo": note, "note_hi": note, "vel_lo": 1, "vel_hi": 127, "pan": o[0x0B], "span": 64, "apan": o[0x0D], "rpan": o[0x0C], "rpitch": 0,
-        "level": a[0], "fgain": 250, "release": RELEASE,
+        "level": a[0], "fgain": FGAIN, "release": RELEASE,
         "aegt": "%d,%d,%d,%d" % (a[3], a[4], 0 if hold else a[5], RELEASE),
         "aegl": "0,127,%d,%d" % (d1, d1 if hold else 0),
         "aegtv": 64, "aegtvs": 0, "aegkf": 64, "aegkc": 60, "lvel": a[1], "lcurve": LCURVE, "lkf": 64,

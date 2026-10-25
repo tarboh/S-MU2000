@@ -228,7 +228,8 @@ struct amp_eg {
 			if (seg <= 1)
 				begin(seg + 1, to_db(level[seg + 2]), time[seg + 1]);
 			else
-				seg = seg == 2 ? 3 : 5;
+				// ディケイ 2 が 0（無音）まで下がったら終わり。ノートオフを受けないドラムの鍵は、ループする波形だとリリースに入らず残り続けていた
+				seg = seg == 2 && to > FLOOR_DB ? 3 : 5;
 		}
 		if (seg == 5)
 			return 0.0;

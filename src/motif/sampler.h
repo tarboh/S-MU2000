@@ -376,7 +376,7 @@ struct voice {
 		smp = &s; p = ep; note = n; velocity = v;
 		pos = 0; step = step_for(s, n, p.coarse, p.fine);
 		tick = 0;
-		on = true; released = false; done = false;
+		on = true; released = false; done = false; quiet = 0;
 		p.aeg.key = n;
 		p.aeg.velocity = v;
 		p.aeg.key_on();
@@ -583,7 +583,17 @@ struct voice {
 			outl += float(l * gl * g);
 			outr += float(r * gr * g);
 		}
+		// 0 へ下りていく段（行き先が 0 のディケイ 2・リリース）で、出力が 0.1 秒続けて −100dB を切ったら終わり。ループする波形の尾は小さく、
+		// EG が下りきるまで（10〜20 秒）−130〜−170dB で鳴り続けて、ノートオフを受けないドラムの鍵が発音数を食っていた
+		if ((p.aeg.seg == 2 || p.aeg.seg == 4) && p.aeg.to <= swp50_aeg::FLOOR_DB && std::fabs(l * g) < QUIET_END && std::fabs(r * g) < QUIET_END) {
+			if (++quiet >= QUIET_END_SAMPLES)
+				done = true;
+		} else
+			quiet = 0;
 	}
+	static constexpr double QUIET_END = 1e-5;
+	static constexpr int QUIET_END_SAMPLES = 4410;
+	int quiet = 0;
 	static constexpr double QUIET_GAIN = 1e-4;
 	static constexpr float FILTER_CLIP = 2.0f;
 };
