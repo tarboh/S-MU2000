@@ -34,6 +34,24 @@ def voice_tempo(json_path):
     return (x[0x28] << 7 | x[0x29]) if x and len(x) > 0x29 else 120
 
 
+def voice_arp(json_path):
+    """音色のアルペジオの設定（ダンプの 40 70 00 の 0x14〜0x33）。型（0〜1786）・スイッチ・ホールド（0 sync-off・1 off・2 on）・長さの倍率（0〜6、3 が 100%）・
+    鍵とベロシティの範囲・キーモード（0 sort・1 thru・2 direct・3 sort+direct・4 thru+direct）・ベロシティモード（0 original・1 thru）・
+    切り替えの時（0 realtime・1 measure）・クオンタイズの値と強さ・ベロシティとゲートの率（%）・スイング（−120〜+120）・テンポ・SF1〜5 の型"""
+    import mr_voice
+    syx = os.path.join(os.path.dirname(json_path), "..", "voice", os.path.basename(json_path).replace(".json", ".syx"))
+    if not os.path.exists(syx):
+        return None
+    x = mr_voice.blocks(syx).get((0x40, 0x70, 0x00))
+    if not x or len(x) < 0x34:
+        return None
+    w = lambda i: x[i] << 7 | x[i + 1]
+    return {"type": w(0x14), "sw": x[0x16], "hold": x[0x17], "unit": x[0x18], "note": "%d,%d" % (x[0x19], x[0x1A]),
+            "vel": "%d,%d" % (x[0x1B], x[0x1C]), "key": x[0x1D], "vmode": x[0x1E], "change": x[0x1F], "qv": x[0x20], "qs": x[0x21],
+            "vrate": w(0x22), "grate": w(0x24), "swing": w(0x26) - 128, "tempo": w(0x28),
+            "sf": ",".join(str(w(i)) for i in range(0x2A, 0x34, 2))}
+
+
 def voice_common_lfo(json_path):
     """音色のコモン LFO（ダンプの 40 06 00）。欄: 0 位相・1 波形・2 速さ・3 テンポの速さ・4 テンポ同期・5 遅れ・6 フェードイン・7 ホールド・8 フェードアウト・
     9 キーオンリセット・10/13/16 箱 1〜3 の行き先・11/14/17 深さ・19 ユーザー波形の段の数・20 傾き・21〜 段の値"""
@@ -92,6 +110,9 @@ def main():
     lines.append("voice volume=%d mono=%d same=%d porta=%d pmode=%d ptime=%d ptmode=%d" % (
         c.get("volume", 127), c.get("mono_poly", 1), c.get("same_note_key_on_assign", 1), c.get("portamento_switch", 0),
         c.get("portamento_mode", 0), c.get("portamento_time", 0), c.get("portamento_time_mode", 0)))
+    ar = voice_arp(vpath)
+    if ar:
+        lines.append("arp " + " ".join("%s=%s" % kv for kv in ar.items()))
     cl = voice_common_lfo(vpath)
     if cl:
         lines.append("clfo " + " ".join("%s=%s" % kv for kv in cl.items()))

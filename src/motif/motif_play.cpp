@@ -10,8 +10,12 @@
 // Enhancer・Cross Delay・コンプ・コーラス・フランジャー・Ensemble Detune。組とつなぎ方ごと）、リバーブ、コーラスの枠。ほかの型はまだ回せない
 // （インサーションは素通し）。コーラス系とフランジャーは、オフラインが録った応答を使う型だと近似（式の作り）。
 // --shot 絵.bmp は、音色を読み終えてから画面を 1 枚 BMP に書いて終わる（試験用。--shot-keys 60,64,67 でその鍵を押した絵）。
-// --selftest は、画面を出さずに音色を 1 つ読み、音の糸と同じ道（fill）で和音を 2 秒鳴らして WAV に書いて終わる（試験用）。
+// --selftest は、画面を出さずに音色を 1 つ読み、音の糸と同じ道（fill）で和音を 2 秒鳴らして WAV に書いて終わる（試験用。--arp で音色のアルペジオを入れて）。
+// アルペジオ（sampler_arp.h）は、型の表 capture/arp_prog.txt（tools/motif/mr_arp_fit.py が実機のアルペジオの MIDI 出力から作る）があれば使える。
+// 設定は音色を読むたびに音色のもの（パッチの arp 行）になる。スイッチだけは覚えておく。
 
+#include "motif_multi.h"
+#include "sampler_arp.h"
 #include "sampler_engine.h"
 #include "sampler_fx_rt.h"
 #include "ui/audio_out.h"
@@ -30,6 +34,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -133,6 +138,14 @@ struct player {
 	std::atomic<int> pending_program{-1};   // MIDI のプログラムチェンジ（画面の糸で読み込む）
 	std::atomic<u64> midi_bytes{0};
 	int compact_count = 0;
+	// アルペジオ（型の表は capture の置き場の arp_prog.txt）
+	motif_arp::library arplib;
+	motif_arp::arpeggiator arp;
+	bool arp_sustained[128] = {};
+	// マルチ（mul があって multi_mode のとき、鳴らすのはマルチ。画面の鍵盤と PC のキーボードは key_ch のチャンネルで送る）
+	std::unique_ptr<motif_multi::multi> mul;
+	bool multi_mode = false;
+	int key_ch = 0;
 	// MIDI の解析
 	u8 status = 0, d0 = 0;
 	int nd = 0;
@@ -149,6 +162,14 @@ struct player {
 		}
 		key_count[key]++;
 		sustained[key] = false;
+		if (multi_mode) {
+			if (mul)
+				mul->note_on(key_ch, key, std::min(127, vel));
+			return;
+		}
+		// アルペジオが受けたら、鳴らすのはアルペジオ（キーモードの direct のときは、押した音もそのまま鳴らす）
+		if (arp.key_on(key, std::min(127, vel)) && !arp.passes_through())
+			return;
 		if (cur)
 			cur->eg->note_on(key, std::min(127, vel));
 	}
@@ -157,6 +178,13 @@ struct player {
 		if (key < 0 || key > 127 || key_count[key] <= 0)
 			return;
 		key_count[key]--;
+		if (multi_mode) {
+			if (mul)
+				mul->note_off(key_ch, key);
+			return;
+		}
+		if (arp.key_off(key) && !arp.passes_through())
+			return;
 		if (sustain) {
 			sustained[key] = true;
 			return;
@@ -164,20 +192,63 @@ struct player {
 		if (cur)
 			cur->eg->note_off(key);
 	}
+	// アルペジオの出す音（サステインは、押した音と同じく掛かる）
+	void arp_out(int type, int a, int b)
+	{
+		if (!cur)
+			return;
+		switch (type) {
+		case motif_arp::OUT_ON:
+			arp_sustained[a] = false;
+			cur->eg->note_on(a, b);
+			break;
+		case motif_arp::OUT_OFF:
+			if (sustain)
+				arp_sustained[a] = true;
+			else
+				cur->eg->note_off(a);
+			break;
+		case motif_arp::OUT_CC:
+			midi_message(0xB0, u8(a), u8(b));
+			break;
+		case motif_arp::OUT_PB:
+			midi_message(0xE0, u8(a), u8(b));
+			break;
+		}
+	}
 	void set_sustain(bool on)
 	{
 		sustain = on;
+		if (multi_mode) {
+			if (mul)
+				mul->control(key_ch, 64, on ? 127 : 0);
+			return;
+		}
 		if (on)
 			return;
-		for (int k = 0; k < 128; k++)
+		for (int k = 0; k < 128; k++) {
 			if (sustained[k]) {
 				sustained[k] = false;
 				if (cur)
 					cur->eg->note_off(k);
 			}
+			if (arp_sustained[k]) {
+				arp_sustained[k] = false;
+				if (cur)
+					cur->eg->note_off(k);
+			}
+		}
 	}
 	void source(int s, int v)
 	{
+		// マルチでは、画面の鍵盤のチャンネルのパートへ
+		if (multi_mode) {
+			if (mul)
+				for (auto &P : mul->parts)
+					if (P->ch == key_ch && P->eg)
+						P->eg->set_source(s, v);
+			return;
+		}
 		if (cur)
 			cur->eg->set_source(s, v);
 	}
@@ -187,11 +258,47 @@ struct player {
 			c = 0;
 		for (bool &s : sustained)
 			s = false;
+		for (bool &s : arp_sustained)
+			s = false;
+		arp.all_off();
+		if (mul)
+			mul->all_off();
 		if (cur)
 			cur->eg->all_sound_off();
 	}
 	void midi_message(u8 st, u8 a, u8 b)
 	{
+		if (multi_mode) {
+			// マルチ: チャンネルごとにパートへ。鍵盤の色は key_ch のものだけ
+			const int ch = st & 0x0F;
+			if (!mul)
+				return;
+			switch (st & 0xF0) {
+			case 0x80:
+				if (ch == key_ch && key_count[a] > 0)
+					key_count[a]--;
+				mul->note_off(ch, a);
+				break;
+			case 0x90:
+				if (ch == key_ch) {
+					if (b)
+						key_count[a]++;
+					else if (key_count[a] > 0)
+						key_count[a]--;
+				}
+				mul->note_on(ch, a, b);
+				break;
+			case 0xB0:
+				if (a == 120 || a == 123)
+					for (int k = 0; k < 128 && ch == key_ch; k++)
+						key_count[k] = 0;
+				mul->control(ch, a, b);
+				break;
+			case 0xD0: mul->aftertouch(ch, a); break;
+			case 0xE0: mul->pitch_bend(ch, b); break;
+			}
+			return;
+		}
 		switch (st & 0xF0) {
 		case 0x80: note_off(a); break;
 		case 0x90: note_on(a, b); break;
@@ -273,15 +380,47 @@ struct player {
 			midi_bytes++;
 		}
 		float pk = 0;
+		if (multi_mode) {
+			for (u32 done = 0; done < frames;) {
+				const int n = int(std::min<u32>(256, frames - done));
+				float l[256] = {}, r[256] = {};
+				if (mul)
+					mul->render(n, l, r, master, pk);
+				for (int j = 0; j < n; j++) {
+					out[2 * (done + j)] = s16(std::lround(l[j] * 32767.0f));
+					out[2 * (done + j) + 1] = s16(std::lround(r[j] * 32767.0f));
+				}
+				done += n;
+			}
+			voices = mul ? mul->active_voices() : 0;
+			peak = std::max(pk, peak.load() * 0.9f);
+			return;
+		}
 		const double part = std::pow(cc7 / 127.0, 2.0) * std::pow(cc11 / 127.0, 2.0) * master;
 		u32 done = 0;
 		while (done < frames) {
 			const int n = int(std::min<u32>(256, frames - done));
 			float l[256] = {}, r[256] = {}, voff[256] = {};
 			float g0[256] = {}, g1[256] = {}, g2[256] = {}, h0[256] = {}, h1[256] = {}, h2[256] = {};
-			float *gl[3] = {g0, g1, g2}, *gr[3] = {h0, h1, h2};
-			if (cur)
-				cur->eg->render(n, l, r, gl, gr, voff);
+			// アルペジオの出す音は、その位置で区切って描く
+			struct aev { int pos, type, a, b; };
+			aev evs[64];
+			int ne = 0;
+			arp.process(n, 44100.0, [&](int pos, int type, int a, int b) {
+				if (ne < 64)
+					evs[ne++] = {pos, type, a, b};
+			});
+			int at = 0;
+			for (int e = 0; e <= ne; e++) {
+				const int upto = e < ne ? std::min(n, std::max(at, evs[e].pos)) : n;
+				if (cur && upto > at) {
+					float *gl[3] = {g0 + at, g1 + at, g2 + at}, *gr[3] = {h0 + at, h1 + at, h2 + at};
+					cur->eg->render(upto - at, l + at, r + at, gl, gr, voff + at);
+				}
+				at = upto;
+				if (e < ne)
+					arp_out(evs[e].type, evs[e].a, evs[e].b);
+			}
 			for (int j = 0; j < n; j++) {
 				// 共通の音量まで掛けたドライに、リバーブとコーラスの枠の wet を足し、パートの音量（CC7・CC11）と全体の音量を掛ける
 				double dl = 0, dr = 0;
@@ -330,6 +469,18 @@ struct player {
 		peak = std::max(pk, peak.load() * 0.9f);
 	}
 };
+
+// マルチを読む（読む糸で）。パートの音色はパッチの置き場、エフェクトの応答はその 1 つ上（capture）から
+std::unique_ptr<motif_multi::multi> load_multi(const std::string &file, const fs::path &dir, const motif_arp::library *lib)
+{
+	motif_multi::config c;
+	if (!c.load(file))
+		return nullptr;
+	auto M = std::make_unique<motif_multi::multi>();
+	M->load(c, dir.string(), (dir / "..").string(), int(std::min(8u, std::max(1u, std::thread::hardware_concurrency() - 1))));
+	M->arp.set_library(lib);
+	return M;
+}
 
 std::unique_ptr<loaded> load_voice(const voice_entry &v)
 {
@@ -640,10 +791,15 @@ int main(int argc, char **argv)
 	bool nomidi = false;
 	std::string selftest, shot;
 	std::vector<int> shot_keys;
-	int selftest_voice = 0;
+	int selftest_voice = 0, selftest_multi = -1;
+	bool selftest_arp = false;
 	for (int i = 1; i < argc; i++) {
 		const std::string a = argv[i];
-		if (a == "--midi" && i + 1 < argc)
+		if (a == "--arp")
+			selftest_arp = true;
+		else if (a == "--multi" && i + 1 < argc)
+			selftest_multi = std::atoi(argv[++i]);
+		else if (a == "--midi" && i + 1 < argc)
 			midi_dev = std::atoi(argv[++i]);
 		else if (a == "--nomidi")
 			nomidi = true;
@@ -668,8 +824,13 @@ int main(int argc, char **argv)
 	if (dir.empty())
 		dir = default_patch_dir();
 	std::vector<voice_entry> list = scan_patches(dir);
+	// マルチ（tools/motif/mr_multi_export.py が capture/multis に書く）
+	std::vector<std::pair<std::string, std::string>> mlist = motif_multi::scan(dir / ".." / "multis");
 
 	auto pl = std::make_unique<player>();
+	// アルペジオの型の表（mr_arp_fit.py が作る。パッチの置き場の 1 つ上）
+	const bool arp_ok = pl->arplib.load((dir / ".." / "arp_prog.txt").string());
+	pl->arp.set_library(&pl->arplib);
 	if (!shot.empty())
 		pl->master = 0.0f;       // 撮るだけのときは音を出さない
 	if (!selftest.empty()) {
@@ -678,9 +839,59 @@ int main(int argc, char **argv)
 			std::fprintf(stderr, "パッチが見つからない: %s\n", dir.string().c_str());
 			return 1;
 		}
+		if (selftest_multi >= 0) {
+			// マルチ: 音色のあるパートのチャンネルごとに、和音を 2 秒
+			if (mlist.empty())
+				return 1;
+			pl->mul = load_multi(mlist[std::min<size_t>(selftest_multi, mlist.size() - 1)].first, dir, &pl->arplib);
+			if (!pl->mul)
+				return 1;
+			pl->multi_mode = true;
+			std::vector<s16> pcm(44100 * 3 * 2);
+			const u32 block = 441;
+			for (u32 i = 0; i < 44100 * 3; i += block) {
+				{
+					std::lock_guard<std::mutex> lk(pl->mtx);
+					if (i == 0 || i == 44100 * 2) {
+						bool used[16] = {};
+						for (auto &P : pl->mul->parts)
+							if (P->sounds() && P->ch >= 0 && P->ch < 16)
+								used[P->ch] = true;
+						for (int c = 0; c < 16; c++) {
+							if (!used[c])
+								continue;
+							for (int k : {60, 64, 67}) {
+								if (i == 0)
+									pl->mul->note_on(c, k, 100);
+								else
+									pl->mul->note_off(c, k);
+							}
+						}
+					}
+				}
+				pl->fill(pcm.data() + 2 * i, block);
+			}
+			write_wav16(selftest, pcm);
+			std::printf("マルチ %s（リバーブ %s・コーラス %s）\n", pl->mul->cfg.name.c_str(), pl->mul->rev_name.c_str(), pl->mul->cho_name.c_str());
+			for (size_t i = 0; i < pl->mul->parts.size(); i++) {
+				const motif_multi::part &P = *pl->mul->parts[i];
+				std::printf("  パート %2zu ch %2d %s%s%s\n", i + 1, P.ch + 1, P.label.c_str(), P.has_ins ? "・インサーション " : "", P.ins_name.c_str());
+			}
+			return 0;
+		}
 		pl->cur = load_voice(list[std::min<size_t>(selftest_voice, list.size() - 1)]);
 		if (!pl->cur)
 			return 1;
+		if (selftest_arp) {
+			// 音色のアルペジオの設定で、スイッチだけ入れる
+			motif_arp::settings as = motif_arp::settings_from(pl->cur->pt.arpline);
+			as.sw = true;
+			pl->arp.set(as);
+			if (const motif_arp::type_prog *tp = pl->arp.program())
+				std::printf("アルペジオ: 型 %d %s %s・テンポ %d\n", as.type, tp->cat.c_str(), tp->name.c_str(), as.tempo);
+			else
+				std::printf("アルペジオ: 型 %d は表に無い\n", as.type);
+		}
 		std::vector<s16> pcm(44100 * 3 * 2);
 		const u32 block = 441;
 		for (u32 i = 0; i < 44100 * 3; i += block) {
@@ -745,6 +956,20 @@ int main(int argc, char **argv)
 	std::thread loader;
 	std::atomic<bool> loading{false};
 	std::unique_ptr<loaded> ready;
+	std::unique_ptr<motif_multi::multi> ready_m;
+	bool multi_ui = ini.count("mode") && ini["mode"] == "multi" && !mlist.empty();
+	int mselected = -1, mwant = mlist.empty() ? -1 : 0;
+	if (ini.count("multi"))
+		for (size_t i = 0; i < mlist.size(); i++)
+			if (fs::path(mlist[i].first).filename().string() == ini["multi"])
+				mwant = int(i);
+	if (selftest_multi >= 0 && !mlist.empty()) {
+		// --multi 番号: マルチで開く（--shot の試験にも）
+		multi_ui = true;
+		mwant = std::min(selftest_multi, int(mlist.size()) - 1);
+	}
+	pl->multi_mode = multi_ui;
+	std::string mstatus;
 	std::mutex ready_mtx;
 	int selected = -1, want = list.empty() ? -1 : 0;
 	if (ini.count("voice"))
@@ -753,6 +978,9 @@ int main(int argc, char **argv)
 				want = int(i);
 	std::string status;
 
+	// アルペジオ: スイッチは覚えておき、ほかの設定は音色を読むたびに音色のものにする
+	bool arp_on = ini.count("arp") && ini["arp"] == "1";
+	motif_arp::settings arp_ui;
 	char filter[64] = "";
 	int octave = 3, velocity = 100, mouse_key = -1;
 	int mw = 0, at = 0, as1 = 64, as2 = 64, rb = 64, bc = 0, fc = 0, pb = 64;
@@ -803,10 +1031,50 @@ int main(int argc, char **argv)
 					}
 					for (auto &c : pl->key_count)
 						c = 0;
+					pl->arp.all_off();
+					arp_ui = motif_arp::settings_from(pl->cur->pt.arpline);
+					arp_ui.sw = arp_on;
+					pl->arp.set(arp_ui);
 				}
 				status = pl->cur->label;
 				old.reset();
 			}
+		}
+		// マルチの読み終わったもの
+		{
+			std::unique_ptr<motif_multi::multi> nw;
+			{
+				std::lock_guard<std::mutex> lk(ready_mtx);
+				nw = std::move(ready_m);
+			}
+			if (nw) {
+				std::unique_ptr<motif_multi::multi> old;
+				{
+					std::lock_guard<std::mutex> lk(pl->mtx);
+					pl->all_off();
+					old = std::move(pl->mul);
+					pl->mul = std::move(nw);
+					pl->multi_mode = multi_ui;
+					arp_ui = motif_arp::settings_from(pl->mul->cfg.arpline);
+					arp_ui.sw = arp_on;
+					pl->mul->arp.set(arp_ui);
+				}
+				mstatus = pl->mul->cfg.name;
+				old.reset();
+			}
+		}
+		if (multi_ui && mwant >= 0 && mwant != mselected && !loading) {
+			if (loader.joinable())
+				loader.join();
+			mselected = mwant;
+			loading = true;
+			mstatus = "読み込み中: " + mlist[mwant].second;
+			loader = std::thread([&, f = mlist[mwant].first]() {
+				auto M = load_multi(f, dir, &pl->arplib);
+				std::lock_guard<std::mutex> lk(ready_mtx);
+				ready_m = std::move(M);
+				loading = false;
+			});
 		}
 		if (want >= 0 && want != selected && !loading) {
 			if (loader.joinable())
@@ -848,9 +1116,45 @@ int main(int argc, char **argv)
 
 		// 左: 音色の一覧
 		ImGui::BeginChild("voices", ImVec2(330, -150), ImGuiChildFlags_Borders);
+		// ボイス（1 音色）とマルチ（16 パート）の切り替え。切り替えたら鳴っている音を止める
+		{
+			bool sw = false, to = multi_ui;
+			if (ImGui::RadioButton("ボイス", !multi_ui)) {
+				to = false;
+				sw = multi_ui;
+			}
+			ImGui::SameLine(0, 20);
+			if (mlist.empty())
+				ImGui::TextDisabled("マルチ（capture/multis が無い。tools/motif/mr_multi_export.py で作る）");
+			else if (ImGui::RadioButton("マルチ", multi_ui)) {
+				to = true;
+				sw = !multi_ui;
+			}
+			if (sw) {
+				multi_ui = to;
+				std::lock_guard<std::mutex> lk(pl->mtx);
+				pl->all_off();
+				pl->multi_mode = multi_ui;
+				motif_arp::arpeggiator &A = multi_ui && pl->mul ? pl->mul->arp : pl->arp;
+				arp_ui.sw = arp_on;
+				A.set(arp_ui);
+			}
+		}
 		ImGui::SetNextItemWidth(-1);
-		ImGui::InputTextWithHint("##filter", "音色の名前で絞る", filter, sizeof filter);
+		ImGui::InputTextWithHint("##filter", multi_ui ? "マルチの名前で絞る" : "音色の名前で絞る", filter, sizeof filter);
 		ImGui::BeginChild("voicelist");
+		if (multi_ui) {
+			std::string fm = filter;
+			std::transform(fm.begin(), fm.end(), fm.begin(), ::tolower);
+			for (size_t i = 0; i < mlist.size(); i++) {
+				std::string low = mlist[i].second;
+				std::transform(low.begin(), low.end(), low.begin(), ::tolower);
+				if (!fm.empty() && low.find(fm) == std::string::npos)
+					continue;
+				if (ImGui::Selectable((mlist[i].second + "##m" + std::to_string(i)).c_str(), int(i) == mselected))
+					mwant = int(i);
+			}
+		} else {
 		std::string last_bank;
 		std::string f = filter;
 		std::transform(f.begin(), f.end(), f.begin(), ::tolower);
@@ -869,14 +1173,92 @@ int main(int argc, char **argv)
 			if (ImGui::Selectable(lab, int(i) == selected))
 				want = int(i);
 		}
+		}
 		ImGui::EndChild();
 		ImGui::EndChild();
 		ImGui::SameLine();
 
 		// 右: 今の音色・つまみ・状態
 		ImGui::BeginChild("right", ImVec2(0, -150));
-		ImGui::Text("音色: %s%s", status.c_str(), loading ? "" : "");
-		if (pl->cur) {
+		if (multi_ui) {
+			ImGui::Text("マルチ: %s", mstatus.c_str());
+			if (pl->mul) {
+				motif_multi::multi &M = *pl->mul;
+				ImGui::TextDisabled("リバーブ %s・コーラス %s・インサーションを使うパート %zu・テンポ %d", M.rev_name.c_str(), M.cho_name.c_str(), M.cfg.ins.size(),
+				                    motif_sampler::geti(M.cfg.fxline, "tempo", 120));
+				int kc = pl->key_ch + 1;
+				ImGui::SetNextItemWidth(160);
+				if (ImGui::SliderInt("画面の鍵盤と PC のキーボードのチャンネル", &kc, 1, 16)) {
+					std::lock_guard<std::mutex> lk(pl->mtx);
+					for (int k = 0; k < 128; k++)
+						while (pl->key_count[k] > 0)
+							pl->note_off(k);
+					pl->key_ch = kc - 1;
+				}
+				if (ImGui::BeginTable("parts", 9, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY, ImVec2(0, 300))) {
+					ImGui::TableSetupScrollFreeze(0, 1);
+					ImGui::TableSetupColumn("パート", ImGuiTableColumnFlags_WidthFixed, 44);
+					ImGui::TableSetupColumn("ch", ImGuiTableColumnFlags_WidthFixed, 70);
+					ImGui::TableSetupColumn("音色", ImGuiTableColumnFlags_WidthStretch);
+					ImGui::TableSetupColumn("音量", ImGuiTableColumnFlags_WidthFixed, 90);
+					ImGui::TableSetupColumn("パン", ImGuiTableColumnFlags_WidthFixed, 90);
+					ImGui::TableSetupColumn("リバーブ", ImGuiTableColumnFlags_WidthFixed, 90);
+					ImGui::TableSetupColumn("コーラス", ImGuiTableColumnFlags_WidthFixed, 90);
+					ImGui::TableSetupColumn("消す", ImGuiTableColumnFlags_WidthFixed, 36);
+					ImGui::TableSetupColumn("音", ImGuiTableColumnFlags_WidthFixed, 60);
+					ImGui::TableHeadersRow();
+					for (size_t i = 0; i < M.parts.size(); i++) {
+						motif_multi::part &P = *M.parts[i];
+						ImGui::PushID(int(i));
+						ImGui::TableNextRow();
+						ImGui::TableNextColumn();
+						ImGui::Text("%zu", i + 1);
+						ImGui::TableNextColumn();
+						int c = P.ch + 1;
+						ImGui::SetNextItemWidth(-1);
+						if (ImGui::SliderInt("##ch", &c, 1, 16)) {
+							std::lock_guard<std::mutex> lk(pl->mtx);
+							if (P.eg)
+								P.eg->all_notes_off();
+							P.ch = c - 1;
+						}
+						ImGui::TableNextColumn();
+						if (P.sounds())
+							ImGui::Text("%s%s%s", P.label.c_str(), P.has_ins ? "  [INS]" : "", P.arpsw ? "  [ARP]" : "");
+						else
+							ImGui::TextDisabled("%s", P.label.c_str());
+						auto knob = [&](const char *id, int &v, int lo, int hi, std::function<void()> after = nullptr) {
+							ImGui::TableNextColumn();
+							int x = v;
+							ImGui::SetNextItemWidth(-1);
+							if (ImGui::SliderInt(id, &x, lo, hi)) {
+								std::lock_guard<std::mutex> lk(pl->mtx);
+								v = x;
+								if (after)
+									after();
+							}
+						};
+						knob("##vol", P.vol, 0, 127);
+						knob("##pan", P.pan, 1, 127, [&]() {
+							if (P.eg)
+								P.eg->set_pan_offset(P.pan - 64);
+						});
+						knob("##rev", P.rev, 0, 127);
+						knob("##cho", P.cho, 0, 127);
+						ImGui::TableNextColumn();
+						ImGui::Checkbox("##mute", &P.mute);
+						ImGui::TableNextColumn();
+						const float pk = P.peak.load();
+						ImGui::ProgressBar(std::min(1.0f, pk * 4), ImVec2(-1, 0), "");
+						ImGui::PopID();
+					}
+					ImGui::EndTable();
+				}
+				ImGui::TextDisabled("パンは次に鳴らす音から。ドラムのパートはまだ鳴らない。プログラムチェンジは受けない");
+			}
+		} else
+			ImGui::Text("音色: %s%s", status.c_str(), loading ? "" : "");
+		if (!multi_ui && pl->cur) {
 			const motif_sampler::patch &pt = pl->cur->pt;
 			using motif_sampler::geti;
 			ImGui::TextDisabled("エレメント %zu・%s・同じ鍵 %s・ポルタメント %s（時間 %d）・音量 %d", pt.els.size(),
@@ -992,11 +1374,73 @@ int main(int argc, char **argv)
 			ImGui::SameLine();
 			ImGui::TextDisabled("ピーク");
 		}
-		if (pl->cur) {
+		if (multi_ui && pl->mul) {
+			ImGui::Checkbox("インサーション（パートごと）", &pl->mul->use_ins);
+			ImGui::SameLine(0, 30);
+			ImGui::Checkbox(("リバーブ（" + pl->mul->rev_name + "）").c_str(), &pl->mul->use_rev);
+			ImGui::SameLine(0, 30);
+			ImGui::Checkbox(("コーラス（" + pl->mul->cho_name + "）").c_str(), &pl->mul->use_cho);
+		} else if (pl->cur) {
 			ImGui::Checkbox(("インサーション（" + pl->cur->ins_name + "）").c_str(), &pl->use_ins);
 			ImGui::Checkbox(("リバーブ（" + pl->cur->rev_name + "）").c_str(), &pl->use_rev);
 			ImGui::SameLine(0, 30);
 			ImGui::Checkbox(("コーラスの枠（" + pl->cur->cho_name + "）").c_str(), &pl->use_cho);
+		}
+		// アルペジオ
+		ImGui::SeparatorText("アルペジオ");
+		if (!arp_ok)
+			ImGui::TextDisabled("型の表（capture/arp_prog.txt）が無い。tools/motif/mr_arp_fit.py で作る");
+		else {
+			bool ch = ImGui::Checkbox("アルペジオ##arpsw", &arp_on);
+			ImGui::SameLine(0, 20);
+			ImGui::SetNextItemWidth(120);
+			ch |= ImGui::InputInt("型##arptype", &arp_ui.type);
+			arp_ui.type = std::min(1786, std::max(0, arp_ui.type));
+			ImGui::SameLine();
+			const motif_arp::type_prog *tp = pl->arplib.get(arp_ui.type);
+			if (tp)
+				ImGui::Text("%s %s", tp->cat.c_str(), tp->name.c_str());
+			else
+				ImGui::TextDisabled("（まだ録っていない型）");
+			for (int i = 0; i < 5; i++) {
+				if (i)
+					ImGui::SameLine();
+				char b[32];
+				const motif_arp::type_prog *sp = pl->arplib.get(arp_ui.sf[i]);
+				std::snprintf(b, sizeof b, "SF%d %s##sf%d", i + 1, sp ? sp->name.c_str() : "-", i);
+				if (ImGui::Button(b)) {
+					arp_ui.type = arp_ui.sf[i];
+					ch = true;
+				}
+			}
+			ImGui::PushItemWidth(180);
+			ch |= ImGui::SliderInt("テンポ##arptempo", &arp_ui.tempo, 1, 300);
+			ImGui::SameLine(0, 20);
+			static const char *holds[] = {"sync-off", "off", "on"};
+			ch |= ImGui::Combo("ホールド##arphold", &arp_ui.hold, holds, 3);
+			ImGui::SameLine(0, 20);
+			static const char *keys[] = {"sort", "thru", "direct", "sort+direct", "thru+direct"};
+			ch |= ImGui::Combo("キーモード##arpkey", &arp_ui.key, keys, 5);
+			static const char *units[] = {"50%", "66%", "75%", "100%", "133%", "150%", "200%"};
+			ch |= ImGui::Combo("長さの倍率##arpunit", &arp_ui.unit, units, 7);
+			ImGui::SameLine(0, 20);
+			static const char *vmodes[] = {"original", "thru"};
+			ch |= ImGui::Combo("ベロシティ##arpvmode", &arp_ui.vmode, vmodes, 2);
+			ImGui::SameLine(0, 20);
+			ch |= ImGui::SliderInt("スイング##arpswing", &arp_ui.swing, -120, 120);
+			ch |= ImGui::SliderInt("ゲートの率 %##arpgate", &arp_ui.grate, 0, 200);
+			ImGui::SameLine(0, 20);
+			ch |= ImGui::SliderInt("ベロシティの率 %##arpvel", &arp_ui.vrate, 0, 200);
+			ImGui::PopItemWidth();
+			if (ch) {
+				arp_ui.sw = arp_on;
+				std::lock_guard<std::mutex> lk(pl->mtx);
+				// マルチのときはマルチのアルペジオ（スイッチの入ったパートが鳴らす）
+				motif_arp::arpeggiator &A = pl->multi_mode && pl->mul ? pl->mul->arp : pl->arp;
+				if (!arp_on)
+					A.all_off();
+				A.set(arp_ui);
+			}
 		}
 		ImGui::TextDisabled("PC キーボード: Z〜M が下の段、Q〜I が上の段。マウスで鍵盤を押したまま滑らせると次の鍵");
 		ImGui::EndChild();
@@ -1032,6 +1476,10 @@ int main(int argc, char **argv)
 			ini["voice"] = fs::path(list[selected].file).filename().string();
 		if (!nomidi)
 			ini["midi"] = pl->midi.is_open() ? pl->midi.device_name() : std::string();
+		ini["arp"] = arp_on ? "1" : "0";
+		ini["mode"] = multi_ui ? "multi" : "voice";
+		if (mselected >= 0)
+			ini["multi"] = fs::path(mlist[mselected].first).filename().string();
 		save_ini(ini);
 	}
 	// 片付け: 音を止めてから出口を閉じる

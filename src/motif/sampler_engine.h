@@ -128,7 +128,7 @@ static inline double key_on_delay_beats(int v)
 
 // パッチ: fx・voice・clfo・ctrl の行と、エレメントごとの欄と区間。dir はサンプル（.smpx）の置き場
 struct patch {
-	kv fxline, voiceline, clfoline, ctrlline;
+	kv fxline, voiceline, clfoline, ctrlline, arpline;
 	std::vector<element> els;
 	std::string dir, name;
 	bool load(const std::string &path)
@@ -154,6 +154,8 @@ struct patch {
 				clfoline = parse(line);
 			else if (!std::strncmp(line, "ctrl ", 5))
 				ctrlline = parse(line);
+			else if (!std::strncmp(line, "arp ", 4))
+				arpline = parse(line);
 			else if (!std::strncmp(line, "element ", 8))
 				els.push_back({ parse(line), {} });
 			else if (!std::strncmp(line, "zone ", 5) && !els.empty()) {
@@ -172,13 +174,32 @@ struct patch {
 struct engine_options {
 	int note_index = 0;      // 音色を選んでから何音目から始めるか（オルタネートパンの向き）
 	long seed = -1;          // ランダムパン・ランダムピッチの種（負なら振らない）
+	int pan_offset = 0;      // マルチのパートのパン − 64（エレメントのパンに足す）
+	bool fixed_pan = false;  // マルチのパートの Voice Pan off: エレメントのパンを使わず中央にする
 };
+
+// 区間のサンプルは、同じファイルなら音色（エンジン）をまたいで 1 つを使い回す（マルチで同じ波形のパートが並んでも、メモリを食わない）
+inline std::shared_ptr<sample> shared_sample(const std::string &path)
+{
+	static std::mutex m;
+	static std::map<std::string, std::weak_ptr<sample>> reg;
+	std::lock_guard<std::mutex> lk(m);
+	auto it = reg.find(path);
+	if (it != reg.end())
+		if (auto sp = it->second.lock())
+			return sp;
+	auto smp = std::make_shared<sample>();
+	if (!load_smpx(path, *smp))
+		return nullptr;
+	reg[path] = smp;
+	return smp;
+}
 
 class engine {
 public:
 	using options = engine_options;
 
-	explicit engine(const patch &p, options o = options()) : pt(p), rng(o.seed < 0 ? 0u : unsigned(o.seed)), seed(o.seed), nidx(o.note_index)
+	explicit engine(const patch &p, options o = options()) : pt(p), rng(o.seed < 0 ? 0u : unsigned(o.seed)), seed(o.seed), nidx(o.note_index), pan_off(o.pan_offset), fixed_pan(o.fixed_pan)
 	{
 		std::istringstream ss(pt.ctrlline.count("sets") ? pt.ctrlline.at("sets") : "");
 		std::string t;
@@ -222,6 +243,8 @@ public:
 		return std::pow(std::max(0.0, std::min(127.0, geti(pt.voiceline, "volume", 127) + voff)) / 127.0, 2.0);
 	}
 	double volume_offset() const { return vol_off; }
+	// マルチのパートのパン（− 64）。次に鳴らす音から効く
+	void set_pan_offset(int o) { pan_off = o; }
 
 	void note_on(int key, int vel)
 	{
@@ -436,10 +459,12 @@ private:
 	std::mt19937 rng;
 	long seed;
 	int nidx;
+	int pan_off;
+	bool fixed_pan;
 	std::vector<cset> sets;
 	int srcval[16];
 	double vol_off = 0;                      // 行き先 1（Volume）: 音色の音量の値のずれ（エレメントのボックスによらない）
-	std::map<std::string, std::unique_ptr<sample>> cache;
+	std::map<std::string, std::shared_ptr<sample>> cache;
 	std::vector<voice> voices;
 	std::vector<int> vgroup;                 // エレメントのインサーションのスイッチ（0・1・2）
 	std::vector<int> vdelay;                 // エレメントが鳴り始めるサンプル（Key On Delay を足した）
@@ -479,7 +504,8 @@ private:
 		}
 	}
 
-	// 決まった数の糸で、0〜count − 1 の仕事を分けてやる（呼んだ糸も手伝う）
+public:
+	// 決まった数の糸で、0〜count − 1 の仕事を分けてやる（呼んだ糸も手伝う。マルチのパートを分けて描くのにも使う）
 	class worker_pool {
 	public:
 		explicit worker_pool(int n)
@@ -551,6 +577,7 @@ private:
 			}
 		}
 	};
+private:
 	std::unique_ptr<worker_pool> pool;
 
 	const sample *get_sample(const std::string &file)
@@ -558,12 +585,9 @@ private:
 		auto it = cache.find(file);
 		if (it != cache.end())
 			return it->second.get();
-		auto smp = std::make_unique<sample>();
-		if (!load_smpx(pt.dir + file, *smp)) {
+		auto smp = shared_sample(pt.dir + file);
+		if (!smp)
 			std::fprintf(stderr, "サンプルを読めない: %s\n", file.c_str());
-			cache[file] = nullptr;
-			return nullptr;
-		}
 		return (cache[file] = std::move(smp)).get();
 	}
 
@@ -737,7 +761,7 @@ private:
 		p.level = geti(e.f, "level", 127);
 		// Filter Gain は 1 あたり 0.375dB。サンプルは雛形の音色（250）で録ったので、その差だけ掛ける
 		p.gain = std::pow(10.0, (swp50_filter::filter_gain_db(geti(e.f, "fgain", 250)) - swp50_filter::filter_gain_db(250)) / 20.0);
-		p.pan = geti(e.f, "pan", 64);
+		p.pan = (fixed_pan ? 64 : geti(e.f, "pan", 64)) + pan_off;
 		// 1 音ごとに変わるもの（tools/motif/mr_pernote.py、2026-10-25）
 		p.pan += alternate_pan_offset(geti(e.f, "apan", 64), note_index);
 		if (seed >= 0) {
