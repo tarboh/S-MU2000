@@ -495,6 +495,13 @@ $(BUILD)/rec$(EXE): $(BUILD)/src/smf.o $(BUILD)/src/rec.o $(BUILD)/src/compat/co
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) -lwinmm -lole32 -luuid
 
+# motif_play は MOTIF-RACK ES のサンプリング方式の芯（src/motif/sampler_engine.h）を、画面で選んだ音色でその場で弾く
+# （doc/motif-rack-es-sampler.md）。音色は roms/motif-rack-es/capture/patches_all（tools/motif/mr_patch.py が書く）。MIDI は入力だけ
+MOTIF_PLAY_OBJS := $(IMGUI_SRCS:%.cpp=$(BUILD)/imgui/%.o) $(BUILD)/imgui/src/motif/motif_play.o                    $(BUILD)/src/ui/audio_out.o $(BUILD)/src/ui/midi_in.o $(BUILD)/src/compat/compat.o
+$(BUILD)/motif_play$(EXE): $(MOTIF_PLAY_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) -lwinmm -lole32 -lgdi32 -luser32 -lavrt -ld3d11 -ldxgi -ld3dcompiler -ldwmapi -limm32
+
 # live uses only WASAPI, including in an ASIO=1 build.
 LIVE_AUDIO_OBJ := $(BUILD)/src/ui/audio_out.o
 LIVE_MAIN_OBJ := $(BUILD)/src/live.o
