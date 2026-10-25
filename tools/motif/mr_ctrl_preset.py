@@ -1,6 +1,6 @@
 """プリセットの音色で、コントローラー（CC・アフタータッチ・ピッチベンド）を途中で動かした音を録る（2026-10-25。コントロールセットの番号の意味を、
 実際に組まれた音色で確かめる）。
-  python mr_ctrl_preset.py --dir 置き場 --voices 04_063,00_011 [--msgs auto | CC1,AT,CC2,CC16,CC16lo,…] [--key 60]
+  python mr_ctrl_preset.py --dir 置き場 --voices 04_063,00_011 [--msgs auto | auto-pre | CC1,AT,CC2,CC16,CC16lo,CC16pre,…] [--key 60]
 音色ごとに「何も動かさない」1 本と、メッセージごとに「1.0 秒で初め → 最大（lo は最小）」の 1 本を（auto は音色のコントロールセットが使うソースだけ）、2.4 秒押さえて録る。リバーブ・コーラスの送りは 0、
 インサーションのスイッチは切る（mr_preset_compare.py と同じ）。送るのはプログラムチェンジ・パラメーターチェンジ・CC・アフタータッチ・ピッチベンド・ノートだけ
 （保存しない）。終わったら戻してマルチへ。録った音は配らないこと（ヤマハの音）。"""
@@ -33,7 +33,7 @@ def reset(r):
 
 
 def send(r, m):
-    st, n, v = MSG[m]
+    st, n, v = MSG[m[:-3] if m.endswith("pre") else m]
     if st == 0xB0:
         r.mo.short(0xB0, n, v)
     elif st == 0xD0:
@@ -78,14 +78,16 @@ def main():
             for e in range(4):
                 r.el(e, 0x41, 0x16, 0)
             time.sleep(0.1)
-            for m in ["none"] + (auto_msgs(v) if msgs == "auto" else msgs.split(",")):
+            # auto-pre: 音色が使うソースを、ノートの前（0.1 秒）に動かす（EG の行き先はキーオンのときの値で決まる）
+            ms = auto_msgs(v) if msgs == "auto" else [m + "pre" for m in auto_msgs(v)] if msgs == "auto-pre" else msgs.split(",")
+            for m in ["none"] + ms + (["nonez"] if msgs == "auto-pre" else []):     # nonez: 最後にもう 1 本、何も動かさない（1 本目とそろうかを見る）
                 name = "cp_%s_k%03d_%s" % (v, key, m)
                 if os.path.exists(os.path.join(d, name + ".wav")):
                     continue
                 reset(r)
                 ev = [(0.3, lambda: r.note_on(key, 100)), (2.7, lambda: r.note_off(key))]
-                if m != "none":
-                    ev.insert(1, (1.3, lambda m=m: send(r, m)))
+                if m not in ("none", "nonez"):
+                    ev.insert(0 if m.endswith("pre") else 1, (0.1 if m.endswith("pre") else 1.3, lambda m=m: send(r, m)))
                 r.record(name, 3.4, ev)
             reset(r)
             print(v, "録った", flush=True)

@@ -190,7 +190,7 @@ struct ctrl_mod {
 //   コモン LFO の深さ（37〜39）: 240、127 で頭打ち（箱 1 を音程・深さ 16 にして、p = 0.125・0.25・0.378 で深さ 44・76・110 相当）。
 //                      音色全体の行き先なので、エレメントのボックスによらない
 //   レゾナンス（67）: 128、+63 で頭打ち（もと 0 から p = 0.25・0.378 で +31・+47 相当、p = 0.5 から上は 62 のまま）
-// EG の時間・深さ（50〜65）・ディレイ（43）は、鳴っている間に CC を動かしても変わらなかった（キーオンのときだけ読むらしい。入れていない）。
+// EG の時間・深さ（50〜65）・ディレイ（43）は、鳴っている間に CC を動かしても変わらなかった（キーオンのときだけ読む。EG は ctrl_eg で入れた。ディレイは入れていない）。
 // HPF（68）も雛形（LPF24D）では変わらなかったが、HPF は LPF12・LPF6 の型だけで効くため。カットオフと同じ 512 とした
 static constexpr double CTRL_VOLUME_SCALE = 265;
 
@@ -231,6 +231,27 @@ static inline void ctrl_add(ctrl_mod &m, int dest, double p)
 	case 68: m.hpf += x; break;
 	case 37: case 38: case 39: m.clfo[dest - 37] += x; break;
 	}
+}
+
+// EG の行き先（50 PEG-Dpt・51〜55 PEG の時間・56〜59 AEG の時間・60 FEG-Dpt・61〜65 FEG の時間）: キーオンのときに値へ p × R を足す
+// （tools/motif/mr_ctrl_eg.py、2026-10-25。組を CC1 にして CC1 をノートの前に置き、欄の値を 8 ずつ振った基準の曲線と照らした）。
+// 時間は 256（AEG の 4 段・PEG の 5 段で、深さ ±2・±4 × 127 と +8 × 64 が ±8・±16 にそろう。FEG の時間はノイズの明るさで読むので散るが、多くは 256）、
+// 深さ（PEG・FEG）は 128（深さ ±8・±16 × 127 と +32 × 64 が、欄の値 48・32・80・96 の基準とぴったり同じ）
+static constexpr double CTRL_EG_TIME = 256, CTRL_EG_DEPTH = 128;
+
+static inline void ctrl_eg(element_params &p, int dest, double x)
+{
+	auto add = [&](int &v, double r) { v = std::max(0, std::min(127, int(std::lround(v + x * r)))); };
+	if (dest == 50)
+		add(p.peg.depth, CTRL_EG_DEPTH);
+	else if (dest >= 51 && dest <= 55)
+		add(p.peg.time[dest - 51], CTRL_EG_TIME);
+	else if (dest >= 56 && dest <= 59)
+		add(p.aeg.time[dest - 56], CTRL_EG_TIME);
+	else if (dest == 60)
+		add(p.feg.depth, CTRL_EG_DEPTH);
+	else if (dest >= 61 && dest <= 65)
+		add(p.feg.time[dest - 61], CTRL_EG_TIME);
 }
 
 struct voice {

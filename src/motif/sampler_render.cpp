@@ -216,6 +216,39 @@ int main(int argc, char **argv)
 	std::vector<int> vdelay;                 // エレメントの Key On Delay（サンプル）
 	std::vector<int> vcbox;                  // エレメントのコントロールボックス（ビット 0〜5 = 組 1〜6）
 	std::vector<motif_sampler::voice> voices;
+	// コントロールセット: 組ごとに（ソース・行き先・深さ）。ソースの値が変わる時刻だけ、エレメントごとのずれを決め直す
+	struct cset { int src, dest, depth; };
+	std::vector<cset> sets;
+	{
+		std::istringstream ss(ctrlline.count("sets") ? ctrlline.at("sets") : "");
+		std::string t;
+		while (std::getline(ss, t, ',')) {
+			int a = 0, b = 0, c = 64;
+			if (std::sscanf(t.c_str(), "%d:%d:%d", &a, &b, &c) == 3)
+				sets.push_back({ a, b, c });
+		}
+	}
+	auto bipolar = [](int src) { return src == 0 || src == 6 || src == 8 || src == 9; };
+	int srcval[16];
+	for (int k = 0; k < 16; k++)
+		srcval[k] = bipolar(k) ? 64 : 0;
+	std::sort(ctl.begin(), ctl.end(), [](const ctl_ev &a, const ctl_ev &b) { return a.t < b.t; });
+	// EG の行き先（50〜65）はキーオンのときのソースの値で決まる（鳴っている間に動かしても変わらない）ので、鳴らす前に時間・深さの値をずらす
+	int srcval0[16];
+	for (int k = 0; k < 16; k++)
+		srcval0[k] = srcval[k];
+	for (const ctl_ev &ev : ctl)
+		if (ev.t <= 0)
+			srcval0[std::max(0, std::min(15, ev.src))] = std::max(0, std::min(127, ev.val));
+	auto eg_ctrl = [&](motif_sampler::element_params &p, int cbox) {
+		for (size_t k = 0; k < sets.size() && k < 6; k++) {
+			const cset &c = sets[k];
+			if (c.dest < 50 || c.dest > 65 || c.depth == 64 || c.src < 0 || c.src > 15 || !(cbox >> k & 1))
+				continue;
+			const int v = srcval0[c.src];
+			motif_sampler::ctrl_eg(p, c.dest, (c.depth - 64) / 64.0 * (bipolar(c.src) ? (v - 64) / 64.0 : v / 127.0));
+		}
+	};
 	for (const element &e : els) {
 		ins_count[geti(e.f, "ins")]++;      // インサーションのスイッチは、鳴る鳴らないによらず入っているエレメント全部の多数決（mr_fx_apply.apply_insertion と同じ）
 		if (note < geti(e.f, "note_lo") || note > geti(e.f, "note_hi") || vel < geti(e.f, "vel_lo") || vel > geti(e.f, "vel_hi"))
@@ -353,6 +386,7 @@ int main(int argc, char **argv)
 		p.eq_g2 = geti(e.f, "eqg2", 0x40);
 		samples.push_back(std::move(s));
 		voices.emplace_back();
+		eg_ctrl(p, geti(e.f, "cbox"));
 		voices.back().start(*samples.back(), p, note, vel);
 		vgroup.push_back(std::max(0, std::min(2, geti(e.f, "ins"))));
 		vcbox.push_back(geti(e.f, "cbox"));
@@ -365,23 +399,6 @@ int main(int argc, char **argv)
 	std::vector<float> l(n), r(n);
 	std::vector<float> gl[3] = {std::vector<float>(n), std::vector<float>(n), std::vector<float>(n)};
 	std::vector<float> gr[3] = {std::vector<float>(n), std::vector<float>(n), std::vector<float>(n)};
-	// コントロールセット: 組ごとに（ソース・行き先・深さ）。ソースの値が変わる時刻だけ、エレメントごとのずれを決め直す
-	struct cset { int src, dest, depth; };
-	std::vector<cset> sets;
-	{
-		std::istringstream ss(ctrlline.count("sets") ? ctrlline.at("sets") : "");
-		std::string t;
-		while (std::getline(ss, t, ',')) {
-			int a = 0, b = 0, c = 64;
-			if (std::sscanf(t.c_str(), "%d:%d:%d", &a, &b, &c) == 3)
-				sets.push_back({ a, b, c });
-		}
-	}
-	auto bipolar = [](int src) { return src == 0 || src == 6 || src == 8 || src == 9; };
-	int srcval[16];
-	for (int k = 0; k < 16; k++)
-		srcval[k] = bipolar(k) ? 64 : 0;
-	std::sort(ctl.begin(), ctl.end(), [](const ctl_ev &a, const ctl_ev &b) { return a.t < b.t; });
 	size_t ci = 0;
 	double vol_off = 0;                      // 行き先 1（Volume）: 音色の音量の値のずれ（エレメントのボックスによらない）
 	std::vector<float> voff(n);

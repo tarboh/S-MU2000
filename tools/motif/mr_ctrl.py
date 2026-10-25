@@ -21,10 +21,15 @@ MSGS = [("CC1", 0xB0, 1), ("CC2", 0xB0, 2), ("CC4", 0xB0, 4), ("CC12", 0xB0, 12)
         ("CC18", 0xB0, 18), ("CC19", 0xB0, 19), ("CC20", 0xB0, 20), ("CC21", 0xB0, 21), ("AT", 0xD0, None), ("PB", 0xE0, None)]
 
 
+# CC18 は AEG のアタックをずらす（64 が中心、0 で速く 127 で遅く。パラメーターを変えても残り、プログラムチェンジと CC121 で中心に戻る。2026-10-25）。
+# CC19〜21 はリリース・ディケイ・明るさに効かなかったが、同じく 64 に戻しておく
+CENTER_CC = {18, 19, 20, 21}
+
+
 def reset_ctrls(r):
     for _, st, n in MSGS:
         if st == 0xB0:
-            r.mo.short(0xB0, n, 0 if n != 11 else 127)
+            r.mo.short(0xB0, n, 64 if n in CENTER_CC else 0)
         elif st == 0xD0:
             r.mo.short(0xD0, 0, 0)
         else:
