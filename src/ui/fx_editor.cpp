@@ -448,16 +448,6 @@ void fx_editor::draw(xg::model &m, const xg_snapshot &, bridge &br)
 			ImGui::EndCombo();
 		}
 	}
-	if (m_partner) {
-		ImGui::SameLine(0, fs);
-		if (ImGui::Checkbox(UI_TEXT(fxe_link_ad, "Link AD1/AD2"), &m_link_ad) && m_link_ad && has_type)
-			copy_to_partner(m, br, type);
-		if (ImGui::IsItemHovered()) {
-			char tip[512];
-			std::snprintf(tip, sizeof(tip), UI_TEXT(fxe_link_ad_tip_fmt, "Edits here also go to INS %d, which is on the other A/D input: the same type and the same knob values on both. Turning it on copies this effect to INS %d once. Pan each AD part to taste in the part list (for a stereo source, hard left and hard right)."), m_partner, m_partner);
-			ImGui::SetTooltip("%s", tip);
-		}
-	}
 	ImGui::SameLine(0, fs * 1.5f);
 	help_checkbox();
 
@@ -491,6 +481,21 @@ void fx_editor::draw(xg::model &m, const xg_snapshot &, bridge &br)
 	else
 		std::snprintf(sub, sizeof(sub), "INSERTION %d  →  %s", slot, part < XG_PARTS + 2 ? part_name(part).c_str() : "OFF");
 	dl->AddText(ImVec2(pos.x + fs * 1.9f, pos.y + fs * 3.0f), IM_COL32(250, 250, 240, 150), sub);
+	// AD1 / AD2 のリンク。上の帯は種類・パート・説明で埋まっているので、パネルの「INSERTION n → ADn」の横に置く
+	if (m_partner) {
+		ImGui::SetCursorScreenPos(ImVec2(pos.x + fs * 1.9f + ImGui::CalcTextSize(sub).x + fs * 1.2f, pos.y + fs * 2.75f));
+		if (ImGui::Checkbox(UI_TEXT(fxe_link_ad, "Link AD1/AD2"), &m_link_ad) && m_link_ad && has_type)
+			copy_to_partner(m, br, type);
+		if (ImGui::IsItemHovered()) {
+			char tip[512];
+			std::snprintf(tip, sizeof(tip), UI_TEXT(fxe_link_ad_tip_fmt, "Edits here also go to INS %d, which is on the other A/D input: the same type and the same knob values on both. Turning it on copies this effect to INS %d once. Pan each AD part to taste in the part list (for a stereo source, hard left and hard right)."), m_partner, m_partner);
+			ImGui::BeginTooltip();
+			ImGui::PushTextWrapPos(fs * 30.0f);
+			ImGui::TextUnformatted(tip);
+			ImGui::PopTextWrapPos();
+			ImGui::EndTooltip();
+		}
+	}
 	// 動作ランプ（インサーションはパートに掛かっていれば、システムエフェクトは種類があれば点く）
 	const bool lit = sys ? has_type && msb != 0 : part < XG_PARTS + 2;
 	const ImVec2 lamp(end.x - fs * 2.2f, pos.y + fs * 1.8f);
