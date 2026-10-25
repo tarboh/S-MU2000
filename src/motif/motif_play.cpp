@@ -123,6 +123,8 @@ struct loaded {
 	motif_fx_rt::chorus_rt cho;
 	std::string label, ins_name, rev_name, cho_name;
 	double ins_rev = 0, ins_cho = 0;          // ドラム: インサーションを通った音のリバーブ・コーラスへの送り（/ 127）
+	// リバーブ・コーラスへの送り（0〜127。初めは音色の値。画面のつまみと CC91・CC93 で替わる）。リバーブ・コーラスは送り 127 で作り、入れる音に送り / 127 を掛ける
+	std::atomic<int> rev_send{0}, cho_send{0};
 };
 
 struct player {
@@ -327,6 +329,14 @@ struct player {
 			case 22: source(6, b); break;
 			case 7: cc7 = b; break;
 			case 11: cc11 = b; break;
+			case 91:
+				if (cur)
+					cur->rev_send = b;
+				break;
+			case 93:
+				if (cur)
+					cur->cho_send = b;
+				break;
 			case 64: set_sustain(b >= 64); break;
 			case 120: all_off(); break;
 			case 121:
@@ -465,6 +475,11 @@ struct player {
 						cr = (s3[j] + ir * cur->ins_cho) * g;
 					}
 					double wl = 0, wr = 0, xl = 0, xr = 0;
+					const double rs = cur->rev_send / 127.0, cs = cur->cho_send / 127.0;
+					rl *= rs;
+					rr *= rs;
+					cl *= cs;
+					cr *= cs;
 					if (cur->rev.active()) {
 						cur->rev.tick(rl, rr, xl, xr);
 						if (use_rev)
@@ -533,13 +548,17 @@ std::unique_ptr<loaded> load_voice(const voice_entry &v)
 	std::snprintf(t, sizeof t, "A %02X %02X%s・B %02X %02X%s・つなぎ %d", ia.msb, ia.lsb, state(L->ins.block_a()), ib.msb, ib.lsb, state(L->ins.block_b()),
 	              motif_sampler::geti(L->pt.fxline, "connect"));
 	L->ins_name = t;
-	L->rev.init(rv, cap + "/fx");
-	std::snprintf(t, sizeof t, "%02X %02X・送り %d", rv.msb, rv.lsb, rv.send);
-	L->rev_name = rv.send ? (L->rev.active() ? t : std::string(t) + "（応答が無い）") : "送り 0";
-	L->cho.init(ch, motif_sampler::geti(L->pt.fxline, "tempo", 120), cap + "/fxd");
+	L->rev_send = rv.send;
+	L->cho_send = ch.send;
+	motif_fx::block rv127 = rv, ch127 = ch;
+	rv127.send = ch127.send = 127;
+	L->rev.init(rv127, cap + "/fx");
+	std::snprintf(t, sizeof t, "%02X %02X", rv.msb, rv.lsb);
+	L->rev_name = L->rev.active() ? t : std::string(t) + "（応答が無い）";
+	L->cho.init(ch127, motif_sampler::geti(L->pt.fxline, "tempo", 120), cap + "/fxd");
 	L->cho.delay_start(L->ins.latency());     // インサーションの遅れ（歪み）の分、コーラスの枠の揺れの時計も遅らせる
-	std::snprintf(t, sizeof t, "%02X %02X・送り %d", ch.msb, ch.lsb, ch.send);
-	L->cho_name = ch.send ? (L->cho.active() ? (L->cho.approx() ? std::string(t) + "（近似）" : std::string(t)) : std::string(t) + "（この型はまだ）") : "送り 0";
+	std::snprintf(t, sizeof t, "%02X %02X", ch.msb, ch.lsb);
+	L->cho_name = L->cho.active() ? (L->cho.approx() ? std::string(t) + "（近似）" : std::string(t)) : std::string(t) + "（この型はまだ）";
 	return L;
 }
 
@@ -1705,6 +1724,17 @@ int main(int argc, char **argv)
 			ImGui::SameLine(0, 30);
 			ImGui::Checkbox(("コーラス（" + pl->mul->cho_name + "）").c_str(), &pl->mul->use_cho);
 		} else if (pl->cur) {
+			{
+				// リバーブ・コーラスへの送り（音色の値から。CC91・CC93 でも替わる）
+				int rs = pl->cur->rev_send, cs = pl->cur->cho_send;
+				ImGui::SetNextItemWidth(200);
+				if (ImGui::SliderInt("リバーブの送り（CC91）", &rs, 0, 127))
+					pl->cur->rev_send = rs;
+				ImGui::SameLine(0, 30);
+				ImGui::SetNextItemWidth(200);
+				if (ImGui::SliderInt("コーラスの送り（CC93）", &cs, 0, 127))
+					pl->cur->cho_send = cs;
+			}
 			ImGui::Checkbox(("インサーション（" + pl->cur->ins_name + "）").c_str(), &pl->use_ins);
 			ImGui::Checkbox(("リバーブ（" + pl->cur->rev_name + "）").c_str(), &pl->use_rev);
 			ImGui::SameLine(0, 30);
