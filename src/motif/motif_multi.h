@@ -7,7 +7,7 @@
 // ドラムのパートは、鍵ごとのリバーブ・コーラスの送り（とインサーションを通った音の Ins-EF の送り）に、パートの送り / 127 を掛けて送る（実機では測っていない）。
 // プログラムチェンジ: そのチャンネルのパート（Receive Program Change が入ったもの）の音色を、チャンネルのバンク（CC0・CC32、Receive Bank Select）と番号で替える。
 // 音色は画面の糸で読んでから入れ替える（読む間は前の音色が鳴る）。
-// インサーションを掛けるパートは、画面の表（Ins1〜8 × パート 1〜16）で替えられる（set_ins_slot・sync_ins）。
+// インサーションを掛けるパートは、画面でパートごとに入り切りできる（set_part_ins・sync_ins）。実機の「8 パートまで」は外した。
 // まだ無いもの: パートのフィルターと EG のずらし・デチューン、マスター EQ・マスターエフェクト、
 // コーラスからリバーブへの送り、パートの出口の割り当て。ベロシティの効き（深さ × 値 / 64 + オフセット − 64）は Data List の説明からで、実機では測っていない。
 #pragma once
@@ -21,6 +21,7 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -128,6 +129,39 @@ inline std::vector<ins_type> load_ins_types(const std::string &path)
 	return v;
 }
 
+// エフェクトのパラメーターの名前と範囲（tools/motif/mr_fx_params.py が Data List の Effect Parameter List から書く capture/fx_params.txt）。
+// 1 行に 1 つ: 型の番号・パラメーターの番号（1〜16）・値の下と上・名前|表示の範囲
+struct fx_param {
+	int no = 0, min = 0, max = 127;
+	std::string name, range;
+};
+
+inline std::map<int, std::vector<fx_param>> load_fx_params(const std::string &path)
+{
+	std::map<int, std::vector<fx_param>> m;
+	FILE *f = std::fopen(path.c_str(), "rb");
+	if (!f)
+		return m;
+	char line[512];
+	while (std::fgets(line, sizeof line, f)) {
+		if (line[0] == '#')
+			continue;
+		int code = 0, n = 0;
+		fx_param p;
+		if (std::sscanf(line, "%d %d %d %d %n", &code, &p.no, &p.min, &p.max, &n) < 4)
+			continue;
+		std::string rest = line + n;
+		while (!rest.empty() && (rest.back() == '\n' || rest.back() == '\r'))
+			rest.pop_back();
+		const size_t bar = rest.find('|');
+		p.name = rest.substr(0, bar);
+		p.range = bar == std::string::npos ? std::string() : rest.substr(bar + 1);
+		m[code].push_back(p);
+	}
+	std::fclose(f);
+	return m;
+}
+
 // 置き場の .multi を（ファイル, 名前）の並びで
 inline std::vector<std::pair<std::string, std::string>> scan(const std::filesystem::path &dir)
 {
@@ -223,16 +257,9 @@ public:
 	bool load(const config &c, const std::string &patch_dir, const std::string &cap, int threads)
 	{
 		cfg = c;
-		// インサーションの割り当て（Ins1〜8 → パート）。マルチの設定のパートを若い順に
-		ins_slot.fill(-1);
-		{
-			std::vector<int> v = cfg.ins;
-			std::sort(v.begin(), v.end());
-			for (size_t k = 0; k < v.size() && k < ins_slot.size(); k++)
-				ins_slot[k] = v[k];
-		}
+		// インサーションを掛けるパート（初めはマルチの設定のもの。実機は 8 パートまでだが、ここでは数を限らない）
 		for (int i = 0; i < 16; i++)
-			ins_on[size_t(i)] = std::find(ins_slot.begin(), ins_slot.end(), i) != ins_slot.end();
+			ins_on[size_t(i)] = std::find(cfg.ins.begin(), cfg.ins.end(), i) != cfg.ins.end();
 		pdir = patch_dir;
 		capdir = cap;
 		tempo = std::max(1, geti(cfg.fxline, "tempo", 120));
@@ -328,21 +355,13 @@ public:
 		return ins;
 	}
 
-	// ---- インサーションの割り当て（画面の糸だけが触る。鳴らす糸へは sync_ins で渡す） ----
-	// Ins s（0〜7）をパート p（0〜15、−1 で外す）に。1 つのパートには 1 つだけ（ほかの行のそのパートは外す）
-	void set_ins_slot(int s, int p)
+	// ---- インサーションを掛けるパート（画面の糸だけが触る。鳴らす糸へは sync_ins で渡す） ----
+	void set_part_ins(int i, bool on)
 	{
-		if (s < 0 || s >= int(ins_slot.size()))
-			return;
-		if (p >= 0)
-			for (int &x : ins_slot)
-				if (x == p)
-					x = -1;
-		ins_slot[size_t(s)] = p;
-		for (int i = 0; i < 16; i++)
-			ins_on[size_t(i)] = std::find(ins_slot.begin(), ins_slot.end(), i) != ins_slot.end();
+		if (i >= 0 && i < 16)
+			ins_on[size_t(i)] = on;
 	}
-	int ins_slot_of(int s) const { return ins_slot[size_t(s)]; }
+	bool part_ins(int i) const { return i >= 0 && i < 16 && ins_on[size_t(i)]; }
 
 	// パート i のインサーションの型を替える（画面の糸で）。which: 0 = A、1 = B（value は「型,パラメーター 1〜16」）、2 = つなぎ方（0 並列・1 A→B・2 B→A）。
 	// 音色の設定（パッチの fx 行）を書き換えるので、プログラムチェンジで音色が替わると、その音色のものに戻る
@@ -364,6 +383,60 @@ public:
 		std::swap(P.ins, ins);
 		P.ins_name = name;
 	}
+	// エフェクトのブロックの値（型, パラメーター 1〜16 [, Return, 送り]）。which: 0 = パート i の A、1 = B、2 = マルチのリバーブ、3 = コーラス。無ければ空
+	std::vector<int> block_values(int i, int which) const
+	{
+		const kv *m = nullptr;
+		const char *key = which == 0 ? "insa" : which == 1 ? "insb" : which == 2 ? "reverb" : "chorus";
+		if (which >= 2)
+			m = &cfg.fxline;
+		else if (parts[size_t(i)]->pt)
+			m = &parts[size_t(i)]->pt->fxline;
+		std::vector<int> v;
+		if (!m)
+			return v;
+		auto it = m->find(key);
+		if (it == m->end())
+			return v;
+		for (const char *c = it->second.c_str(); *c;) {
+			v.push_back(std::atoi(c));
+			while (*c && *c != ',')
+				c++;
+			if (*c)
+				c++;
+		}
+		return v;
+	}
+	// 値を書いて、その効果を作り直す（画面の糸で。作るのは鍵の外、入れ替えは中）
+	template <class Mutex>
+	void set_block_values(Mutex &mtx, int i, int which, const std::vector<int> &v)
+	{
+		std::string str;
+		for (size_t k = 0; k < v.size(); k++)
+			str += (k ? "," : "") + std::to_string(v[k]);
+		if (which < 2) {
+			set_ins_block(mtx, i, which, str);
+			return;
+		}
+		cfg.fxline[which == 2 ? "reverb" : "chorus"] = str;
+		const motif_fx::block b = motif_fx::parse_block(str);
+		char t[64];
+		std::snprintf(t, sizeof t, "%02X %02X", b.msb, b.lsb);
+		if (which == 2) {
+			motif_fx_rt::reverb_rt r;
+			r.init(b, capdir + "/fx");
+			std::lock_guard<Mutex> lk(mtx);
+			std::swap(rev, r);
+			rev_name = rev.active() ? t : std::string(t) + "（応答が無い）";
+		} else {
+			motif_fx_rt::chorus_rt c;
+			c.init(b, tempo, capdir + "/fxd");
+			std::lock_guard<Mutex> lk(mtx);
+			std::swap(cho, c);
+			cho_name = cho.active() ? (cho.approx() ? std::string(t) + "（近似）" : std::string(t)) : std::string(t) + "（この型はまだ）";
+		}
+	}
+
 	// パート i の A・B の型の番号（−1 は音色が無い）
 	int ins_code(int i, int which) const
 	{
@@ -622,7 +695,6 @@ private:
 	int bank_msb[16] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
 	int bank_lsb[16] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
 	std::vector<pc_request> requests;
-	std::array<int, 8> ins_slot{};                 // Ins1〜8 → パート（−1 は無し）
 	std::array<std::atomic<bool>, 16> ins_on{};    // パートにインサーションを掛けるか（読む糸の build_voice も見る）
 	int arp_ch = -1;
 	int compact_count = 0;

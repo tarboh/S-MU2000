@@ -812,6 +812,7 @@ int main(int argc, char **argv)
 	int selftest_voice = 0, selftest_multi = -1;
 	std::vector<std::pair<int, int>> selftest_pc, selftest_ins;
 	std::vector<std::array<int, 3>> selftest_instype;
+	std::vector<std::array<int, 4>> selftest_fxparam;
 	bool selftest_arp = false;
 	for (int i = 1; i < argc; i++) {
 		const std::string a = argv[i];
@@ -819,16 +820,21 @@ int main(int argc, char **argv)
 			selftest_arp = true;
 		else if (a == "--multi" && i + 1 < argc)
 			selftest_multi = std::atoi(argv[++i]);
-		else if (a == "--instype" && i + 1 < argc) {
+		else if (a == "--fxparam" && i + 1 < argc) {
+			// --fxparam パート:対象（0 A・1 B・2 リバーブ・3 コーラス）:番号（1〜16、17 は Return）:値。画面のつまみと同じ道で
+			int x = 0, y = 0, z = 0, w = 0;
+			if (std::sscanf(argv[++i], "%d:%d:%d:%d", &x, &y, &z, &w) == 4)
+				selftest_fxparam.push_back({x - 1, y, z, w});
+		} else if (a == "--instype" && i + 1 < argc) {
 			// --instype パート:A か B（0・1）:型の番号（MSB × 128 + LSB）。画面の選びと同じ道で、初期値は ins_types.txt
 			int x = 0, y = 0, z = 0;
 			if (std::sscanf(argv[++i], "%d:%d:%d", &x, &y, &z) == 3)
 				selftest_instype.push_back({x - 1, y, z});
 		} else if (a == "--ins" && i + 1 < argc) {
-			// --ins 行:パート（1 から。パート 0 で外す）。画面の表と同じ道で、Ins の行をパートへ
+			// --ins パート:1 か 0（掛ける・外す）。画面の表と同じ道で
 			int x = 0, y = 0;
 			if (std::sscanf(argv[++i], "%d:%d", &x, &y) == 2)
-				selftest_ins.push_back({x - 1, y - 1});
+				selftest_ins.push_back({x - 1, y});
 		} else if (a == "--pc" && i + 1 < argc) {
 			// --pc ch:番号 または ch:msb:lsb:番号（ch は 1〜16）
 			int c = 0, x = 0, y = 0, z = 0;
@@ -869,6 +875,8 @@ int main(int argc, char **argv)
 	std::vector<std::pair<std::string, std::string>> mlist = motif_multi::scan(dir / ".." / "multis");
 	// インサーションの型の一覧（mr_ins_types.py）
 	const std::vector<motif_multi::ins_type> ins_types = motif_multi::load_ins_types((dir / ".." / "ins_types.txt").string());
+	// エフェクトのパラメーターの名前と範囲（mr_fx_params.py）
+	const std::map<int, std::vector<motif_multi::fx_param>> fx_params = motif_multi::load_fx_params((dir / ".." / "fx_params.txt").string());
 
 	auto pl = std::make_unique<player>();
 	// アルペジオの型の表（mr_arp_fit.py が作る。パッチの置き場の 1 つ上）
@@ -910,13 +918,21 @@ int main(int argc, char **argv)
 				}
 			}
 			for (auto &x : selftest_ins)
-				pl->mul->set_ins_slot(x.first, x.second);
+				pl->mul->set_part_ins(x.first, x.second != 0);
 			pl->mul->sync_ins(pl->mtx);
 			for (auto &x : selftest_instype) {
 				const auto types = motif_multi::load_ins_types((dir / ".." / "ins_types.txt").string());
 				for (auto &t : types)
 					if (t.code == x[2])
 						pl->mul->set_ins_block(pl->mtx, x[0], x[1], std::to_string(t.code) + "," + t.params);
+			}
+			for (auto &x : selftest_fxparam) {
+				std::vector<int> v = pl->mul->block_values(x[0], x[1]);
+				if (x[2] >= 1 && x[2] < int(v.size())) {
+					std::printf("パート %d の %d の %d: %d → %d\n", x[0] + 1, x[1], x[2], v[size_t(x[2])], x[3]);
+					v[size_t(x[2])] = x[3];
+					pl->mul->set_block_values(pl->mtx, x[0], x[1], v);
+				}
 			}
 			std::vector<s16> pcm(44100 * 3 * 2);
 			const u32 block = 441;
@@ -1394,24 +1410,22 @@ int main(int argc, char **argv)
 					ImGui::EndTable();
 				}
 				ImGui::TextDisabled("パンは次に鳴らす音から。プログラムチェンジ（とバンクの CC0・CC32）でパートの音色が替わる");
-				// インサーションを掛けるパート: Ins1〜8 の行 × パート 1〜16 の列。1 つの行に 1 パート、1 つのパートに 1 行
+				// インサーションを掛けるパート（パートごとに入り切り。実機の 8 パートまでの制限は無し）
 				if (ImGui::BeginTable("insmatrix", 17, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
-					ImGui::TableSetupColumn("インサーション");
+					ImGui::TableSetupColumn("パート");
 					for (int p = 0; p < 16; p++)
 						ImGui::TableSetupColumn(std::to_string(p + 1).c_str());
 					ImGui::TableHeadersRow();
-					for (int sl = 0; sl < 8; sl++) {
-						ImGui::TableNextRow();
+					ImGui::TableNextRow();
+					ImGui::TableNextColumn();
+					ImGui::Text("インサーション");
+					for (int p = 0; p < 16; p++) {
 						ImGui::TableNextColumn();
-						ImGui::Text("Ins%d", sl + 1);
-						for (int p = 0; p < 16; p++) {
-							ImGui::TableNextColumn();
-							bool on = M.ins_slot_of(sl) == p;
-							ImGui::PushID(sl * 16 + p);
-							if (ImGui::Checkbox("##ins", &on))
-								M.set_ins_slot(sl, on ? p : -1);
-							ImGui::PopID();
-						}
+						bool on = M.part_ins(p);
+						ImGui::PushID(p);
+						if (ImGui::Checkbox("##ins", &on))
+							M.set_part_ins(p, on);
+						ImGui::PopID();
 					}
 					ImGui::EndTable();
 				}
@@ -1459,7 +1473,79 @@ int main(int argc, char **argv)
 						auto st = [](const motif_fx_rt::block_rt &b) { return b.thru() ? "" : !b.supported() ? "素通し" : b.approx() ? "近似" : "回せる"; };
 						ImGui::TextDisabled("A %s・B %s（素通しは、芯でまだ回せない型）", st(IP.ins->block_a()), st(IP.ins->block_b()));
 					} else
-						ImGui::TextDisabled("このパートにはインサーションを掛けていない（上の表で Ins を付けると掛かる）");
+						ImGui::TextDisabled("このパートにはインサーションを掛けていない（上の表で付けると掛かる）");
+					// エフェクトのパラメーター: パートの A・B と、マルチのリバーブ・コーラス。つまみを離したときに作り直す
+					static int fx_target = 0;
+					ImGui::SeparatorText("エフェクトのパラメーター");
+					ImGui::RadioButton("パートの A", &fx_target, 0);
+					ImGui::SameLine();
+					ImGui::RadioButton("パートの B", &fx_target, 1);
+					ImGui::SameLine();
+					ImGui::RadioButton("リバーブ", &fx_target, 2);
+					ImGui::SameLine();
+					ImGui::RadioButton("コーラス", &fx_target, 3);
+					static std::vector<int> fx_edit;
+					static int fx_edit_key = -1;
+					const int key = fx_target * 16 + ins_part;
+					std::vector<int> cur = M.block_values(ins_part, fx_target);
+					if (fx_edit_key != key || fx_edit.size() != cur.size() || (!ImGui::IsAnyItemActive() && fx_edit != cur)) {
+						fx_edit = cur;
+						fx_edit_key = key;
+					}
+					if (fx_edit.empty())
+						ImGui::TextDisabled("（このパートには音色が無い）");
+					else {
+						const int code = fx_edit[0];
+						ImGui::Text("%s", type_label(code).c_str());
+						// Hall 1〜Plate は、コーラス・インサーションの枠ではパラメーターが違う（型の番号 + 100000 で引く）
+						auto pit = fx_target != 2 && fx_params.count(code + 100000) ? fx_params.find(code + 100000) : fx_params.find(code);
+						bool commit = false;
+						ImGui::PushItemWidth(220);
+						for (int k = 1; k <= 16 && k < int(fx_edit.size()); k++) {
+							const motif_multi::fx_param *pd = nullptr;
+							if (pit != fx_params.end())
+								for (auto &q : pit->second)
+									if (q.no == k)
+										pd = &q;
+							if (pit != fx_params.end() && !pd)
+								continue;                       // その型で使わない番号
+							const int lo = pd ? pd->min : 0, hi = pd ? pd->max : (fx_edit[k] > 127 ? 16383 : 127);
+							char lab[96];
+							std::snprintf(lab, sizeof lab, "%02d %s##fxp%d", k, pd ? pd->name.c_str() : "", k);
+							ImGui::SliderInt(lab, &fx_edit[k], lo, hi);
+							commit |= ImGui::IsItemDeactivatedAfterEdit();
+							if (pd && !pd->range.empty() && ImGui::IsItemHovered())
+								ImGui::SetTooltip("%s", pd->range.c_str());
+							if (k % 2 == 1)
+								ImGui::SameLine(0, 30);
+						}
+						ImGui::NewLine();
+						if (fx_target >= 2 && fx_edit.size() > 17) {
+							ImGui::SliderInt("Return##fxret", &fx_edit[17], 0, 127);
+							commit |= ImGui::IsItemDeactivatedAfterEdit();
+						}
+						ImGui::PopItemWidth();
+						if (ImGui::Button("初期値に戻す##fxdef")) {
+							for (auto &t : ins_types)
+								if (t.code == code) {
+									std::vector<int> v{code};
+									for (const char *c = t.params.c_str(); *c;) {
+										v.push_back(std::atoi(c));
+										while (*c && *c != ',')
+											c++;
+										if (*c)
+											c++;
+									}
+									for (size_t k = 17; k < fx_edit.size(); k++)
+										v.push_back(fx_edit[k]);
+									fx_edit = v;
+									commit = true;
+								}
+						}
+						if (commit)
+							M.set_block_values(pl->mtx, ins_part, fx_target, fx_edit);
+						ImGui::TextDisabled("つまみを離すと効く。名前と範囲は Data List の Effect Parameter List（無い型は番号だけ）");
+					}
 				}
 			}
 		} else
