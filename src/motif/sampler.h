@@ -33,6 +33,7 @@ struct sample {
 	int loop_length = 0;
 	int key = 60;                 // 録った鍵
 	double stretch = 1.0;         // 切り出しのときの伸び縮み（録った鍵の高さで鳴らすには、1 サンプルあたり 1 / stretch 進む）
+	bool stereo = false;          // 左右が違う（ステレオの波形）。パンは左右を別々の位置に置く
 };
 
 // 音色のコモン LFO（40 06 00）。tools/motif/mr_clfo.py で測った:
@@ -314,6 +315,7 @@ struct voice {
 	swp50_filter::element_filter flt, flt_r;
 	swp50_eq::element_eq eq, eq_r;
 	double gl = 1, gr = 1, pan_offset = 0;
+	double sll = 1, slr = 0, srl = 0, srr = 1;   // ステレオの波形: 左の音 → 左・右、右の音 → 左・右
 	long tick = 0;                        // 鳴り始めからのサンプル数（コモン LFO）
 	ctrl_mod cm;                          // コントロールセットのずれ（鳴らす側が毎サンプル入れる）
 	// ポルタメント: 音程のずれ（セント）を glide_to へ、1 サンプルあたり glide_rate セントずつまっすぐ近づける（tools/motif/mr_multi.py、2026-10-25）
@@ -434,6 +436,22 @@ struct voice {
 		const double far = py[j] + (ao - px[j]) / (px[j + 1] - px[j]) * (py[j + 1] - py[j]);
 		gl = o > 0 ? far : 1.0;
 		gr = o < 0 ? far : 1.0;
+		// ステレオの波形: 左の音は（パン − 63）、右の音は（パン + 63）の位置に、上と同じ決まりで置く（実機のドラムの鍵で、パン 1〜127 の 8 点が合った。
+		// tools/motif/mr_drum_cal.py。左へ振り切ると、右の音が中央に来て左右の両方に 0dB で出る）
+		if (smp && smp->stereo) {
+			auto side = [&](double q, double &to_l, double &to_r) {
+				q = std::max(-63.0, std::min(63.0, q));
+				const double aq = std::fabs(q);
+				int k = 0;
+				while (k < 3 && aq > px[k + 1])
+					k++;
+				const double f = py[k] + (aq - px[k]) / (px[k + 1] - px[k]) * (py[k + 1] - py[k]);
+				to_l = q > 0 ? f : 1.0;
+				to_r = q < 0 ? f : 1.0;
+			};
+			side(o - 63, sll, slr);
+			side(o + 63, srl, srr);
+		}
 	}
 
 	void release()
@@ -558,8 +576,13 @@ struct voice {
 		if (released && g * p.gain < QUIET_GAIN)
 			for (int k = 0; k < 3 && !p.aeg.finished(); k++)
 				p.aeg.step();
-		outl += float(l * gl * g);
-		outr += float(r * gr * g);
+		if (smp->stereo) {
+			outl += float((l * sll + r * srl) * g);
+			outr += float((l * slr + r * srr) * g);
+		} else {
+			outl += float(l * gl * g);
+			outr += float(r * gr * g);
+		}
 	}
 	static constexpr double QUIET_GAIN = 1e-4;
 	static constexpr float FILTER_CLIP = 2.0f;

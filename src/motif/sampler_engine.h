@@ -89,10 +89,14 @@ inline bool load_smpx(const std::string &path, sample &s)
 		return false;
 	s.L.resize(n);
 	s.R.resize(n);
+	float peak = 0, diff = 0;
 	for (int i = 0; i < n; i++) {
 		s.L[i] = buf[2 * i];
 		s.R[i] = buf[2 * i + 1];
+		peak = std::max(peak, std::fabs(s.L[i]));
+		diff = std::max(diff, std::fabs(s.L[i] - s.R[i]));
 	}
+	s.stereo = diff > peak * 1e-4f;
 	return true;
 }
 
@@ -211,6 +215,9 @@ public:
 		for (int k = 0; k < 16; k++)
 			srcval[k] = bipolar(k) ? 64 : 0;
 		mono = geti(pt.voiceline, "mono", 1) == 0;
+		for (const element &e : pt.els)
+			if (geti(e.f, "dnote", -1) >= 0)
+				is_drum = true;
 		same_single = geti(pt.voiceline, "same", 1) == 0;
 		porta = geti(pt.voiceline, "porta", 0) != 0;
 		fulltime = geti(pt.voiceline, "pmode", 0) != 0;
@@ -272,6 +279,20 @@ public:
 			for (size_t k = 0; k < notes.size(); k++)
 				if (notes[k].alive && notes[k].key == key)
 					kill_note(int(k));
+		if (is_drum) {
+			// ドラム: 同じオルタネートグループのほかの鍵を止める（ハイハットの開きと閉じ）。Assign Mode が single の鍵は、同じ鍵の前の音を止める
+			const element *de = drum_element(key);
+			if (de) {
+				const int ag = geti(de->f, "alt");
+				for (size_t k = 0; k < notes.size(); k++) {
+					if (!notes[k].alive)
+						continue;
+					const element *oe = notes[k].key == key ? de : drum_element(notes[k].key);
+					if ((notes[k].key == key && geti(de->f, "assign", 1) == 0) || (ag > 0 && notes[k].key != key && oe && geti(oe->f, "alt") == ag))
+						kill_note(int(k));
+				}
+			}
+		}
 		make_room(count_elements(key, vel));
 		start_note(key, vel, i);
 	}
@@ -336,22 +357,29 @@ public:
 
 	// エレメントごとに n サンプル描いてから、サンプルごとにエレメントの順に足す（足す順は 1 サンプルずつ全部のエレメントを回すのと同じなので、
 	// 結果も同じ）。エレメントを描く所は互いに関わらないので、set_threads で糸を増やすと分けて描く
-	void render(int n, float *l, float *r, float *const *gl = nullptr, float *const *gr = nullptr, float *voff = nullptr)
+	// sends を渡すと、エレメントごとの送り（rsend・csend の欄。ドラムの鍵）を掛けて足したものを、リバーブ（sends[0]・[1]）とコーラス（[2]・[3]）の左右に足す。
+	// 送るのはインサーションを通らないエレメント（ins=0）だけ（インサーションを通るものは、インサーションのあとで Ins-EF の送りを掛ける）
+	void render(int n, float *l, float *r, float *const *gl = nullptr, float *const *gr = nullptr, float *voff = nullptr, float *const *sends = nullptr)
 	{
 		// エレメントごとの描きだめがキャッシュに乗るように、1024 サンプルずつに区切る（オフラインは次の出来事まで一度に頼むので長い）
 		for (int off = 0; off < n; off += 1024) {
 			const int m = std::min(1024, n - off);
-			float *g2[3], *r2[3];
+			float *g2[3], *r2[3], *s2[4];
 			for (int k = 0; k < 3; k++) {
 				g2[k] = gl ? gl[k] + off : nullptr;
 				r2[k] = gr ? gr[k] + off : nullptr;
 			}
-			render_chunk(m, l + off, r + off, gl ? g2 : nullptr, gr ? r2 : nullptr, voff ? voff + off : nullptr);
+			for (int k = 0; k < 4; k++)
+				s2[k] = sends ? sends[k] + off : nullptr;
+			render_chunk(m, l + off, r + off, gl ? g2 : nullptr, gr ? r2 : nullptr, voff ? voff + off : nullptr, sends ? s2 : nullptr);
 		}
 	}
 
+	// ドラム（エレメントに dnote の欄がある）か
+	bool drum() const { return is_drum; }
+
 private:
-	void render_chunk(int n, float *l, float *r, float *const *gl, float *const *gr, float *voff)
+	void render_chunk(int n, float *l, float *r, float *const *gl, float *const *gr, float *voff, float *const *sends)
 	{
 		const size_t nv = voices.size();
 		if (va.size() < nv) {
@@ -387,6 +415,17 @@ private:
 					h0[j] += b[j];
 				l[j] += a[j];
 				r[j] += b[j];
+			}
+			if (sends && vgroup[vi] == 0 && (vrs[vi] > 0 || vcs[vi] > 0)) {
+				const float rs = vrs[vi], cs = vcs[vi];
+				for (int j = 0; j < n; j++) {
+					if (!on[j])
+						continue;
+					sends[0][j] += a[j] * rs;
+					sends[1][j] += b[j] * rs;
+					sends[2][j] += a[j] * cs;
+					sends[3][j] += b[j] * cs;
+				}
 			}
 		}
 		pos += n;
@@ -427,6 +466,9 @@ public:
 				vgroup[w] = vgroup[vi];
 				vdelay[w] = vdelay[vi];
 				vcbox[w] = vcbox[vi];
+				vnoff[w] = vnoff[vi];
+				vrs[w] = vrs[vi];
+				vcs[w] = vcs[vi];
 			}
 			vnote[w] = remap[vnote[vi]];
 			w++;
@@ -435,6 +477,9 @@ public:
 		vgroup.resize(w);
 		vdelay.resize(w);
 		vcbox.resize(w);
+		vnoff.resize(w);
+		vrs.resize(w);
+		vcs.resize(w);
 		vnote.resize(w);
 		notes.swap(nn);
 	}
@@ -469,6 +514,9 @@ private:
 	std::vector<int> vgroup;                 // エレメントのインサーションのスイッチ（0・1・2）
 	std::vector<int> vdelay;                 // エレメントが鳴り始めるサンプル（Key On Delay を足した）
 	std::vector<int> vcbox;                  // エレメントのコントロールボックス（ビット 0〜5 = 組 1〜6）
+	std::vector<char> vnoff;                 // ノートオフを受けるか（ドラムの鍵の Receive Note Off。ふつうのエレメントは受ける）
+	std::vector<float> vrs, vcs;             // エレメントのリバーブ・コーラスの送り（ドラムの鍵。0 なら送らない）
+	bool is_drum = false;
 	std::vector<int> vnote;                  // エレメントがどの音（notes の番号）のものか
 	std::vector<note_state> notes;
 	bool mono = false, same_single = false, porta = false, fulltime = false;
@@ -651,7 +699,9 @@ private:
 	void release_note(int id)
 	{
 		notes[id].held = false;
-		voices_of(id, [](voice &v) { v.release(); });
+		for (size_t vi = 0; vi < voices.size(); vi++)
+			if (vnote[vi] == id && vnoff[vi])
+				voices[vi].release();
 	}
 	void kill_note(int id)
 	{
@@ -719,6 +769,13 @@ private:
 			kill_note(victim);
 		}
 	}
+	const element *drum_element(int key) const
+	{
+		for (const element &e : pt.els)
+			if (key >= geti(e.f, "note_lo") && key <= geti(e.f, "note_hi"))
+				return &e;
+		return nullptr;
+	}
 	int count_elements(int key, int vel) const
 	{
 		int c = 0;
@@ -735,8 +792,10 @@ private:
 	for (const element &e : pt.els) {
 		if (note < geti(e.f, "note_lo") || note > geti(e.f, "note_hi") || vel < geti(e.f, "vel_lo") || vel > geti(e.f, "vel_hi"))
 			continue;
+		// ドラムの鍵は、押した鍵に依らず決まった鍵（dnote）で鳴らす（音程・区間・鍵で変わるものは全部その鍵で）
+		const int en = geti(e.f, "dnote", -1) >= 0 ? geti(e.f, "dnote") : note;
 		// 区間は、コースチューンでずらしたあとの鍵で選ぶ（実機: PBasFngDst のエレメント 1 はコース −12 で、鍵 60 なら鍵 48 で録ったサンプルの減り方になる）
-		const int zk = std::max(0, std::min(127, note + geti(e.f, "coarse")));
+		const int zk = std::max(0, std::min(127, en + geti(e.f, "coarse")));
 		const zone *z = nullptr;
 		int best = 1 << 30;
 		for (const zone &c : e.zones) {
@@ -873,9 +932,12 @@ private:
 		voices.emplace_back();
 		started++;
 		eg_ctrl(p, geti(e.f, "cbox"));
-		voices.back().start(*s, p, note, vel);
+		voices.back().start(*s, p, en, vel);
 		vgroup.push_back(std::max(0, std::min(2, geti(e.f, "ins"))));
 		vcbox.push_back(geti(e.f, "cbox"));
+		vnoff.push_back(char(geti(e.f, "noff", 1) != 0));
+		vrs.push_back(float(geti(e.f, "rsend") / 127.0));
+		vcs.push_back(float(geti(e.f, "csend") / 127.0));
 		vnote.push_back(note_id);
 		// テンポ同期なら音色のテンポ（fx の tempo）で拍を秒に直す（Willows のエレメント 3 は 2 分音符・テンポ 48 で 2.5 秒遅れ、2 秒押さえでは鳴らない）
 		const double kd_ms = geti(e.f, "ksync") ? key_on_delay_beats(geti(e.f, "klen")) * 60000.0 / std::max(1, geti(fxline, "tempo", 120))

@@ -121,6 +121,7 @@ struct loaded {
 	motif_fx_rt::reverb_rt rev;
 	motif_fx_rt::chorus_rt cho;
 	std::string label, ins_name, rev_name, cho_name;
+	double ins_rev = 0, ins_cho = 0;          // ドラム: インサーションを通った音のリバーブ・コーラスへの送り（/ 127）
 };
 
 struct player {
@@ -402,6 +403,9 @@ struct player {
 			const int n = int(std::min<u32>(256, frames - done));
 			float l[256] = {}, r[256] = {}, voff[256] = {};
 			float g0[256] = {}, g1[256] = {}, g2[256] = {}, h0[256] = {}, h1[256] = {}, h2[256] = {};
+			// ドラム: 鍵ごとのリバーブ・コーラスの送り（インサーションを通らない鍵の分）
+			float s0[256] = {}, s1[256] = {}, s2[256] = {}, s3[256] = {};
+			const bool drum = cur && cur->eg->drum();
 			// アルペジオの出す音は、その位置で区切って描く
 			struct aev { int pos, type, a, b; };
 			aev evs[64];
@@ -415,7 +419,8 @@ struct player {
 				const int upto = e < ne ? std::min(n, std::max(at, evs[e].pos)) : n;
 				if (cur && upto > at) {
 					float *gl[3] = {g0 + at, g1 + at, g2 + at}, *gr[3] = {h0 + at, h1 + at, h2 + at};
-					cur->eg->render(upto - at, l + at, r + at, gl, gr, voff + at);
+					float *sb[4] = {s0 + at, s1 + at, s2 + at, s3 + at};
+					cur->eg->render(upto - at, l + at, r + at, gl, gr, voff + at, drum ? sb : nullptr);
 				}
 				at = upto;
 				if (e < ne)
@@ -427,23 +432,32 @@ struct player {
 				if (cur) {
 					// インサーションは組（エレメントのスイッチ）ごとの音に掛け、そのあとで共通の音量を掛ける
 					const double g = cur->eg->volume_gain(voff[j]);
+					double il = 0, ir = 0;
 					if (use_ins) {
 						const double xl[3] = {g0[j], g1[j], g2[j]}, xr[3] = {h0[j], h1[j], h2[j]};
-						cur->ins.tick(xl, xr, dl, dr);
+						cur->ins.tick(xl, xr, dl, dr, il, ir);
 					} else {
 						dl = l[j];
 						dr = r[j];
 					}
 					dl *= g;
 					dr *= g;
+					// リバーブ・コーラスへ: ふつうの音色は全体（送りは作るときに掛けた）。ドラムは鍵ごとの送りと、インサーションを通った音に Ins-EF の送り
+					double rl = dl, rr = dr, cl = dl, cr = dr;
+					if (drum) {
+						rl = (s0[j] + il * cur->ins_rev) * g;
+						rr = (s1[j] + ir * cur->ins_rev) * g;
+						cl = (s2[j] + il * cur->ins_cho) * g;
+						cr = (s3[j] + ir * cur->ins_cho) * g;
+					}
 					double wl = 0, wr = 0, xl = 0, xr = 0;
 					if (cur->rev.active()) {
-						cur->rev.tick(dl, dr, xl, xr);
+						cur->rev.tick(rl, rr, xl, xr);
 						if (use_rev)
 							wl += xl, wr += xr;
 					}
 					if (cur->cho.active()) {
-						cur->cho.tick(dl, dr, xl, xr);
+						cur->cho.tick(cl, cr, xl, xr);
 						if (use_cho)
 							wl += xl, wr += xr;
 					}
@@ -492,6 +506,8 @@ std::unique_ptr<loaded> load_voice(const voice_entry &v)
 	// エレメントを描く糸（結果は変わらない。32 音 × 3 エレメントで 1 本の 6 倍ほど速い）
 	L->eg->set_threads(int(std::min(8u, std::max(1u, std::thread::hardware_concurrency() - 1))));
 	L->label = v.bank + ":" + std::to_string(v.number) + " " + v.name;
+	L->ins_rev = motif_sampler::geti(L->pt.fxline, "insrev") / 127.0;
+	L->ins_cho = motif_sampler::geti(L->pt.fxline, "inscho") / 127.0;
 	// リバーブとコーラスの枠（応答は capture の置き場の fx/・fxd/。パッチの置き場の 1 つ上）
 	const std::string cap = L->pt.dir + "..";
 	auto get = [&](const char *k) { auto it = L->pt.fxline.find(k); return it == L->pt.fxline.end() ? motif_fx::block() : motif_fx::parse_block(it->second); };
@@ -1166,7 +1182,11 @@ int main(int argc, char **argv)
 				continue;
 			if (list[i].bank != last_bank) {
 				last_bank = list[i].bank;
-				ImGui::SeparatorText(("バンク " + last_bank).c_str());
+				// バンクの名前（ダンプの番地の mm。00〜05 = PRE1〜6、06 = GM、08〜0A = USER1〜3、20・21・28 = ドラム）
+				static const std::map<std::string, std::string> bn = {{"00", "PRE1"}, {"01", "PRE2"}, {"02", "PRE3"}, {"03", "PRE4"}, {"04", "PRE5"},
+					{"05", "PRE6"}, {"06", "GM"}, {"08", "USER1"}, {"09", "USER2"}, {"0A", "USER3"}, {"20", "ドラム PRE"}, {"21", "ドラム GM"}, {"28", "ドラム USER"}};
+				auto it = bn.find(last_bank);
+				ImGui::SeparatorText((it != bn.end() ? it->second : "バンク " + last_bank).c_str());
 			}
 			char lab[96];
 			std::snprintf(lab, sizeof lab, "%03d  %s##%zu", list[i].number, nm.c_str(), i);

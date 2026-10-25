@@ -21,10 +21,10 @@ PART = [(0x00, "bank_msb"), (0x01, "bank_lsb"), (0x02, "prog"), (0x03, "ch"), (0
         (0x1C, "pmode"), (0x1E, "out"), (0x1F, "rx1"), (0x20, "rx2"), (0x21, "rx3"), (0x22, "aeg_sus"), (0x23, "aeg_atk"), (0x24, "voicepan"),
         (0x25, "aeg_dec"), (0x26, "aeg_rel"), (0x27, "feg_sus"), (0x28, "feg_atk"), (0x2A, "feg_dec"), (0x2B, "feg_rel"), (0x2C, "feg_depth")]
 
-# バンクの MSB・LSB → ダンプの番地の mm（パッチのファイル名の頭）と、一覧の名前
+# バンクの MSB・LSB → ダンプの番地の mm（パッチのファイル名の頭）と、一覧の名前。ドラムのパッチは mr_drum_patch.py が書く
 BANKS = {(63, 0): ("00", "PRE1"), (63, 1): ("01", "PRE2"), (63, 2): ("02", "PRE3"), (63, 3): ("03", "PRE4"), (63, 4): ("04", "PRE5"),
          (63, 5): ("05", "PRE6"), (0, 0): ("06", "GM"), (63, 8): ("08", "USR1"), (63, 9): ("09", "USR2"), (63, 10): ("0A", "USR3"),
-         (63, 32): (None, "PREDR"), (63, 40): (None, "USRDR"), (127, 0): (None, "GMDR")}
+         (63, 32): ("20", "PREDR"), (63, 40): ("28", "USRDR"), (127, 0): ("21", "GMDR")}
 
 
 def fx_line(b, key, rows):

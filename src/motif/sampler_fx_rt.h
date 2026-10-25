@@ -846,9 +846,24 @@ public:
 
 	void tick(const double gl[3], const double gr[3], double &L, double &R)
 	{
+		double iL, iR;
+		tick(gl, gr, L, R, iL, iR);
+	}
+	// iL・iR に、インサーションを通った分だけ（組 0 の素通しを除いたもの。ドラムの Ins-EF の送りに使う）
+	void tick(const double gl[3], const double gr[3], double &L, double &R, double &iL, double &iR)
+	{
 		L = gl[0];
 		R = gr[0];
 		d0.tick(L, R);
+		const double tL = L, tR = R;
+		tick_ins(gl, gr, L, R);
+		iL = L - tL;
+		iR = R - tR;
+	}
+
+private:
+	void tick_ins(const double gl[3], const double gr[3], double &L, double &R)
+	{
 		double aL = gl[1], aR = gr[1], bL = gl[2], bR = gr[2];
 		if (con == 1) {
 			A.tick(aL, aR);

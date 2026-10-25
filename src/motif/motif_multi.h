@@ -4,7 +4,8 @@
 //   オフセット）・音量・パン・リバーブとコーラスへの送り・ドライのレベル・ノートシフト・ポルタメント・Voice Pan・アルペジオのスイッチ
 //   マルチ全体: リバーブとコーラス（パートの送りを足したものに掛ける）、インサーションを使うパート（8 つまで。パートの音色のインサーションを掛ける）、
 //   アルペジオ（1 つ。スイッチの入ったパートのうち、鍵を受けたチャンネルのものが鳴らす）
-// まだ無いもの: ドラムボイスのパート（鳴らない）、パートのフィルターと EG のずらし・デチューン、マスター EQ・マスターエフェクト、
+// ドラムのパートは、鍵ごとのリバーブ・コーラスの送り（とインサーションを通った音の Ins-EF の送り）に、パートの送り / 127 を掛けて送る（実機では測っていない）。
+// まだ無いもの: パートのフィルターと EG のずらし・デチューン、マスター EQ・マスターエフェクト、
 // コーラスからリバーブへの送り、パートの出口の割り当て。ベロシティの効き（深さ × 値 / 64 + オフセット − 64）は Data List の説明からで、実機では測っていない。
 #pragma once
 
@@ -131,8 +132,9 @@ struct part {
 	bool sustain = false, sustained[128] = {};
 	std::atomic<int> voices{0};
 	std::atomic<float> peak{0};
-	// 描いた音（render の中だけ）
-	float ol[256] = {}, orr[256] = {};
+	double ins_rev = 0, ins_cho = 0;      // ドラム: インサーションを通った音のリバーブ・コーラスへの送り（/ 127）
+	// 描いた音（render の中だけ）。rs・cs はリバーブ・コーラスへ送る音（ふつうの音色は ol・orr と同じ、ドラムは鍵ごとの送りを掛けたもの）
+	float ol[256] = {}, orr[256] = {}, rsl[256] = {}, rsr[256] = {}, csl[256] = {}, csr[256] = {};
 
 	bool sounds() const { return eg != nullptr; }
 };
@@ -180,6 +182,8 @@ public:
 					P->eg = std::make_unique<motif_sampler::engine>(*P->pt, o);
 					P->eg->preload();
 					P->label = pc.bank + " " + P->pt->name;
+					P->ins_rev = geti(P->pt->fxline, "insrev") / 127.0;
+					P->ins_cho = geti(P->pt->fxline, "inscho") / 127.0;
 					if (std::find(cfg.ins.begin(), cfg.ins.end(), i) != cfg.ins.end()) {
 						auto get = [&](const char *k) {
 							auto it = P->pt->fxline.find(k);
@@ -195,7 +199,7 @@ public:
 				} else
 					P->label = pc.bank + "（パッチが無い: " + pc.voice + "）";
 			} else
-				P->label = pc.bank + "（ドラムはまだ鳴らない）";
+				P->label = pc.bank + "（パッチが無い）";
 			parts[size_t(i)] = std::move(P);
 		}
 		auto get = [&](const char *k) {
@@ -341,14 +345,13 @@ public:
 		for (int j = 0; j < n; j++) {
 			double ml = 0, mr = 0, rl = 0, rr = 0, cl = 0, cr = 0;
 			for (auto &p : parts) {
-				const double a = p->ol[j], b = p->orr[j];
 				const double d = p->dry / 127.0, s1 = p->rev / 127.0, s2 = p->cho / 127.0;
-				ml += a * d;
-				mr += b * d;
-				rl += a * s1;
-				rr += b * s1;
-				cl += a * s2;
-				cr += b * s2;
+				ml += p->ol[j] * d;
+				mr += p->orr[j] * d;
+				rl += p->rsl[j] * s1;
+				rr += p->rsr[j] * s1;
+				cl += p->csl[j] * s2;
+				cr += p->csr[j] * s2;
 			}
 			double xl = 0, xr = 0;
 			if (rev.active()) {
@@ -451,17 +454,20 @@ private:
 	{
 		float l[256] = {}, r[256] = {}, voff[256] = {};
 		float g0[256] = {}, g1[256] = {}, g2[256] = {}, h0[256] = {}, h1[256] = {}, h2[256] = {};
+		float s0[256] = {}, s1[256] = {}, s2[256] = {}, s3[256] = {};
 		if (!P.eg) {
-			std::fill(P.ol, P.ol + n, 0.0f);
-			std::fill(P.orr, P.orr + n, 0.0f);
+			for (float *b : {P.ol, P.orr, P.rsl, P.rsr, P.csl, P.csr})
+				std::fill(b, b + n, 0.0f);
 			return;
 		}
+		const bool drum = P.eg->drum();
 		int at = 0;
 		for (int e = 0; e <= ne; e++) {
 			const int upto = e < ne ? std::min(n, std::max(at, evs[e].pos)) : n;
 			if (upto > at) {
 				float *gl[3] = {g0 + at, g1 + at, g2 + at}, *gr[3] = {h0 + at, h1 + at, h2 + at};
-				P.eg->render(upto - at, l + at, r + at, gl, gr, voff + at);
+				float *sb[4] = {s0 + at, s1 + at, s2 + at, s3 + at};
+				P.eg->render(upto - at, l + at, r + at, gl, gr, voff + at, drum ? sb : nullptr);
 			}
 			at = upto;
 			if (e < ne) {
@@ -474,10 +480,10 @@ private:
 		const double pg = P.mute ? 0.0 : std::pow(P.vol / 127.0, 2.0) * std::pow(P.exp / 127.0, 2.0);
 		float pk = 0;
 		for (int j = 0; j < n; j++) {
-			double dl, dr;
+			double dl, dr, il = 0, ir = 0;
 			if (P.has_ins && use_ins) {
 				const double xl[3] = {g0[j], g1[j], g2[j]}, xr[3] = {h0[j], h1[j], h2[j]};
-				P.ins.tick(xl, xr, dl, dr);
+				P.ins.tick(xl, xr, dl, dr, il, ir);
 			} else {
 				dl = l[j];
 				dr = r[j];
@@ -485,6 +491,15 @@ private:
 			const double g = P.eg->volume_gain(voff[j]) * pg;
 			P.ol[j] = float(dl * g);
 			P.orr[j] = float(dr * g);
+			if (drum) {
+				P.rsl[j] = float((s0[j] + il * P.ins_rev) * g);
+				P.rsr[j] = float((s1[j] + ir * P.ins_rev) * g);
+				P.csl[j] = float((s2[j] + il * P.ins_cho) * g);
+				P.csr[j] = float((s3[j] + ir * P.ins_cho) * g);
+			} else {
+				P.rsl[j] = P.csl[j] = P.ol[j];
+				P.rsr[j] = P.csr[j] = P.orr[j];
+			}
 			pk = std::max(pk, std::max(std::fabs(P.ol[j]), std::fabs(P.orr[j])));
 		}
 		P.peak = std::max(pk, P.peak.load() * 0.95f);
