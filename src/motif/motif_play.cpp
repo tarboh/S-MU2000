@@ -295,6 +295,7 @@ struct player {
 						key_count[k] = 0;
 				mul->control(ch, a, b);
 				break;
+			case 0xC0: mul->program_change(ch, a); break;     // パートの音色は画面の糸で読んでから替える
 			case 0xD0: mul->aftertouch(ch, a); break;
 			case 0xE0: mul->pitch_bend(ch, b); break;
 			}
@@ -808,6 +809,7 @@ int main(int argc, char **argv)
 	std::string selftest, shot;
 	std::vector<int> shot_keys;
 	int selftest_voice = 0, selftest_multi = -1;
+	std::vector<std::pair<int, int>> selftest_pc;
 	bool selftest_arp = false;
 	for (int i = 1; i < argc; i++) {
 		const std::string a = argv[i];
@@ -815,6 +817,17 @@ int main(int argc, char **argv)
 			selftest_arp = true;
 		else if (a == "--multi" && i + 1 < argc)
 			selftest_multi = std::atoi(argv[++i]);
+		else if (a == "--pc" && i + 1 < argc) {
+			// --pc ch:番号 または ch:msb:lsb:番号（ch は 1〜16）
+			int c = 0, x = 0, y = 0, z = 0;
+			const int n = std::sscanf(argv[++i], "%d:%d:%d:%d", &c, &x, &y, &z);
+			if (n == 2)
+				selftest_pc.push_back({c - 1, x});
+			else if (n == 4) {
+				selftest_pc.push_back({c - 1, -1 - (x << 7 | y)});     // バンクを先に（負の値で印）
+				selftest_pc.push_back({c - 1, z});
+			}
+		}
 		else if (a == "--midi" && i + 1 < argc)
 			midi_dev = std::atoi(argv[++i]);
 		else if (a == "--nomidi")
@@ -863,6 +876,25 @@ int main(int argc, char **argv)
 			if (!pl->mul)
 				return 1;
 			pl->multi_mode = true;
+			// プログラムチェンジ（MIDI と同じ道: バンクは CC0・CC32、番号は Cn）。読むのはここでそのまま
+			for (auto &pc : selftest_pc) {
+				std::lock_guard<std::mutex> lk(pl->mtx);
+				if (pc.second < 0) {
+					const int b = -1 - pc.second;
+					pl->midi_message(u8(0xB0 | pc.first), 0, u8(b >> 7));
+					pl->midi_message(u8(0xB0 | pc.first), 32, u8(b & 0x7F));
+					continue;
+				}
+				pl->midi_message(u8(0xC0 | pc.first), u8(pc.second), 0);
+				for (const auto &r : pl->mul->take_requests()) {
+					std::string bank;
+					const std::string file = motif_multi::patch_of(r.msb, r.lsb, r.prog, bank);
+					if (file.empty())
+						continue;
+					motif_multi::part_voice v = pl->mul->build_voice(r.part, file, bank, r.pan);
+					pl->mul->swap_voice(*pl->mul->parts[size_t(r.part)], v);
+				}
+			}
 			std::vector<s16> pcm(44100 * 3 * 2);
 			const u32 block = 441;
 			for (u32 i = 0; i < 44100 * 3; i += block) {
@@ -986,6 +1018,13 @@ int main(int argc, char **argv)
 	}
 	pl->multi_mode = multi_ui;
 	std::string mstatus;
+	// マルチのプログラムチェンジで、パートの音色を読む糸
+	std::thread pv_loader;
+	bool pv_busy = false, pv_ready = false;
+	int pv_part = -1;
+	const motif_multi::multi *pv_multi = nullptr;
+	motif_multi::part_voice pv_new;
+	std::vector<motif_multi::pc_request> pc_queue;
 	std::mutex ready_mtx;
 	int selected = -1, want = list.empty() ? -1 : 0;
 	if (ini.count("voice"))
@@ -1056,6 +1095,54 @@ int main(int argc, char **argv)
 				old.reset();
 			}
 		}
+		// マルチのプログラムチェンジ: 頼みを受け取り、1 つずつ読む糸で音色を作って、できたら入れ替える
+		{
+			bool done_one = false;
+			{
+				std::lock_guard<std::mutex> lk(ready_mtx);
+				done_one = pv_ready;
+			}
+			if (done_one) {
+				if (pv_loader.joinable())
+					pv_loader.join();
+				{
+					std::lock_guard<std::mutex> lk(pl->mtx);
+					if (pl->mul.get() == pv_multi)
+						pl->mul->swap_voice(*pl->mul->parts[size_t(pv_part)], pv_new);
+				}
+				pv_new = motif_multi::part_voice();     // 前の音色は mtx の外で捨てる
+				pv_ready = false;
+				pv_busy = false;
+			}
+			if (pl->mul) {
+				std::vector<motif_multi::pc_request> rq;
+				{
+					std::lock_guard<std::mutex> lk(pl->mtx);
+					rq = pl->mul->take_requests();
+				}
+				for (const auto &r : rq) {
+					pc_queue.erase(std::remove_if(pc_queue.begin(), pc_queue.end(), [&](const motif_multi::pc_request &q) { return q.part == r.part; }), pc_queue.end());
+					pc_queue.push_back(r);
+				}
+			}
+			if (!pv_busy && !pc_queue.empty() && pl->mul && !loading) {
+				const motif_multi::pc_request r = pc_queue.front();
+				pc_queue.erase(pc_queue.begin());
+				std::string bank;
+				const std::string file = motif_multi::patch_of(r.msb, r.lsb, r.prog, bank);
+				if (!file.empty()) {
+					pv_busy = true;
+					pv_part = r.part;
+					pv_multi = pl->mul.get();
+					pv_loader = std::thread([&, r, file, bank, M = pv_multi]() {
+						motif_multi::part_voice v = M->build_voice(r.part, file, bank, r.pan);
+						std::lock_guard<std::mutex> lk(ready_mtx);
+						pv_new = std::move(v);
+						pv_ready = true;
+					});
+				}
+			}
+		}
 		// マルチの読み終わったもの
 		{
 			std::unique_ptr<motif_multi::multi> nw;
@@ -1064,6 +1151,12 @@ int main(int argc, char **argv)
 				nw = std::move(ready_m);
 			}
 			if (nw) {
+				// 前のマルチの音色を読んでいる糸は、終わるのを待ってから捨てる
+				if (pv_loader.joinable())
+					pv_loader.join();
+				pv_new = motif_multi::part_voice();
+				pv_ready = pv_busy = false;
+				pc_queue.clear();
 				std::unique_ptr<motif_multi::multi> old;
 				{
 					std::lock_guard<std::mutex> lk(pl->mtx);
@@ -1274,7 +1367,7 @@ int main(int argc, char **argv)
 					}
 					ImGui::EndTable();
 				}
-				ImGui::TextDisabled("パンは次に鳴らす音から。ドラムのパートはまだ鳴らない。プログラムチェンジは受けない");
+				ImGui::TextDisabled("パンは次に鳴らす音から。プログラムチェンジ（とバンクの CC0・CC32）でパートの音色が替わる");
 			}
 		} else
 			ImGui::Text("音色: %s%s", status.c_str(), loading ? "" : "");
@@ -1514,6 +1607,8 @@ int main(int argc, char **argv)
 	}
 	if (loader.joinable())
 		loader.join();
+	if (pv_loader.joinable())
+		pv_loader.join();
 	ImGui_ImplDX11_Shutdown();
 	ImGui_ImplWin32_Shutdown();
 	ImGui::DestroyContext();

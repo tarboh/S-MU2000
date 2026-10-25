@@ -5,6 +5,8 @@
 //   マルチ全体: リバーブとコーラス（パートの送りを足したものに掛ける）、インサーションを使うパート（8 つまで。パートの音色のインサーションを掛ける）、
 //   アルペジオ（1 つ。スイッチの入ったパートのうち、鍵を受けたチャンネルのものが鳴らす）
 // ドラムのパートは、鍵ごとのリバーブ・コーラスの送り（とインサーションを通った音の Ins-EF の送り）に、パートの送り / 127 を掛けて送る（実機では測っていない）。
+// プログラムチェンジ: そのチャンネルのパート（Receive Program Change が入ったもの）の音色を、チャンネルのバンク（CC0・CC32、Receive Bank Select）と番号で替える。
+// 音色は画面の糸で読んでから入れ替える（読む間は前の音色が鳴る）。
 // まだ無いもの: パートのフィルターと EG のずらし・デチューン、マスター EQ・マスターエフェクト、
 // コーラスからリバーブへの送り、パートの出口の割り当て。ベロシティの効き（深さ × 値 / 64 + オフセット − 64）は Data List の説明からで、実機では測っていない。
 #pragma once
@@ -119,11 +121,46 @@ inline std::vector<std::pair<std::string, std::string>> scan(const std::filesyst
 	return v;
 }
 
+// パートの音色（パッチ・エンジン・インサーション）。プログラムチェンジでは、読む糸で作ってから mtx の中で入れ替える
+struct part_voice {
+	std::unique_ptr<motif_sampler::patch> pt;
+	std::unique_ptr<motif_sampler::engine> eg;
+	std::unique_ptr<motif_fx_rt::insertion_rt> ins;
+	bool has_ins = false;
+	std::string label, ins_name;
+	double ins_rev = 0, ins_cho = 0;
+};
+
+// プログラムチェンジで替える頼み（パート・バンク・番号）
+struct pc_request {
+	int part, msb, lsb, prog, pan;
+};
+
+// バンクの MSB・LSB と番号 → パッチのファイル名の頭（mr_multi_export.py の BANKS と同じ）と、一覧の名前。無いバンクなら空
+inline std::string patch_of(int msb, int lsb, int prog, std::string &bank)
+{
+	static const struct { int msb, lsb; const char *mm, *name; } t[] = {
+		{63, 0, "00", "PRE1"}, {63, 1, "01", "PRE2"}, {63, 2, "02", "PRE3"}, {63, 3, "03", "PRE4"}, {63, 4, "04", "PRE5"}, {63, 5, "05", "PRE6"},
+		{0, 0, "06", "GM"}, {63, 8, "08", "USR1"}, {63, 9, "09", "USR2"}, {63, 10, "0A", "USR3"},
+		{63, 32, "20", "PREDR"}, {63, 40, "28", "USRDR"}, {127, 0, "21", "GMDR"}};
+	for (auto &e : t)
+		if (e.msb == msb && e.lsb == lsb) {
+			char b[32], f[16];
+			// GM のドラムは 1 つだけ（番号に依らない）
+			const int p = msb == 127 ? 0 : prog;
+			std::snprintf(b, sizeof b, "%s:%03d", e.name, p + 1);
+			std::snprintf(f, sizeof f, "%s_%03d", e.mm, p);
+			bank = b;
+			return f;
+		}
+	return std::string();
+}
+
 struct part {
 	part_cfg cfg;
 	std::unique_ptr<motif_sampler::patch> pt;
 	std::unique_ptr<motif_sampler::engine> eg;
-	motif_fx_rt::insertion_rt ins;
+	std::unique_ptr<motif_fx_rt::insertion_rt> ins;
 	bool has_ins = false;
 	std::string label, ins_name;
 	// 鳴らす糸と画面の糸で触る（mtx の中で）
@@ -153,7 +190,9 @@ public:
 	bool load(const config &c, const std::string &patch_dir, const std::string &cap, int threads)
 	{
 		cfg = c;
-		const int tempo = std::max(1, geti(cfg.fxline, "tempo", 120));
+		pdir = patch_dir;
+		capdir = cap;
+		tempo = std::max(1, geti(cfg.fxline, "tempo", 120));
 		for (int i = 0; i < 16; i++) {
 			auto P = std::make_unique<part>();
 			P->cfg = cfg.part[size_t(i)];
@@ -165,42 +204,15 @@ public:
 			P->cho = pc.get("cho", 0);
 			P->dry = pc.get("dry", 127);
 			P->arpsw = pc.get("arpsw", 0) != 0;
-			if (pc.voice != "-" && !pc.voice.empty()) {
-				auto pt = std::make_unique<motif_sampler::patch>();
-				if (pt->load(patch_dir + "/" + pc.voice + ".patch")) {
-					// パートの設定で音色の鳴らし方を上書きする（モノ/ポリ・ポルタメント・ピッチベンドの幅）
-					pt->voiceline["mono"] = std::to_string(pc.get("mode", 1));
-					pt->voiceline["porta"] = std::to_string(pc.get("porta", 0));
-					pt->voiceline["ptime"] = std::to_string(pc.get("ptime", 0));
-					pt->voiceline["pmode"] = std::to_string(pc.get("pmode", 0));
-					pt->ctrlline["pbup"] = std::to_string(pc.get("pbup", 64));
-					pt->ctrlline["pbdown"] = std::to_string(pc.get("pbdown", 64));
-					motif_sampler::engine_options o;
-					o.pan_offset = P->pan - 64;
-					o.fixed_pan = pc.get("voicepan", 1) == 0;
-					P->pt = std::move(pt);
-					P->eg = std::make_unique<motif_sampler::engine>(*P->pt, o);
-					P->eg->preload();
-					P->label = pc.bank + " " + P->pt->name;
-					P->ins_rev = geti(P->pt->fxline, "insrev") / 127.0;
-					P->ins_cho = geti(P->pt->fxline, "inscho") / 127.0;
-					if (std::find(cfg.ins.begin(), cfg.ins.end(), i) != cfg.ins.end()) {
-						auto get = [&](const char *k) {
-							auto it = P->pt->fxline.find(k);
-							return it == P->pt->fxline.end() ? motif_fx::block() : motif_fx::parse_block(it->second);
-						};
-						const motif_fx::block ia = get("insa"), ib = get("insb");
-						P->ins.init(ia, ib, geti(P->pt->fxline, "connect"), tempo, cap + "/fxd");
-						P->has_ins = true;
-						char t[64];
-						std::snprintf(t, sizeof t, "%02X %02X・%02X %02X", ia.msb, ia.lsb, ib.msb, ib.lsb);
-						P->ins_name = t;
-					}
-				} else
-					P->label = pc.bank + "（パッチが無い: " + pc.voice + "）";
-			} else
-				P->label = pc.bank + "（パッチが無い）";
+			part_voice v = build_voice(i, pc.voice, pc.bank, P->pan);
+			swap_voice(*P, v);
 			parts[size_t(i)] = std::move(P);
+			// チャンネルのバンクは、そのチャンネルの若い番号のパートのもの（プログラムチェンジだけ来たときに使う）
+			const int ch = parts[size_t(i)]->ch;
+			if (ch >= 0 && ch < 16 && bank_msb[ch] < 0) {
+				bank_msb[ch] = pc.get("bank_msb", 63);
+				bank_lsb[ch] = pc.get("bank_lsb", 0);
+			}
 		}
 		auto get = [&](const char *k) {
 			auto it = cfg.fxline.find(k);
@@ -217,6 +229,95 @@ public:
 		if (threads > 1)
 			pool = std::make_unique<motif_sampler::engine::worker_pool>(threads - 1);
 		return true;
+	}
+
+	// パート i の音色 voice（パッチのファイル名の頭）を作る（読む糸で呼んでよい。パートの設定で鳴らし方を上書きする）
+	part_voice build_voice(int i, const std::string &voice, const std::string &bank, int pan) const
+	{
+		part_voice v;
+		const part_cfg &pc = cfg.part[size_t(i)];
+		if (voice == "-" || voice.empty()) {
+			v.label = bank + "（パッチが無い）";
+			return v;
+		}
+		auto pt = std::make_unique<motif_sampler::patch>();
+		if (!pt->load(pdir + "/" + voice + ".patch")) {
+			v.label = bank + "（パッチが無い: " + voice + "）";
+			return v;
+		}
+		// パートの設定で音色の鳴らし方を上書きする（モノ/ポリ・ポルタメント・ピッチベンドの幅）
+		pt->voiceline["mono"] = std::to_string(pc.get("mode", 1));
+		pt->voiceline["porta"] = std::to_string(pc.get("porta", 0));
+		pt->voiceline["ptime"] = std::to_string(pc.get("ptime", 0));
+		pt->voiceline["pmode"] = std::to_string(pc.get("pmode", 0));
+		pt->ctrlline["pbup"] = std::to_string(pc.get("pbup", 64));
+		pt->ctrlline["pbdown"] = std::to_string(pc.get("pbdown", 64));
+		motif_sampler::engine_options o;
+		o.pan_offset = pan - 64;
+		o.fixed_pan = pc.get("voicepan", 1) == 0;
+		v.pt = std::move(pt);
+		v.eg = std::make_unique<motif_sampler::engine>(*v.pt, o);
+		v.eg->preload();
+		v.label = bank + " " + v.pt->name;
+		v.ins_rev = geti(v.pt->fxline, "insrev") / 127.0;
+		v.ins_cho = geti(v.pt->fxline, "inscho") / 127.0;
+		v.ins = std::make_unique<motif_fx_rt::insertion_rt>();
+		if (std::find(cfg.ins.begin(), cfg.ins.end(), i) != cfg.ins.end()) {
+			auto get = [&](const char *k) {
+				auto it = v.pt->fxline.find(k);
+				return it == v.pt->fxline.end() ? motif_fx::block() : motif_fx::parse_block(it->second);
+			};
+			const motif_fx::block ia = get("insa"), ib = get("insb");
+			v.ins->init(ia, ib, geti(v.pt->fxline, "connect"), tempo, capdir + "/fxd");
+			v.has_ins = true;
+			char t[64];
+			std::snprintf(t, sizeof t, "%02X %02X・%02X %02X", ia.msb, ia.lsb, ib.msb, ib.lsb);
+			v.ins_name = t;
+		}
+		return v;
+	}
+
+	// パートの音色を v と入れ替える（mtx の中で）。前の音色は v に残るので、mtx の外で捨てる。コントローラーの値は引き継ぐ
+	static void swap_voice(part &P, part_voice &v)
+	{
+		if (P.eg && v.eg)
+			for (int s = 0; s < 16; s++)
+				v.eg->set_source(s, P.eg->source(s));
+		std::swap(P.pt, v.pt);
+		std::swap(P.eg, v.eg);
+		std::swap(P.ins, v.ins);
+		std::swap(P.has_ins, v.has_ins);
+		std::swap(P.label, v.label);
+		std::swap(P.ins_name, v.ins_name);
+		std::swap(P.ins_rev, v.ins_rev);
+		std::swap(P.ins_cho, v.ins_cho);
+		P.sustain = false;
+		for (bool &b : P.sustained)
+			b = false;
+		if (v.eg)
+			v.eg->all_sound_off();
+	}
+
+	// プログラムチェンジ（mtx の中で）: そのチャンネルを受けるパートのうち、Receive Program Change（37 pp 1F のビット 4）が入ったものに頼みを積む。
+	// 読むのは画面の糸（take_requests → build_voice → swap_voice）
+	void program_change(int ch, int prog)
+	{
+		if (ch < 0 || ch >= 16)
+			return;
+		for (size_t i = 0; i < parts.size(); i++) {
+			part &P = *parts[i];
+			if (P.ch != ch || !(P.cfg.get("rx1", 127) >> 4 & 1))
+				continue;
+			// 同じパートの前の頼みは捨てる（続けて送られたら最後のものだけ）
+			requests.erase(std::remove_if(requests.begin(), requests.end(), [&](const pc_request &r) { return r.part == int(i); }), requests.end());
+			requests.push_back({int(i), bank_msb[ch] < 0 ? 63 : bank_msb[ch], bank_lsb[ch] < 0 ? 0 : bank_lsb[ch], prog, P.pan});
+		}
+	}
+	std::vector<pc_request> take_requests()
+	{
+		std::vector<pc_request> r;
+		r.swap(requests);
+		return r;
 	}
 
 	// ---- 受けたもの（mtx の中で） ----
@@ -261,6 +362,14 @@ public:
 			case 16: src(P, 8, val); break;
 			case 17: src(P, 9, val); break;
 			case 22: src(P, 6, val); break;
+			case 0:
+				if (P.cfg.get("rx1", 127) >> 3 & 1)       // Receive Bank Select（ビット 3）
+					bank_msb[ch] = val;
+				break;
+			case 32:
+				if (P.cfg.get("rx1", 127) >> 3 & 1)
+					bank_lsb[ch] = val;
+				break;
 			case 7: P.vol = val; break;
 			case 11: P.exp = val; break;
 			case 10:
@@ -390,6 +499,11 @@ public:
 
 private:
 	std::unique_ptr<motif_sampler::engine::worker_pool> pool;
+	std::string pdir, capdir;
+	int tempo = 120;
+	int bank_msb[16] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
+	int bank_lsb[16] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
+	std::vector<pc_request> requests;
 	int arp_ch = -1;
 	int compact_count = 0;
 
@@ -483,7 +597,7 @@ private:
 			double dl, dr, il = 0, ir = 0;
 			if (P.has_ins && use_ins) {
 				const double xl[3] = {g0[j], g1[j], g2[j]}, xr[3] = {h0[j], h1[j], h2[j]};
-				P.ins.tick(xl, xr, dl, dr, il, ir);
+				P.ins->tick(xl, xr, dl, dr, il, ir);
 			} else {
 				dl = l[j];
 				dr = r[j];
