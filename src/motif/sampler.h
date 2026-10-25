@@ -190,6 +190,21 @@ static inline int random_pitch_steps(int depth, R &rng)
 	return std::uniform_int_distribution<int>(-s, s)(rng);
 }
 
+// ポルタメントの時間（40 00 09）→ 1 オクターブ滑るのにかかる秒（モノ・フルタイムで 60 から 4・12・24 半音上へ滑らせて、10〜90% の時間から読んだ。
+// 幅によらず 1 オクターブあたりが同じ。127 は離すまで（2.8 秒）動かなかったので滑らない）。音程はセントでまっすぐ動く
+static inline double porta_octave_seconds(int v)
+{
+	static const double x[9] = {0, 16, 32, 48, 64, 80, 96, 112, 127}, y[9] = {0.003, 0.050, 0.091, 0.168, 0.329, 0.677, 1.595, 4.93, 1e9};
+	if (v <= 0)
+		return y[0];
+	if (v >= 127)
+		return y[8];
+	int i = 0;
+	while (v > x[i + 1] && i < 6)
+		i++;
+	return std::exp(std::log(y[i]) + (v - x[i]) / (x[i + 1] - x[i]) * (std::log(y[i + 1]) - std::log(y[i])));
+}
+
 // 鍵 note を、録った鍵 key のサンプルで鳴らすときの 1 サンプルあたりの進み
 static inline double step_for(const sample &s, int note, int coarse, int fine)
 {
@@ -301,6 +316,12 @@ struct voice {
 	double gl = 1, gr = 1, pan_offset = 0;
 	long tick = 0;                        // 鳴り始めからのサンプル数（コモン LFO）
 	ctrl_mod cm;                          // コントロールセットのずれ（鳴らす側が毎サンプル入れる）
+	// ポルタメント: 音程のずれ（セント）を glide_to へ、1 サンプルあたり glide_rate セントずつまっすぐ近づける（tools/motif/mr_multi.py、2026-10-25）
+	double glide = 0, glide_to = 0, glide_rate = 0;
+	// 奪われた音: kill サンプルで 0 までまっすぐ下げて止める（実機は次の音を押さえてから 3ms ほどで −50dB）
+	int kill = 0;
+	static constexpr int KILL_LEN = 132;
+	void steal() { if (!done && !kill) kill = KILL_LEN; }
 	int lfo_base[4] = {0, 0, 0, 32};      // エレメント LFO の音程・音量・フィルターの深さと速さのもと
 
 	// コモン LFO の今の値。音程（セント）と音量の値の下げ幅（エレメントの音量の目盛り。AMD は深さ × 負の側の振れだけ音量を下げる）、
@@ -468,6 +489,11 @@ struct voice {
 		clfo_out co;
 		common_lfo_now(co);
 		cents += co.cents + cm.cents;
+		if (glide != glide_to) {
+			const double d = glide_to - glide;
+			glide = std::fabs(d) <= glide_rate ? glide_to : glide + (d > 0 ? glide_rate : -glide_rate);
+		}
+		cents += glide;
 		p.lfo.speed_mul = co.speed_mul;
 		tick++;
 		pos += cents != 0.0 ? step * std::exp2(cents / 1200.0) : step;
@@ -510,7 +536,13 @@ struct voice {
 			done = true;
 			return;
 		}
-		const double g = eg * vel_gain * level_gain(std::min(127.0, level + cm.level) - co.drop) * (p.lfo.amod ? std::pow(10.0, p.lfo.amp_db_now() / 20.0) : 1.0);
+		double kg = 1.0;
+		if (kill) {
+			kg = double(kill) / KILL_LEN;
+			if (--kill == 0)
+				done = true;
+		}
+		const double g = kg * eg * vel_gain * level_gain(std::min(127.0, level + cm.level) - co.drop) * (p.lfo.amod ? std::pow(10.0, p.lfo.amp_db_now() / 20.0) : 1.0);
 		if (co.panning || cm.pan != 0)
 			pan_gains(pan_offset + co.pan + cm.pan);
 		// 離したあと出力がほぼ聞こえない（倍率 −80dB 未満）間は、実機はリリースを 4 倍の速さで進める

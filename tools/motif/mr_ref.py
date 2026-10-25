@@ -94,11 +94,12 @@ class Ref:
     def el(self, e, block, off, *data):   # block: 0x41 発振とアンプ、0x42 音程、0x43 フィルター、0x44 EQ と LFO
         self.param(block, e, off, *data)
 
-    def template(self, wave=704):
-        """エレメント 1 だけ、EG は平ら、ベロシティは効かせない、LFO・EQ は切る"""
-        for e in (1, 2, 3):
-            self.el(e, 0x41, 0x00, 0)                      # エレメント 2-4 を切る
-        e = 0
+    def template(self, wave=704, e=0, others_off=True):
+        """エレメント 1 だけ、EG は平ら、ベロシティは効かせない、LFO・EQ は切る（e で別のエレメントにも同じ雛形を作れる。others_off なら残りを切る）"""
+        if others_off:
+            for o in range(4):
+                if o != e:
+                    self.el(o, 0x41, 0x00, 0)              # ほかのエレメントを切る
         self.el(e, 0x41, 0x00, 1)
         self.el(e, 0x41, 0x03, wave >> 7, wave & 0x7F)     # 波形
         self.el(e, 0x41, 0x08, 64)                         # パン中央

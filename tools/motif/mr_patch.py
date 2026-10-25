@@ -87,7 +87,11 @@ def main():
     fx["connect"] = v.get("insertion_connect", {}).get("insertion_connect_type", 0)
     fx["tempo"] = voice_tempo(vpath)
     lines.append("fx " + " ".join("%s=%s" % kv for kv in fx.items()))
-    lines.append("voice volume=%d" % v.get("common", {}).get("volume", 127))
+    c = v.get("common", {})
+    # 1 音以外の鳴らし方（モノ/ポリ・同じ鍵の扱い・ポルタメント。sampler_render --events で使う）
+    lines.append("voice volume=%d mono=%d same=%d porta=%d pmode=%d ptime=%d ptmode=%d" % (
+        c.get("volume", 127), c.get("mono_poly", 1), c.get("same_note_key_on_assign", 1), c.get("portamento_switch", 0),
+        c.get("portamento_mode", 0), c.get("portamento_time", 0), c.get("portamento_time_mode", 0)))
     cl = voice_common_lfo(vpath)
     if cl:
         lines.append("clfo " + " ".join("%s=%s" % kv for kv in cl.items()))
