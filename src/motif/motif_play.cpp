@@ -6,8 +6,9 @@
 // パッチの置き場は、tools/motif/mr_patch.py が全部の音色を書いた所（既定は exe の置き場から ../roms/motif-rack-es/capture/patches_all）。
 // 弾き方: 画面の鍵盤をマウスで、PC のキーボード（Z〜M・Q〜I の 2 段）で、MIDI 入力（ノート・CC1/2/4/16/17/22・CC64・CC7/11・
 // アフタータッチ・ピッチベンド・プログラムチェンジ）で。MIDI の出力は開かない（実機へは何も送らない）。
-// エフェクトは sampler_fx_rt.h で掛ける（オフラインの sampler_fx.h と同じ音。fxrt_test.cpp で比べた）: インサーションの 3 Band EQ・2 Band EQ・
-// Cross Delay・コンプ（組とつなぎ方ごと）、リバーブ、コーラスの枠のコーラスの型・Cross Delay。ほかの型はまだ回せない（インサーションは素通し）。
+// エフェクトは sampler_fx_rt.h で掛ける（オフラインの sampler_fx.h と同じ音。fxrt_test.cpp で比べた）: インサーション（3 Band EQ・2 Band EQ・
+// Enhancer・Cross Delay・コンプ・コーラス・フランジャー・Ensemble Detune。組とつなぎ方ごと）、リバーブ、コーラスの枠。ほかの型はまだ回せない
+// （インサーションは素通し）。コーラス系とフランジャーは、オフラインが録った応答を使う型だと近似（式の作り）。
 // --shot 絵.bmp は、音色を読み終えてから画面を 1 枚 BMP に書いて終わる（試験用。--shot-keys 60,64,67 でその鍵を押した絵）。
 // --selftest は、画面を出さずに音色を 1 つ読み、音の糸と同じ道（fill）で和音を 2 秒鳴らして WAV に書いて終わる（試験用）。
 
@@ -343,15 +344,17 @@ std::unique_ptr<loaded> load_voice(const voice_entry &v)
 	const motif_fx::block rv = get("reverb"), ch = get("chorus");
 	char t[96];
 	const motif_fx::block ia = get("insa"), ib = get("insb");
-	L->ins.init(ia, ib, motif_sampler::geti(L->pt.fxline, "connect"), motif_sampler::geti(L->pt.fxline, "tempo", 120));
-	std::snprintf(t, sizeof t, "A %02X %02X・B %02X %02X・つなぎ %d", ia.msb, ia.lsb, ib.msb, ib.lsb, motif_sampler::geti(L->pt.fxline, "connect"));
-	L->ins_name = L->ins.supported() ? t : std::string(t) + "（まだ回せない型は素通し）";
+	L->ins.init(ia, ib, motif_sampler::geti(L->pt.fxline, "connect"), motif_sampler::geti(L->pt.fxline, "tempo", 120), cap + "/fxd");
+	auto state = [](const motif_fx_rt::block_rt &b) { return b.thru() ? "" : !b.supported() ? "（素通し）" : b.approx() ? "（近似）" : ""; };
+	std::snprintf(t, sizeof t, "A %02X %02X%s・B %02X %02X%s・つなぎ %d", ia.msb, ia.lsb, state(L->ins.block_a()), ib.msb, ib.lsb, state(L->ins.block_b()),
+	              motif_sampler::geti(L->pt.fxline, "connect"));
+	L->ins_name = t;
 	L->rev.init(rv, cap + "/fx");
 	std::snprintf(t, sizeof t, "%02X %02X・送り %d", rv.msb, rv.lsb, rv.send);
 	L->rev_name = rv.send ? (L->rev.active() ? t : std::string(t) + "（応答が無い）") : "送り 0";
-	L->cho.init(ch, motif_sampler::geti(L->pt.fxline, "tempo", 120));
+	L->cho.init(ch, motif_sampler::geti(L->pt.fxline, "tempo", 120), cap + "/fxd");
 	std::snprintf(t, sizeof t, "%02X %02X・送り %d", ch.msb, ch.lsb, ch.send);
-	L->cho_name = ch.send ? (L->cho.active() ? t : std::string(t) + "（この型はまだ）") : "送り 0";
+	L->cho_name = ch.send ? (L->cho.active() ? (L->cho.approx() ? std::string(t) + "（近似）" : std::string(t)) : std::string(t) + "（この型はまだ）") : "送り 0";
 	return L;
 }
 
