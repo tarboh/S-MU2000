@@ -31,6 +31,61 @@ namespace motif_multi {
 using motif_sampler::kv;
 using motif_sampler::geti;
 
+// サステイン（CC64）とソステヌート（CC66）。離すのを後回しにした回数を鍵ごとに数え、ペダルを上げたらその回数だけ離す
+// （前は鍵ごとの「後回しにしたか」だけで、ペダルを踏んだまま同じ鍵を弾き直すと、上げたときに古い音しか離れず、新しい音が鳴りっぱなしになった）
+struct pedals {
+	bool sus = false, sos = false;
+	bool sos_key[128] = {};                // ソステヌートを踏んだときに押さえていた鍵
+	int owed[128] = {};                    // 後回しにした離す回数
+
+	bool hold(int k) const { return sus || (sos && sos_key[k]); }
+	// 鍵 k を離したとき: 後回しにするなら true
+	bool defer(int k)
+	{
+		if (k < 0 || k > 127 || !hold(k))
+			return false;
+		owed[k]++;
+		return true;
+	}
+	template <class Off>
+	void flush(Off off)
+	{
+		for (int k = 0; k < 128; k++)
+			if (owed[k] && !hold(k))
+				for (; owed[k] > 0; owed[k]--)
+					off(k);
+	}
+	template <class Off>
+	void set_sus(bool on, Off off)
+	{
+		sus = on;
+		if (!on)
+			flush(off);
+	}
+	// held(k): 今その鍵を押さえているか
+	template <class Held, class Off>
+	void set_sos(bool on, Held held, Off off)
+	{
+		if (on && !sos)
+			for (int k = 0; k < 128; k++)
+				sos_key[k] = held(k);
+		sos = on;
+		if (!on) {
+			for (bool &b : sos_key)
+				b = false;
+			flush(off);
+		}
+	}
+	void clear()
+	{
+		sus = sos = false;
+		for (int k = 0; k < 128; k++) {
+			sos_key[k] = false;
+			owed[k] = 0;
+		}
+	}
+};
+
 // アルペジオの出したノート（ブロックの中の位置つき）
 struct arp_event {
 	int pos, type, a, b;
@@ -233,7 +288,9 @@ struct part {
 	// 鳴らす糸と画面の糸で触る（mtx の中で）
 	int ch = 0, vol = 100, pan = 64, rev = 0, cho = 0, dry = 127, exp = 127;
 	bool mute = false, arpsw = false;
-	bool sustain = false, sustained[128] = {};
+	pedals ped;
+	int down[128] = {};                    // 押さえている鍵（ノートシフトのあと。ソステヌートが見る）
+	int rpn_msb = 127, rpn_lsb = 127;      // RPN（CC101・100）。0・0 で CC6 がピッチベンドの幅
 	std::atomic<int> voices{0};
 	std::atomic<float> peak{0};
 	double ins_rev = 0, ins_cho = 0;      // ドラム: インサーションを通った音のリバーブ・コーラスへの送り（/ 127）
@@ -482,9 +539,9 @@ public:
 		std::swap(P.ins_name, v.ins_name);
 		std::swap(P.ins_rev, v.ins_rev);
 		std::swap(P.ins_cho, v.ins_cho);
-		P.sustain = false;
-		for (bool &b : P.sustained)
-			b = false;
+		P.ped.clear();
+		for (int &d : P.down)
+			d = 0;
 		if (v.eg)
 			v.eg->all_sound_off();
 	}
@@ -566,11 +623,32 @@ public:
 			case 10:
 				P.pan = val;
 				if (P.eg)
-					P.eg->set_pan_offset(val - 64);
+					P.eg->control(10, val);
 				break;
 			case 91: P.rev = val; break;
 			case 93: P.cho = val; break;
-			case 64: sustain(P, val >= 64); break;
+			case 64: P.ped.set_sus(val >= 64, [&](int k) { if (P.eg) P.eg->note_off(k); }); break;
+			case 66: P.ped.set_sos(val >= 64, [&](int k) { return P.down[k] > 0; }, [&](int k) { if (P.eg) P.eg->note_off(k); }); break;
+			case 101: P.rpn_msb = val; break;
+			case 100: P.rpn_lsb = val; break;
+			case 99:
+			case 98: P.rpn_msb = P.rpn_lsb = 127; break;   // NRPN は受けない
+			case 6:
+				if (P.rpn_msb == 0 && P.rpn_lsb == 0 && P.eg)
+					P.eg->set_pb_range(val);
+				break;
+			case 5:
+			case 65:
+			case 71:
+			case 72:
+			case 73:
+			case 74:
+			case 75:
+			case 126:
+			case 127:
+				if (P.eg)
+					P.eg->control(num, val);
+				break;
 			case 120:
 				if (P.eg)
 					P.eg->all_sound_off();
@@ -579,7 +657,11 @@ public:
 				for (int s = 0; s < 16; s++)
 					src(P, s, motif_sampler::engine::bipolar(s) ? 64 : 0);
 				P.exp = 127;
-				sustain(P, false);
+				P.ped.set_sus(false, [&](int k) { if (P.eg) P.eg->note_off(k); });
+				P.ped.set_sos(false, [&](int k) { return P.down[k] > 0; }, [&](int k) { if (P.eg) P.eg->note_off(k); });
+				P.rpn_msb = P.rpn_lsb = 127;
+				if (P.eg)
+					P.eg->reset_controls();
 				break;
 			case 123:
 				if (P.eg)
@@ -607,9 +689,9 @@ public:
 		arp.all_off();
 		arp_ch = -1;
 		for (auto &p : parts) {
-			p->sustain = false;
-			for (bool &s : p->sustained)
-				s = false;
+			p->ped.clear();
+			for (int &d : p->down)
+				d = 0;
 			if (p->eg)
 				p->eg->all_sound_off();
 		}
@@ -727,7 +809,7 @@ private:
 		if (k < 0 || k > 127)
 			return;
 		const int v = int(std::lround(vel * P.cfg.get("vsd", 64) / 64.0 + P.cfg.get("vso", 64) - 64));
-		P.sustained[k] = false;
+		P.down[k]++;
 		P.eg->note_on(k, std::min(127, std::max(1, v)));
 	}
 	static void part_off(part &P, int key)
@@ -737,22 +819,11 @@ private:
 		const int k = key + P.cfg.get("shift", 64) - 64;
 		if (k < 0 || k > 127)
 			return;
-		if (P.sustain) {
-			P.sustained[k] = true;
+		if (P.down[k] > 0)
+			P.down[k]--;
+		if (P.ped.defer(k))
 			return;
-		}
 		P.eg->note_off(k);
-	}
-	static void sustain(part &P, bool on)
-	{
-		P.sustain = on;
-		if (on || !P.eg)
-			return;
-		for (int k = 0; k < 128; k++)
-			if (P.sustained[k]) {
-				P.sustained[k] = false;
-				P.eg->note_off(k);
-			}
 	}
 
 	// パート 1 つを描いて、インサーション・音色の音量・パートの音量（CC7 と同じ 2 乗）まで掛けたものを P.ol・P.orr に

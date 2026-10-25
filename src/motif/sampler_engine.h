@@ -219,6 +219,8 @@ public:
 		porta = geti(pt.voiceline, "porta", 0) != 0;
 		fulltime = geti(pt.voiceline, "pmode", 0) != 0;
 		ptime = geti(pt.voiceline, "ptime", 0);
+		pbup = geti(pt.ctrlline, "pbup", 66);
+		pbdown = geti(pt.ctrlline, "pbdown", 62);
 		ptmode = geti(pt.voiceline, "ptmode", 0);
 		apply_ctl();
 	}
@@ -247,6 +249,47 @@ public:
 		return std::pow(std::max(0.0, std::min(127.0, geti(pt.voiceline, "volume", 127) + voff)) / 127.0, 2.0);
 	}
 	double volume_offset() const { return vol_off; }
+	// チャンネルの CC のうち、音色の鳴らし方を替えるもの（受けたら true）: 5 ポルタメントの時間・65 ポルタメントのスイッチ・10 パン（鳴っている音にも）・
+	// 71 レゾナンス・72 リリース・73 アタック・74 明るさ・75 ディケイ（どれも値 − 64 のずれ。EG は次に鳴らす音から）・126 モノ・127 ポリ。
+	// Data List の「受けるメッセージ」の説明から入れたもので、ずれの大きさ（目盛り 1 つ = 値 1）は実機で測っていない
+	bool control(int num, int val)
+	{
+		switch (num) {
+		case 5: ptime = val; return true;
+		case 65: porta = val >= 64; return true;
+		case 10: {
+			const int d = (val - 64) - pan_off;
+			pan_off = val - 64;
+			for (auto &v : voices) {
+				v.pan_offset += d;
+				v.pan_gains(v.pan_offset);
+			}
+			return true;
+		}
+		case 71: off_reso = val - 64; apply_ctl(); return true;
+		case 72: off_rel = val - 64; return true;
+		case 73: off_atk = val - 64; return true;
+		case 74: off_cutoff = val - 64; apply_ctl(); return true;
+		case 75: off_dec = val - 64; return true;
+		case 126: mono = true; return true;
+		case 127: mono = false; return true;
+		}
+		return false;
+	}
+	// RPN 0（ピッチベンドの幅）: 上下とも semis 半音
+	void set_pb_range(int semis)
+	{
+		pbup = 64 + std::min(24, std::max(0, semis));
+		pbdown = 64 - std::min(48, std::max(0, semis));
+		apply_ctl();
+	}
+	// Reset All Controllers（CC121）で戻すもの
+	void reset_controls()
+	{
+		off_cutoff = off_reso = off_atk = off_dec = off_rel = 0;
+		apply_ctl();
+	}
+
 	// 同時に鳴らすエレメントの数の上限（実機は 128。motif_play では画面で増やせる）
 	void set_polyphony(int n) { polyphony = std::max(1, n); }
 	int get_polyphony() const { return polyphony; }
@@ -522,6 +565,9 @@ private:
 	std::vector<note_state> notes;
 	bool mono = false, same_single = false, porta = false, fulltime = false;
 	int ptime = 0, ptmode = 0;
+	int pbup = 66, pbdown = 62;
+	// チャンネルの CC のずれ（値 − 64）: 74 明るさ（カットオフ）・71 レゾナンス・73 アタック・75 ディケイ・72 リリース
+	int off_cutoff = 0, off_reso = 0, off_atk = 0, off_dec = 0, off_rel = 0;
 	int last_key = -1;                       // いちばん最後に鳴らした鍵（ポルタメントの出どころ）
 	std::vector<int> held_stack;             // モノで押さえている鍵の並び（後が新しい）
 	size_t started = 0;
@@ -677,7 +723,10 @@ private:
 			// ピッチベンド: 上は pbup − 64、下は 64 − pbdown 半音
 			const int pb = srcval[0];
 			if (pb != 64)
-				m.cents += pb > 64 ? (pb - 64) / 63.0 * (geti(pt.ctrlline, "pbup", 66) - 64) * 100.0 : (pb - 64) / 64.0 * (64 - geti(pt.ctrlline, "pbdown", 62)) * 100.0;
+				m.cents += pb > 64 ? (pb - 64) / 63.0 * (pbup - 64) * 100.0 : (pb - 64) / 64.0 * (64 - pbdown) * 100.0;
+			// CC74・CC71: カットオフ・レゾナンスの値にそのまま足す（実機では測っていない）
+			m.cutoff += off_cutoff;
+			m.reso += off_reso;
 			voices[vi].cm = m;
 		}
 	}
@@ -865,6 +914,14 @@ private:
 			p.aeg.level[i] = al[i];
 		if (at.empty())
 			p.aeg.time[3] = geti(e.f, "release");
+		// CC73・CC75・CC72 のずれ（アタック・ディケイ 1 と 2・リリース）
+		if (off_atk || off_dec || off_rel) {
+			auto cl = [](int v) { return std::max(0, std::min(127, v)); };
+			p.aeg.time[0] = cl(p.aeg.time[0] + off_atk);
+			p.aeg.time[1] = cl(p.aeg.time[1] + off_dec);
+			p.aeg.time[2] = cl(p.aeg.time[2] + off_dec);
+			p.aeg.time[3] = cl(p.aeg.time[3] + off_rel);
+		}
 		p.aeg.time_vel_sens = geti(e.f, "aegtv", 64);
 		p.aeg.time_vel_segment = geti(e.f, "aegtvs", 4);
 		p.aeg.time_kf = geti(e.f, "aegkf", 64);

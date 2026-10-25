@@ -132,8 +132,8 @@ struct player {
 	std::unique_ptr<loaded> cur;
 	ui::midi_in midi;
 	std::atomic<int> key_count[128] = {};    // 押さえている数（画面の鍵盤の色）
-	bool sustain = false;
-	bool sustained[128] = {};
+	motif_multi::pedals ped;                 // ボイスモードのサステイン・ソステヌート（マルチはパートごと）
+	int rpn_msb = 127, rpn_lsb = 127;
 	int cc7 = 127, cc11 = 127;
 	float master = 0.8f;
 	bool use_ins = true, use_rev = true, use_cho = true;
@@ -145,7 +145,6 @@ struct player {
 	// アルペジオ（型の表は capture の置き場の arp_prog.txt）
 	motif_arp::library arplib;
 	motif_arp::arpeggiator arp;
-	bool arp_sustained[128] = {};
 	// マルチ（mul があって multi_mode のとき、鳴らすのはマルチ。画面の鍵盤と PC のキーボードは key_ch のチャンネルで送る）
 	std::unique_ptr<motif_multi::multi> mul;
 	bool multi_mode = false;
@@ -165,7 +164,6 @@ struct player {
 			return;
 		}
 		key_count[key]++;
-		sustained[key] = false;
 		if (multi_mode) {
 			if (mul)
 				mul->note_on(key_ch, key, std::min(127, vel));
@@ -189,10 +187,8 @@ struct player {
 		}
 		if (arp.key_off(key) && !arp.passes_through())
 			return;
-		if (sustain) {
-			sustained[key] = true;
+		if (ped.defer(key))
 			return;
-		}
 		if (cur)
 			cur->eg->note_off(key);
 	}
@@ -215,13 +211,10 @@ struct player {
 			return;
 		switch (type) {
 		case motif_arp::OUT_ON:
-			arp_sustained[a] = false;
 			cur->eg->note_on(a, b);
 			break;
 		case motif_arp::OUT_OFF:
-			if (sustain)
-				arp_sustained[a] = true;
-			else
+			if (!ped.defer(a))
 				cur->eg->note_off(a);
 			break;
 		case motif_arp::OUT_CC:
@@ -234,26 +227,27 @@ struct player {
 	}
 	void set_sustain(bool on)
 	{
-		sustain = on;
 		if (multi_mode) {
 			if (mul)
 				mul->control(key_ch, 64, on ? 127 : 0);
 			return;
 		}
-		if (on)
-			return;
-		for (int k = 0; k < 128; k++) {
-			if (sustained[k]) {
-				sustained[k] = false;
-				if (cur)
-					cur->eg->note_off(k);
-			}
-			if (arp_sustained[k]) {
-				arp_sustained[k] = false;
-				if (cur)
-					cur->eg->note_off(k);
-			}
+		ped.set_sus(on, [&](int k) { if (cur) cur->eg->note_off(k); });
+	}
+	void set_sostenuto(bool on)
+	{
+		ped.set_sos(on, [&](int k) { return key_count[k] > 0; }, [&](int k) { if (cur) cur->eg->note_off(k); });
+	}
+	// 画面のサステインのチェックボックスに出す（マルチでは鍵盤のチャンネルのパートのもの）
+	bool sustain_shown() const
+	{
+		if (multi_mode && mul) {
+			for (auto &P : mul->parts)
+				if (P->ch == key_ch)
+					return P->ped.sus;
+			return false;
 		}
+		return ped.sus;
 	}
 	void source(int s, int v)
 	{
@@ -272,10 +266,7 @@ struct player {
 	{
 		for (auto &c : key_count)
 			c = 0;
-		for (bool &s : sustained)
-			s = false;
-		for (bool &s : arp_sustained)
-			s = false;
+		ped.clear();
 		arp.all_off();
 		if (mul)
 			mul->all_off();
@@ -338,12 +329,38 @@ struct player {
 					cur->cho_send = b;
 				break;
 			case 64: set_sustain(b >= 64); break;
+			case 66: set_sostenuto(b >= 64); break;
+			case 101: rpn_msb = b; break;
+			case 100: rpn_lsb = b; break;
+			case 99:
+			case 98: rpn_msb = rpn_lsb = 127; break;     // NRPN は受けない
+			case 6:
+				if (rpn_msb == 0 && rpn_lsb == 0 && cur)
+					cur->eg->set_pb_range(b);
+				break;
+			case 5:
+			case 10:
+			case 65:
+			case 71:
+			case 72:
+			case 73:
+			case 74:
+			case 75:
+			case 126:
+			case 127:
+				if (cur)
+					cur->eg->control(a, b);
+				break;
 			case 120: all_off(); break;
 			case 121:
 				for (int s = 0; s < 16; s++)
 					source(s, motif_sampler::engine::bipolar(s) ? 64 : 0);
 				cc11 = 127;
 				set_sustain(false);
+				set_sostenuto(false);
+				rpn_msb = rpn_lsb = 127;
+				if (cur)
+					cur->eg->reset_controls();
 				break;
 			case 123:
 				for (int k = 0; k < 128; k++)
@@ -844,6 +861,7 @@ int main(int argc, char **argv)
 	std::vector<std::pair<int, int>> selftest_pc, selftest_ins;
 	std::vector<std::array<int, 3>> selftest_instype;
 	std::vector<std::array<int, 4>> selftest_fxparam;
+	std::string selftest_seq;
 	bool selftest_arp = false;
 	for (int i = 1; i < argc; i++) {
 		const std::string a = argv[i];
@@ -851,6 +869,8 @@ int main(int argc, char **argv)
 			selftest_arp = true;
 		else if (a == "--multi" && i + 1 < argc)
 			selftest_multi = std::atoi(argv[++i]);
+		else if (a == "--seq" && i + 1 < argc)
+			selftest_seq = argv[++i];      // 試験: MIDI のメッセージ（16 進、; で区切る）を 0.1 秒おきに流す
 		else if (a == "--fxparam" && i + 1 < argc) {
 			// --fxparam パート:対象（0 A・1 B・2 リバーブ・3 コーラス）:番号（1〜16、17 は Return）:値。画面のつまみと同じ道で
 			int x = 0, y = 0, z = 0, w = 0;
@@ -1009,6 +1029,43 @@ int main(int argc, char **argv)
 				std::printf("アルペジオ: 型 %d %s %s・テンポ %d\n", as.type, tp->cat.c_str(), tp->name.c_str(), as.tempo);
 			else
 				std::printf("アルペジオ: 型 %d は表に無い\n", as.type);
+		}
+		if (!selftest_seq.empty()) {
+			// MIDI の並びを 0.1 秒おきに midi_message へ流し、そのあと 4 秒鳴らして、鳴っているエレメントの数を 0.5 秒ごとに出す
+			std::vector<std::vector<u8>> msgs;
+			for (size_t a0 = 0; a0 < selftest_seq.size();) {
+				size_t e = selftest_seq.find(';', a0);
+				if (e == std::string::npos)
+					e = selftest_seq.size();
+				std::vector<u8> m;
+				for (const char *c = selftest_seq.c_str() + a0; c < selftest_seq.c_str() + e;) {
+					char *end = nullptr;
+					const long v = std::strtol(c, &end, 16);
+					if (end == c)
+						break;
+					m.push_back(u8(v));
+					c = end;
+				}
+				if (!m.empty())
+					msgs.push_back(m);
+				a0 = e + 1;
+			}
+			std::vector<s16> buf(4410 * 2);
+			for (auto &m : msgs) {
+				{
+					std::lock_guard<std::mutex> lk(pl->mtx);
+					pl->midi_message(m[0], m.size() > 1 ? m[1] : 0, m.size() > 2 ? m[2] : 0);
+				}
+				pl->fill(buf.data(), 4410);
+			}
+			for (int t = 0; t < 8; t++) {
+				for (int k = 0; k < 5; k++)
+					pl->fill(buf.data(), 4410);
+				std::lock_guard<std::mutex> lk(pl->mtx);
+				pl->cur->eg->compact();
+				std::printf("流し終えて %.1f 秒: 鳴っているエレメント %zu\n", (t + 1) * 0.5, pl->cur->eg->active_voices());
+			}
+			return 0;
 		}
 		std::vector<s16> pcm(44100 * 3 * 2);
 		const u32 block = 441;
@@ -1663,7 +1720,7 @@ int main(int argc, char **argv)
 		}
 		ImGui::PopItemWidth();
 		{
-			bool sus = pl->sustain;
+			bool sus = pl->sustain_shown();
 			if (ImGui::Checkbox("サステイン（CC64）", &sus)) {
 				std::lock_guard<std::mutex> lk(pl->mtx);
 				pl->set_sustain(sus);
