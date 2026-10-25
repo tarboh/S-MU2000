@@ -381,6 +381,8 @@ inline const ui_texts &en_texts()
 		.fxe_noeffect = "NO EFFECT (pick a type to list its knobs here)",
 		.fxe_thru = "THRU (no parameters)",
 		.fxe_no_table = "No parameter table for this type yet",
+		.fxe_link_ad = "Link AD1/AD2",
+		.fxe_link_ad_tip_fmt = "Edits here also go to INS %d, which is on the other A/D input: the same type and the same knob values on both. Turning it on copies this effect to INS %d once. Pan each AD part to taste in the part list (for a stereo source, hard left and hard right).",
 		.me_sys = "System",
 		.me_tune_note = "Tune moves in 0.1 cent steps,\ntranspose in semitones",
 		.me_fx = "System effects",
