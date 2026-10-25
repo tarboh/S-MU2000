@@ -133,6 +133,16 @@ def main():
             # 録り直したもののうち、この鍵が鳴らす鍵（60 + コース）のものを先に（芯は最初に合った区間を使う）
             k0 = max(0, min(127, DNOTE + fl["coarse"]))
             ex = [dict(s, _dir=ddir) for s in exact.get(w, []) if int(s["key"]) == k0]
+            # 鳴らすのはこの鍵だけなので、その鍵を含む区間だけを書く（全部の区間を書くと、キット 1 つで 700〜850 区間・120MB を読み込んでいた）。
+            # 録り直しがあればそれだけ、無ければ鍵を含む区間（ベロシティの層ごと）、それも無ければいちばん近い区間
+            if not ex:
+                inz = [s for s in zs if int(s["key_lo"]) <= k0 <= int(s["key_hi"])]
+                if not inz and zs:
+                    near = min(zs, key=lambda s: abs((int(s["key_lo"]) + int(s["key_hi"])) / 2 - k0))
+                    inz = [s for s in zs if (s["key_lo"], s["key_hi"]) == (near["key_lo"], near["key_hi"])]
+                zs = inz
+            else:
+                zs = []
             for s in ex + zs:
                 name = s["file"].replace(".npz", ".smpx")
                 sp, np_ = os.path.join(odir, name), os.path.join(s.get("_dir", sdir), s["file"])

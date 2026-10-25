@@ -43,6 +43,7 @@ int main()
 	s.loop_start = 1000;
 	s.loop_length = 100;
 	s.key = 60;
+	s.pack();
 
 	auto play = [&](const element_params &p, int note, int n, int release_at = -1) {
 		voice v;

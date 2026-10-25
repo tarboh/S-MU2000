@@ -28,12 +28,44 @@
 namespace motif_sampler {
 
 struct sample {
+	// 作るときは L・R に入れて pack() を呼ぶ。pack() は 16bit に詰めて L・R を空にする（メモリを 1/2、モノラルは 1/4 に）。
+	// 倍率はサンプルごとの山を 32767 にそろえるので、丸めの雑音はその音の山から −96dB 下
 	std::vector<float> L, R;
+	std::vector<int16_t> q;       // 16bit。モノラルは 1 本、ステレオは左右交互
+	float scale = 0;              // q × scale がもとの値
+	size_t frames = 0;
 	int loop_start = -1;          // -1 = 鳴らし切り
 	int loop_length = 0;
 	int key = 60;                 // 録った鍵
 	double stretch = 1.0;         // 切り出しのときの伸び縮み（録った鍵の高さで鳴らすには、1 サンプルあたり 1 / stretch 進む）
 	bool stereo = false;          // 左右が違う（ステレオの波形）。パンは左右を別々の位置に置く
+
+	void pack()
+	{
+		frames = L.size();
+		float peak = 0, diff = 0;
+		for (size_t i = 0; i < frames; i++) {
+			peak = std::max(peak, std::max(std::fabs(L[i]), std::fabs(R[i])));
+			diff = std::max(diff, std::fabs(L[i] - R[i]));
+		}
+		stereo = diff > peak * 1e-4f;
+		scale = peak > 0 ? peak / 32767.0f : 1.0f;
+		const float k = 1.0f / scale;
+		auto q16 = [&](float v) { return int16_t(std::lround(std::max(-32767.0f, std::min(32767.0f, v * k)))); };
+		q.resize(stereo ? 2 * frames : frames);
+		for (size_t i = 0; i < frames; i++) {
+			if (stereo) {
+				q[2 * i] = q16(L[i]);
+				q[2 * i + 1] = q16(R[i]);
+			} else
+				q[i] = q16(L[i]);
+		}
+		std::vector<float>().swap(L);
+		std::vector<float>().swap(R);
+	}
+	// i 番目（0..frames − 1）の左右
+	float left(size_t i) const { return float(q[stereo ? 2 * i : i]) * scale; }
+	float right(size_t i) const { return float(q[stereo ? 2 * i + 1 : i]) * scale; }
 };
 
 // 音色のコモン LFO（40 06 00）。tools/motif/mr_clfo.py で測った:
@@ -464,17 +496,17 @@ struct voice {
 		p.peg.key_off();
 	}
 
-	float at(const std::vector<float> &x, long i) const
+	// i 番目のフレームの、サンプルの中の位置（ループを折り返して）。外なら −1
+	static long index_of(const sample &s, long i)
 	{
-		const sample &s = *smp;
 		if (s.loop_start >= 0) {
 			const long end = s.loop_start + s.loop_length;
 			while (i >= end)
 				i -= s.loop_length;
 		}
-		if (i < 0 || i >= long(x.size()))
-			return 0.0f;
-		return x[size_t(i)];
+		if (i < 0 || i >= long(s.frames))
+			return -1;
+		return i;
 	}
 
 	// 1 サンプル進めて、左右を足し込む
@@ -485,12 +517,18 @@ struct voice {
 		const sample &s = *smp;
 		const long i = long(std::floor(pos));
 		const double t = pos - i;
-		auto herm = [&](const std::vector<float> &x) {
-			const double y0 = at(x, i - 1), y1 = at(x, i), y2 = at(x, i + 1), y3 = at(x, i + 2);
-			const double c1 = 0.5 * (y2 - y0), c2 = y0 - 2.5 * y1 + 2 * y2 - 0.5 * y3, c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
-			return ((c3 * t + c2) * t + c1) * t + y1;
+		// 4 点のエルミート補間。モノラルの波形は 1 本を補間して左右に同じものを使う
+		long ix[4];
+		for (int k = 0; k < 4; k++)
+			ix[k] = index_of(s, i - 1 + k);
+		auto herm = [&](int ch) {
+			double y[4];
+			for (int k = 0; k < 4; k++)
+				y[k] = ix[k] < 0 ? 0.0 : double(ch ? s.right(size_t(ix[k])) : s.left(size_t(ix[k])));
+			const double c1 = 0.5 * (y[2] - y[0]), c2 = y[0] - 2.5 * y[1] + 2 * y[2] - 0.5 * y[3], c3 = 0.5 * (y[3] - y[0]) + 1.5 * (y[1] - y[2]);
+			return ((c3 * t + c2) * t + c1) * t + y[1];
 		};
-		double l = herm(s.L), r = herm(s.R);
+		double l = herm(0), r = s.stereo ? herm(1) : l;
 		{   // 深さを毎サンプル もと + ずれ に戻す（ずれが 0 に戻ったときも、もとの深さに戻る）
 			auto clamp127 = [](double v) { return std::max(0, std::min(127, int(std::lround(v)))); };
 			p.lfo.pmod = clamp127(lfo_base[0] + cm.pmod);
@@ -516,7 +554,7 @@ struct voice {
 		p.lfo.speed_mul = co.speed_mul;
 		tick++;
 		pos += cents != 0.0 ? step * std::exp2(cents / 1200.0) : step;
-		if (s.loop_start < 0 && pos >= double(s.L.size()))
+		if (s.loop_start < 0 && pos >= double(s.frames))
 			done = true;
 		// FEG を目盛りに足してフィルターの g を決め直すのは重いので、FEG の深さが 0 でなければ毎サンプル（芯の試しなので素直に書く）
 		const double fs = p.feg.step();

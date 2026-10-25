@@ -89,14 +89,11 @@ inline bool load_smpx(const std::string &path, sample &s)
 		return false;
 	s.L.resize(n);
 	s.R.resize(n);
-	float peak = 0, diff = 0;
 	for (int i = 0; i < n; i++) {
 		s.L[i] = buf[2 * i];
 		s.R[i] = buf[2 * i + 1];
-		peak = std::max(peak, std::fabs(s.L[i]));
-		diff = std::max(diff, std::fabs(s.L[i] - s.R[i]));
 	}
-	s.stereo = diff > peak * 1e-4f;
+	s.pack();       // 16bit に詰める（モノラルは 1 本）
 	return true;
 }
 
