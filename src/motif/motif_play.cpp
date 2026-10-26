@@ -1782,10 +1782,20 @@ int main(int argc, char **argv)
 		else
 			ImGui::TextColored(ImVec4(1, 0.5f, 0.4f, 1), "音の出口を開けない: %s", audio_err.c_str());
 		{
+			// 出口の音量（ピーク。±1.0 を超えると頭打ちで切れる）と、鳴っているエレメントの数（同時発音数の上限に対して）
 			const float pk = pl->peak.load();
-			ImGui::ProgressBar(std::min(1.0f, pk), ImVec2(360, 0), pk >= 1.0f ? "頭打ち" : "");
+			char pkt[32];
+			std::snprintf(pkt, sizeof pkt, "%s%.1f dB", pk >= 1.0f ? "頭打ち " : "", pk > 1e-6f ? 20.0f * std::log10(pk) : -120.0f);
+			ImGui::ProgressBar(std::min(1.0f, pk), ImVec2(300, 0), pkt);
 			ImGui::SameLine();
-			ImGui::TextDisabled("ピーク");
+			ImGui::TextDisabled("音量（ピーク）");
+			ImGui::SameLine(0, 30);
+			const int nv = pl->voices.load();
+			char vt[48];
+			std::snprintf(vt, sizeof vt, "%d / %d", nv, polyphony);
+			ImGui::ProgressBar(std::min(1.0f, float(nv) / float(std::max(1, polyphony))), ImVec2(200, 0), vt);
+			ImGui::SameLine();
+			ImGui::TextDisabled(multi_ui ? "発音数（全パート / パートごとの上限）" : "発音数");
 		}
 		if (multi_ui && pl->mul) {
 			ImGui::Checkbox("インサーション（パートごと）", &pl->mul->use_ins);
