@@ -862,6 +862,7 @@ int main(int argc, char **argv)
 	std::vector<std::array<int, 3>> selftest_instype;
 	std::vector<std::array<int, 4>> selftest_fxparam;
 	std::string selftest_seq;
+	int selftest_poly = 0, gui_voice = -1;
 	bool selftest_arp = false;
 	for (int i = 1; i < argc; i++) {
 		const std::string a = argv[i];
@@ -869,6 +870,10 @@ int main(int argc, char **argv)
 			selftest_arp = true;
 		else if (a == "--multi" && i + 1 < argc)
 			selftest_multi = std::atoi(argv[++i]);
+		else if (a == "--voice" && i + 1 < argc)
+			gui_voice = std::atoi(argv[++i]);        // 試験: 画面で初めに選ぶ音色の番号（--shot でも）
+		else if (a == "--poly" && i + 1 < argc)
+			selftest_poly = std::atoi(argv[++i]);    // 試験: 同時発音数
 		else if (a == "--seq" && i + 1 < argc)
 			selftest_seq = argv[++i];      // 試験: MIDI のメッセージ（16 進、; で区切る）を 0.1 秒おきに流す
 		else if (a == "--fxparam" && i + 1 < argc) {
@@ -1030,6 +1035,10 @@ int main(int argc, char **argv)
 			else
 				std::printf("アルペジオ: 型 %d は表に無い\n", as.type);
 		}
+		if (selftest_poly > 0) {
+			std::lock_guard<std::mutex> lk(pl->mtx);
+			pl->set_polyphony(selftest_poly);
+		}
 		if (!selftest_seq.empty()) {
 			// MIDI の並びを 0.1 秒おきに midi_message へ流し、そのあと 4 秒鳴らして、鳴っているエレメントの数を 0.5 秒ごとに出す
 			std::vector<std::vector<u8>> msgs;
@@ -1158,11 +1167,15 @@ int main(int argc, char **argv)
 		for (size_t i = 0; i < list.size(); i++)
 			if (fs::path(list[i].file).filename().string() == ini["voice"])
 				want = int(i);
+	if (gui_voice >= 0 && gui_voice < int(list.size()))
+		want = gui_voice;
 	std::string status;
 
 	// アルペジオ: スイッチは覚えておき、ほかの設定は音色を読むたびに音色のものにする
 	bool arp_on = ini.count("arp") && ini["arp"] == "1";
 	int polyphony = ini.count("poly") ? std::max(1, std::atoi(ini["poly"].c_str())) : 128;
+	if (selftest_poly > 0)
+		polyphony = selftest_poly;              // --poly（試験。--shot でも）
 	motif_arp::settings arp_ui;
 	char filter[64] = "";
 	int octave = 3, velocity = 100, mouse_key = -1;
