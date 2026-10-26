@@ -677,56 +677,62 @@ LRESULT WINAPI wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-// 画面の鍵盤（C から 5 オクターブ）。押された鍵を返す（無ければ −1）
-int draw_keyboard(player &pl, int low, int octaves, int &mouse_key, int vel)
+// 画面の鍵盤。白鍵の幅は決まった大きさで、ウィンドウの幅に入るだけ並べる（center の鍵が真ん中に来るように。0〜127 の外は出さない）。
+// 押された鍵を返す（無ければ −1）
+int draw_keyboard(player &pl, int center, int &mouse_key, int vel)
 {
+	static const int white_off[7] = {0, 2, 4, 5, 7, 9, 11};
+	static const int white_of_semi[12] = {0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 5, 6};   // 半音 → オクターブの中の白鍵の番号（黒鍵はすぐ下の白鍵）
+	constexpr int ALL_WHITE = 75;                                               // 鍵 0〜127 の白鍵の数
+	auto note_of = [&](int w) { return (w / 7) * 12 + white_off[w % 7]; };
 	ImDrawList *dl = ImGui::GetWindowDrawList();
 	const ImVec2 p0 = ImGui::GetCursorScreenPos();
 	const float avail = ImGui::GetContentRegionAvail().x;
-	const int nwhite = octaves * 7 + 1;
-	const float ww = std::max(10.0f, std::floor(avail / nwhite)), wh = 120.0f, bw = ww * 0.62f, bh = wh * 0.62f;
+	const float ww = 22.0f, wh = 120.0f, bw = ww * 0.62f, bh = wh * 0.62f;
+	const int nwhite = std::max(7, std::min(ALL_WHITE, int(avail / ww)));
+	const int cw = (center / 12) * 7 + white_of_semi[center % 12];
+	const int first = std::max(0, std::min(ALL_WHITE - nwhite, cw - nwhite / 2));
 	ImGui::InvisibleButton("##keyboard", ImVec2(ww * nwhite, wh));
 	const bool active = ImGui::IsItemActive();
 	const ImVec2 m = ImGui::GetIO().MousePos;
-	static const int white_off[7] = {0, 2, 4, 5, 7, 9, 11};
-	static const int black_after[5] = {0, 1, 3, 4, 5};      // 白鍵の番号のあと（C#・D#・F#・G#・A#）
-	static const int black_off[5] = {1, 3, 6, 8, 10};
+	auto has_black = [&](int k) { const int s = k % 12; return (s == 0 || s == 2 || s == 5 || s == 7 || s == 9) && k + 1 <= 127; };
 	int hover = -1;
-	// 黒鍵を先に当たり判定
-	for (int o = 0; o < octaves && hover < 0; o++)
-		for (int b = 0; b < 5; b++) {
-			const float x = p0.x + (o * 7 + black_after[b] + 1) * ww - bw / 2;
-			if (m.x >= x && m.x < x + bw && m.y >= p0.y && m.y < p0.y + bh) {
-				hover = low + o * 12 + black_off[b];
-				break;
-			}
-		}
+	// 黒鍵を先に当たり判定（白鍵 j と j + 1 の間）
+	for (int j = 0; j + 1 < nwhite && hover < 0; j++) {
+		const int k = note_of(first + j);
+		if (!has_black(k))
+			continue;
+		const float x = p0.x + (j + 1) * ww - bw / 2;
+		if (m.x >= x && m.x < x + bw && m.y >= p0.y && m.y < p0.y + bh)
+			hover = k + 1;
+	}
 	if (hover < 0)
-		for (int w = 0; w < nwhite; w++) {
-			const float x = p0.x + w * ww;
+		for (int j = 0; j < nwhite; j++) {
+			const float x = p0.x + j * ww;
 			if (m.x >= x && m.x < x + ww && m.y >= p0.y && m.y < p0.y + wh) {
-				hover = low + (w / 7) * 12 + white_off[w % 7];
+				hover = note_of(first + j);
 				break;
 			}
 		}
-	for (int w = 0; w < nwhite; w++) {
-		const int k = low + (w / 7) * 12 + white_off[w % 7];
-		const float x = p0.x + w * ww;
+	for (int j = 0; j < nwhite; j++) {
+		const int k = note_of(first + j);
+		const float x = p0.x + j * ww;
 		const bool on = k < 128 && pl.key_count[k] > 0;
 		dl->AddRectFilled(ImVec2(x, p0.y), ImVec2(x + ww - 1, p0.y + wh), on ? IM_COL32(120, 180, 255, 255) : IM_COL32(240, 240, 236, 255), 3.0f);
-		if (w % 7 == 0) {
+		if (k % 12 == 0) {
 			char t[8];
 			std::snprintf(t, sizeof t, "C%d", (k / 12) - 1);
 			dl->AddText(ImVec2(x + 3, p0.y + wh - 20), IM_COL32(90, 90, 90, 255), t);
 		}
 	}
-	for (int o = 0; o < octaves; o++)
-		for (int b = 0; b < 5; b++) {
-			const int k = low + o * 12 + black_off[b];
-			const float x = p0.x + (o * 7 + black_after[b] + 1) * ww - bw / 2;
-			const bool on = k < 128 && pl.key_count[k] > 0;
-			dl->AddRectFilled(ImVec2(x, p0.y), ImVec2(x + bw, p0.y + bh), on ? IM_COL32(60, 120, 230, 255) : IM_COL32(30, 30, 34, 255), 2.0f);
-		}
+	for (int j = 0; j + 1 < nwhite; j++) {
+		const int k = note_of(first + j);
+		if (!has_black(k))
+			continue;
+		const float x = p0.x + (j + 1) * ww - bw / 2;
+		const bool on = pl.key_count[k + 1] > 0;
+		dl->AddRectFilled(ImVec2(x, p0.y), ImVec2(x + bw, p0.y + bh), on ? IM_COL32(60, 120, 230, 255) : IM_COL32(30, 30, 34, 255), 2.0f);
+	}
 	// マウス: 押している間、乗っている鍵を鳴らす（滑らせれば次の鍵へ）
 	const int want = active ? hover : -1;
 	if (want != mouse_key) {
@@ -1881,7 +1887,8 @@ int main(int argc, char **argv)
 
 		// 下: 鍵盤
 		ImGui::Separator();
-		draw_keyboard(*pl, 12 * (octave + 1) - 12, 5, mouse_key, velocity);
+		// PC キーボードの 2 段（Z の段の C から 2 オクターブ）の真ん中が、画面の鍵盤の真ん中に来るように
+		draw_keyboard(*pl, 12 * (octave + 1) + 12, mouse_key, velocity);
 		ImGui::End();
 
 		ImGui::Render();
