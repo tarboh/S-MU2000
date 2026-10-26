@@ -250,8 +250,9 @@ public:
 	}
 	double volume_offset() const { return vol_off; }
 	// チャンネルの CC のうち、音色の鳴らし方を替えるもの（受けたら true）: 5 ポルタメントの時間・65 ポルタメントのスイッチ・10 パン（鳴っている音にも）・
-	// 71 レゾナンス・72 リリース・73 アタック・74 明るさ・75 ディケイ（どれも値 − 64 のずれ。EG は次に鳴らす音から）・126 モノ・127 ポリ。
-	// Data List の「受けるメッセージ」の説明から入れたもので、ずれの大きさ（目盛り 1 つ = 値 1）は実機で測っていない
+	// 71 レゾナンス・72 リリース・73 アタック・74 明るさ・75 ディケイ（どれも (値 − 64) × 2 のずれ。EG は次に鳴らす音から）・126 モノ・127 ポリ。
+	// ずれの大きさは実機で測った（tools/motif/mr_cc_sound.py、2026-10-26）: どれも CC の 1 目盛りがパラメーターの 2 目盛りで、範囲の端で頭打ち。
+	// CC75 はディケイ 1 にも 2 にも効く
 	bool control(int num, int val)
 	{
 		switch (num) {
@@ -266,11 +267,11 @@ public:
 			}
 			return true;
 		}
-		case 71: off_reso = val - 64; apply_ctl(); return true;
-		case 72: off_rel = val - 64; return true;
-		case 73: off_atk = val - 64; return true;
-		case 74: off_cutoff = val - 64; apply_ctl(); return true;
-		case 75: off_dec = val - 64; return true;
+		case 71: off_reso = 2 * (val - 64); apply_ctl(); return true;
+		case 72: off_rel = 2 * (val - 64); return true;
+		case 73: off_atk = 2 * (val - 64); return true;
+		case 74: off_cutoff = 2 * (val - 64); apply_ctl(); return true;
+		case 75: off_dec = 2 * (val - 64); return true;
 		case 126: mono = true; return true;
 		case 127: mono = false; return true;
 		}
@@ -724,7 +725,7 @@ private:
 			const int pb = srcval[0];
 			if (pb != 64)
 				m.cents += pb > 64 ? (pb - 64) / 63.0 * (pbup - 64) * 100.0 : (pb - 64) / 64.0 * (64 - pbdown) * 100.0;
-			// CC74・CC71: カットオフ・レゾナンスの値にそのまま足す（実機では測っていない）
+			// CC74・CC71: カットオフ・レゾナンスの値に足す（頭打ちはフィルターの側で 0〜255・0〜127）
 			m.cutoff += off_cutoff;
 			m.reso += off_reso;
 			voices[vi].cm = m;
