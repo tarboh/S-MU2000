@@ -78,6 +78,30 @@ static inline void peaking(biquad &q, double f0, double gdb, double Q)
 	q.set(1 + al * A, -2 * c, 1 - al * A, 1 + al / A, -2 * c, 1 - al / A);
 }
 
+// マルチのパートの EQ（Data List の 37 pp 2E〜38）。エレメントの EQ と同じ部品: 低域の棚（EQ1 の表）・中域の山（P.EQ の表、Q = 0.5 × 2^(幅 / 8) × 倍率）・
+// 高域の棚（EQ2 の表）。利きは 1 目盛り 0.375dB（0x40 が 0、±32 で ±12dB）。ノイズの音色をパート 1 に置き、平らなときとの比で 23 組を測って、
+// 二乗平均 1.7dB（ノイズの揺れと同じくらい。棚の傾き 0.7・1.0 や Q の倍率なしは少し悪い。2026-10-27、tools/motif/mr_part_eq.py）
+struct part_eq {
+	biquad lo[2], mid[2], hi[2];
+	bool flat = true;
+	void set(int lf, int lg, int mf, int mg, int mq, int hf, int hg)
+	{
+		flat = lg == 0x40 && mg == 0x40 && hg == 0x40;
+		for (int c = 0; c < 2; c++) {
+			low_shelf(lo[c], interp(EQ1_LOW, lf), (lg - 0x40) * GAIN_DB, 0.5);
+			peaking(mid[c], interp(PEQ_FREQ, mf), (mg - 0x40) * GAIN_DB, 0.5 * std::exp2(mq / 8.0) * interp(PEQ_QFAC, mf));
+			high_shelf(hi[c], interp(EQ2_HIGH, hf), (hg - 0x40) * GAIN_DB, 0.5);
+		}
+	}
+	void process(double &L, double &R)
+	{
+		if (flat)
+			return;
+		L = hi[0].process(mid[0].process(lo[0].process(L)));
+		R = hi[1].process(mid[1].process(lo[1].process(R)));
+	}
+};
+
 struct element_eq {
 	int type = THRU;
 	double gain = 1.0;          // Boost の倍率

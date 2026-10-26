@@ -8,6 +8,7 @@
 // プログラムチェンジ: そのチャンネルのパート（Receive Program Change が入ったもの）の音色を、チャンネルのバンク（CC0・CC32、Receive Bank Select）と番号で替える。
 // 音色は画面の糸で読んでから入れ替える（読む間は前の音色が鳴る）。
 // インサーションを掛けるパートは、画面でパートごとに入り切りできる（set_part_ins・sync_ins）。実機の「8 パートまで」は外した。
+// パートの EQ（37 pp 2E〜38）はインサーションのあとで掛ける（swp50_eq::part_eq）。
 // まだ無いもの: パートのフィルターと EG のずらし・デチューン、マスター EQ・マスターエフェクト、
 // コーラスからリバーブへの送り、パートの出口の割り当て。ベロシティの効き（深さ × 値 / 64 + オフセット − 64）は Data List の説明からで、実機では測っていない。
 #pragma once
@@ -294,6 +295,7 @@ struct part {
 	std::atomic<int> voices{0};
 	std::atomic<float> peak{0};
 	double ins_rev = 0, ins_cho = 0;      // ドラム: インサーションを通った音のリバーブ・コーラスへの送り（/ 127）
+	swp50_eq::part_eq peq;                 // パートの EQ（37 pp 2E〜38）
 	// 描いた音（render の中だけ）。rs・cs はリバーブ・コーラスへ送る音（ふつうの音色は ol・orr と同じ、ドラムは鍵ごとの送りを掛けたもの）
 	float ol[256] = {}, orr[256] = {}, rsl[256] = {}, rsr[256] = {}, csl[256] = {}, csr[256] = {};
 
@@ -331,6 +333,8 @@ public:
 			P->cho = pc.get("cho", 0);
 			P->dry = pc.get("dry", 127);
 			P->arpsw = pc.get("arpsw", 0) != 0;
+			P->peq.set(pc.get("eqlf", 0x40), pc.get("eqlg", 0x40), pc.get("eqmf", 0x80), pc.get("eqmg", 0x40), pc.get("eqmq", 0x10),
+			           pc.get("eqhf", 0xC0), pc.get("eqhg", 0x40));
 			part_voice v = build_voice(i, pc.voice, pc.bank, P->pan);
 			swap_voice(*P, v);
 			parts[size_t(i)] = std::move(P);
@@ -866,6 +870,8 @@ private:
 				dr = r[j];
 			}
 			const double g = P.eg->volume_gain(voff[j]) * pg;
+			// パートの EQ はインサーションのあと（ドラムの鍵ごとの送りには掛けていない）
+			P.peq.process(dl, dr);
 			P.ol[j] = float(dl * g);
 			P.orr[j] = float(dr * g);
 			if (drum) {

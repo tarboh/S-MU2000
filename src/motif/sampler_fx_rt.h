@@ -6,13 +6,15 @@
 // * コーラスの枠: コーラスの型（05 系）は chorus と同じ揺れる遅れ、Cross Delay（02 30・02 60）は cross_delay の wet（出口 − 入れた音）
 // * インサーションとコーラスの枠のほかの型（block_rt）: 3 Band EQ・2 Band EQ・Harmonic Enhancer（周波数応答から作ったインパルス応答のたたみ込み）、
 //   Cross Delay、コンプ、インサーションのコーラス、フランジャー、Ensemble Detune、歪み（09 00・01・10・20・30・31。録った応答 → 頭打ち → LPF）、
-//   LTI（ディレイ・リバーブ系などプリセットの組のまま録った応答、fxlti）。インサーションの組（エレメントのスイッチ 0・1・2）とつなぎ方は
+//   LTI（ディレイ・リバーブ系などプリセットの組のまま録った応答、fxlti）、揺れる型（フェイザー・ワウなどの .ltv、Touch Wah の .dyn、
+//   Tremolo・Rotary などの .mod。ltv_rt・mod_rt、オフラインとは少し違う）。インサーションの組（エレメントのスイッチ 0・1・2）とつなぎ方は
 //   insertion_groups と同じ。ほかの型は、インサーションでは素通し（supported() が偽）、コーラスの枠では掛けない（active() が偽）。
 //   コーラス系とフランジャーは、オフラインが録った応答（.ltv）を使う型なら近似（approx()。ltv はその場では 93ms 遅れるので式の作りで回す）
 #pragma once
 
 #include "sampler_fx.h"
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -287,6 +289,571 @@ inline bool has_ltv(const block &b, const std::string &ltvdir, int tempo)
 	return true;
 }
 
+// 時間で変わるたたみ込みの部品: 入口の側（今までの音と、128 ずつの区切りの FFT）だけを持ち、応答（filt）は外に置く。
+// 頭の 128 タップはそのまま掛け、後ろは 128 ずつに分けた FFT（overlap-save）。応答の側に覚えておく音が無いので、応答はいつ作り替えてもよく、遅れも無い
+class tv_conv {
+public:
+	static constexpr int B = 128;
+	struct filt {
+		std::vector<double> head[2];
+		std::vector<cplx> Hp[2];             // 分けた P 個（それぞれ 2B 点）
+	};
+
+	void init(int taps)
+	{
+		P = std::max(1, (taps - B + B - 1) / B);
+		L = taps;
+		for (int c = 0; c < 2; c++) {
+			hist[c].assign(1 << 13, 0.0);
+			X[c].assign(size_t(P) * 2 * B, cplx());
+		}
+		t = 0;
+	}
+	int taps() const { return L; }
+	// インパルス応答（左右）から応答を作る（L タップまで）
+	void make(filt &f, const std::vector<double> h[2]) const
+	{
+		std::vector<cplx> a(2 * B);
+		for (int c = 0; c < 2; c++) {
+			f.head[c].assign(B, 0.0);
+			for (int k = 0; k < B && k < int(h[c].size()); k++)
+				f.head[c][k] = h[c][k];
+			f.Hp[c].assign(size_t(P) * 2 * B, cplx());
+			for (int p = 0; p < P; p++) {
+				std::fill(a.begin(), a.end(), cplx());
+				for (int j = 0; j < B; j++) {
+					const size_t k = size_t(B + p * B + j);
+					a[j] = k < h[c].size() && int(k) < L ? h[c][k] : 0.0;
+				}
+				motif_fx::fft(a, false);
+				std::copy(a.begin(), a.end(), f.Hp[c].begin() + size_t(p) * 2 * B);
+			}
+		}
+	}
+	// 区切りの頭か（このときは先に start() を呼ぶ）
+	bool at_start() const { return t % B == 0; }
+	// 区切りの頭で: 1 つ前までの区切りの FFT を足す
+	void start()
+	{
+		const long k = long(t / B);
+		if (k < 1)
+			return;
+		const size_t m = hist[0].size() - 1;
+		std::vector<cplx> a(2 * B);
+		for (int c = 0; c < 2; c++) {
+			for (int j = 0; j < 2 * B; j++) {
+				const long s = long(t) - 2 * B + j;
+				a[j] = s >= 0 ? hist[c][size_t(s) & m] : 0.0;
+			}
+			motif_fx::fft(a, false);
+			std::copy(a.begin(), a.end(), X[c].begin() + size_t((k - 1) % P) * 2 * B);
+		}
+	}
+	// この区切りの B サンプルぶんの、後ろのタップの出口（start() のあとで）
+	void tail(const filt &f, int c, double out[B]) const
+	{
+		const long k = long(t / B);
+		std::vector<cplx> acc(2 * B);
+		for (int p = 0; p < P && k - 1 - p >= 0; p++) {
+			const cplx *x = &X[c][size_t((k - 1 - p) % P) * 2 * B], *h = &f.Hp[c][size_t(p) * 2 * B];
+			for (int j = 0; j < 2 * B; j++)
+				acc[j] += x[j] * h[j];
+		}
+		motif_fx::fft(acc, true);
+		for (int j = 0; j < B; j++)
+			out[j] = acc[B + j].real();
+	}
+	// 入れる（左右）。このあと head() で頭のタップを掛け、最後に next()
+	void push(double l, double r)
+	{
+		const size_t m = hist[0].size() - 1;
+		hist[0][t & m] = l;
+		hist[1][t & m] = r;
+	}
+	double head(const filt &f, int c) const
+	{
+		const size_t m = hist[0].size() - 1;
+		double y = 0;
+		for (int k = 0; k < B && size_t(k) <= t; k++)
+			y += f.head[c][k] * hist[c][(t - k) & m];
+		return y;
+	}
+	void next() { t++; }
+	size_t time() const { return t; }
+	const std::vector<double> &history(int c) const { return hist[c]; }
+
+private:
+	int P = 1, L = 0;
+	size_t t = 0;
+	std::vector<double> hist[2];
+	std::vector<cplx> X[2];
+};
+
+// 揺れながら周波数ごとに違う動きをする型（ltv_type: フェイザー・Auto Wah・Vintage Wah・Tech など）を、録った時間ごとの応答（fxltv の .ltv）で 1 サンプルずつ。
+// オフラインの ltvfx は窓 4096・ずらし 1024 の STFT で、出口の時刻 t には枠 i（i × 1024 が t より後で t + 4096 以下）の応答が窓の 2 乗の重みで混ざる。
+// こちらは枠ごとの応答をインパルス応答（頭から 4096 − 64 タップ。後ろの 64 は負の時刻なので捨てる）にしてたたみ込み、同じ重みで混ぜる。
+// STFT では遅れ k のタップに窓の自己相関 R(k) / R(0) が掛かる（窓をずらして重ねると、遅れの大きいタップほど窓の外へ落ちる）ので、インパルス応答にもそれを掛ける。
+// 窓の中で円のたたみ込みになる分（遅れ k のタップが k − 4096 にも R(4096 − k) で回る）は先の音なので回せない。尾が雑音のように長い
+// Lo-Res・Talking Mod（中に頭打ちや間引きがあり、時間ごとの応答では表せない型）は、オフラインより 2.3・0.7dB 小さい（R(k) を掛けないと 1dB 大きい。
+// 大きさだけ √(R(k)² + R(4096 − k)²) で足すと音量は合うが、Lo-Res の低域が 12dB 出過ぎ、Vintage Wah も少し離れた）。
+// 同時に効く枠は 4 つで、使い始める時に作る。
+// 山が負の時刻にある型（Flanger 3・Multi Band Comp・Attack LoFi などで −200 サンプルほど。元の音より先に出る分）は、山の前 64 サンプルから取るように
+// D（128 の倍数）だけ先読みし、出口は D サンプル遅れる
+//
+// 入口の大きさで効き方が変わる Touch Wah 系（dyn_type、fxdyn の .dyn）も同じ部品で回す: 音量ごとの応答を作っておき、
+// 今までの 4096 サンプル（ハン窓）の大きさで 2 つを選んで混ぜる。オフラインは枠の窓（先の音を含む）で測るので、こちらは 2048 サンプルほど遅れて追う（近似）
+class ltv_rt {
+public:
+	bool init_ltv(const block &b, const std::string &ltvdir, int tempo)
+	{
+		std::string k = "t" + std::to_string(b.msb) + "_" + std::to_string(b.lsb);
+		for (int i = 1; i <= 16; i++)
+			k += "_" + std::to_string(b.p[i]);
+		k += "_" + std::to_string(b.is(7, 0x50) || b.is(6, 0x50) || b.is(14, 0x30) ? tempo : 0);
+		FILE *f = std::fopen((ltvdir + "/" + k + ".ltv").c_str(), "rb");
+		if (!f)
+			return false;
+		char head[160];
+		if (!std::fgets(head, sizeof head, f)) {
+			std::fclose(f);
+			return false;
+		}
+		NW = 4096, HOP = 1024, F = 0, per = 0;
+		std::sscanf(head, "LTV n=%d hop=%d frames=%d period=%d", &NW, &HOP, &F, &per);
+		NB = NW / 2 + 1;
+		raw.resize(size_t(F) * 2 * NB * 2);
+		F = int(std::fread(raw.data(), sizeof(float) * 2 * NB * 2, size_t(F), f));
+		std::fclose(f);
+		if (F < 1 || NW % tv_conv::B || HOP % tv_conv::B)
+			return false;
+		dyn = false;
+		stereo = !b.is(15, 0x78) && !(motif_fx::chorus_type(b) && b.p[15] == 0);
+		setup();
+		{
+			std::vector<const cplx *> hs;
+			std::vector<std::vector<cplx>> tmp;
+			for (int j = 0; j < F; j += std::max(1, F / 16))
+				for (int c = 0; c < 2; c++) {
+					std::vector<cplx> H(NB);
+					const float *r = &raw[((size_t(j) * 2 + c) * NB) * 2];
+					for (int q = 0; q < NB; q++)
+						H[q] = cplx(r[q * 2], r[q * 2 + 1]);
+					tmp.push_back(H);
+				}
+			for (auto &H : tmp)
+				hs.push_back(H.data());
+			find_lead(hs);
+		}
+		for (auto &s : slot)
+			s.i = -1;
+		return true;
+	}
+	bool init_dyn(const block &b, const std::string &dyndir)
+	{
+		std::string k = "t" + std::to_string(b.msb) + "_" + std::to_string(b.lsb);
+		for (int i = 1; i <= 16; i++)
+			k += "_" + std::to_string(b.p[i]);
+		FILE *f = std::fopen((dyndir + "/" + k + ".dyn").c_str(), "rb");
+		if (!f)
+			return false;
+		char head[128];
+		if (!std::fgets(head, sizeof head, f)) {
+			std::fclose(f);
+			return false;
+		}
+		NW = 4096, HOP = 1024;
+		int K = 0;
+		std::sscanf(head, "DYN n=%d hop=%d levels=%d", &NW, &HOP, &K);
+		NB = NW / 2 + 1;
+		dbs.assign(size_t(std::max(K, 0)), 0.0);
+		std::vector<std::vector<cplx>> H(size_t(std::max(K, 0)) * 2, std::vector<cplx>(NB));
+		for (int j = 0; j < K; j++) {
+			float db = 0;
+			if (std::fread(&db, sizeof db, 1, f) != 1) {
+				std::fclose(f);
+				return false;
+			}
+			dbs[j] = db;
+			for (int ch = 0; ch < 2; ch++) {
+				std::vector<float> r(size_t(NB) * 2);
+				if (std::fread(r.data(), sizeof(float), r.size(), f) != r.size()) {
+					std::fclose(f);
+					return false;
+				}
+				for (int q = 0; q < NB; q++)
+					H[j * 2 + ch][q] = cplx(r[q * 2], r[q * 2 + 1]);
+			}
+		}
+		std::fclose(f);
+		if (K < 2 || NW % tv_conv::B)
+			return false;
+		dyn = true;
+		stereo = true;
+		setup();
+		{
+			std::vector<const cplx *> hs;
+			for (auto &H : H)
+				hs.push_back(H.data());
+			find_lead(hs);
+		}
+		lev.resize(K);
+		for (int j = 0; j < K; j++) {
+			std::vector<double> h[2] = {ir(&H[j * 2][0]), ir(&H[j * 2 + 1][0])};
+			cv.make(lev[j], h);
+		}
+		u_prev = -1;
+		return true;
+	}
+
+	int latency() const { return D; }
+
+	void tick(double &L, double &R)
+	{
+		const int B = tv_conv::B;
+		if (cv.at_start()) {
+			cv.start();
+			dyn ? start_dyn() : start_ltv();
+		}
+		const size_t t = cv.time();
+		const int n = int(t % B);
+		const double m = (L + R) / 2;
+		cv.push(stereo ? L : m, stereo ? R : m);
+		if (dyn)
+			mono[t & (mono.size() - 1)] = m;
+		double y[2] = {0, 0};
+		if (dyn) {
+			const double u = du0 + (du1 - du0) * (n + 1) / B;
+			for (int c = 0; c < 2; c++)
+				y[c] = (1 - u) * (cv.head(lev[dj], c) + dtail[0][c][n]) + u * (cv.head(lev[dj + 1], c) + dtail[1][c][n]);
+		} else {
+			double ws = 0;
+			for (auto &s : slot) {
+				if (s.i < 0)
+					continue;
+				const long q = long(t) - D + NW - long(s.i) * HOP;
+				if (q <= 0 || q >= NW)
+					continue;
+				const double wq = win2[size_t(q)];
+				ws += wq;
+				for (int c = 0; c < 2; c++)
+					y[c] += wq * (cv.head(s.f, c) + s.tl[c][n]);
+			}
+			if (ws > 1e-9) {
+				y[0] /= ws;
+				y[1] /= ws;
+			}
+		}
+		cv.next();
+		L = y[0];
+		R = y[1];
+	}
+
+private:
+	int NW = 4096, HOP = 1024, F = 0, per = 0, NB = 2049, D = 0;
+	bool dyn = false, stereo = true;
+	std::vector<float> raw;
+	std::vector<double> win2, acw;
+	tv_conv cv;
+	struct slot_t {
+		long i = -1;
+		tv_conv::filt f;
+		double tl[2][tv_conv::B];
+	};
+	slot_t slot[5];
+	// Touch Wah 系
+	std::vector<double> dbs, mono;
+	std::vector<tv_conv::filt> lev;
+	int dj = 0;
+	double du0 = 0, du1 = 0, u_prev = -1;
+	double dtail[2][2][tv_conv::B];
+
+	void setup()
+	{
+		win2.resize(NW);
+		for (int i = 0; i < NW; i++) {
+			const double w = 0.5 - 0.5 * std::cos(2 * motif_fx::PI * i / NW);
+			win2[i] = w * w;
+		}
+		// 窓の自己相関（R(k) / R(0)）
+		std::vector<cplx> a(size_t(2 * NW));
+		for (int i = 0; i < NW; i++)
+			a[i] = 0.5 - 0.5 * std::cos(2 * motif_fx::PI * i / NW);
+		motif_fx::fft(a, false);
+		for (auto &v : a)
+			v = std::norm(v);
+		motif_fx::fft(a, true);
+		acw.resize(NW);
+		for (int i = 0; i < NW; i++)
+			acw[i] = a[i].real() / a[0].real();
+		cv.init(NW - 64);
+		mono.assign(size_t(NW) * 2, 0.0);
+	}
+	// 周波数応答（NB 点）→ インパルス応答（NW 点、遅れ −D から。plain なら 0 から、窓の自己相関も掛けない）
+	std::vector<double> ir(const cplx *H, bool plain = false) const
+	{
+		std::vector<cplx> a(NW);
+		for (int q = 0; q < NB; q++) {
+			a[q] = H[q];
+			if (q > 0 && q < NW / 2)
+				a[NW - q] = std::conj(H[q]);
+		}
+		motif_fx::fft(a, true);
+		// 遅れ k = i − D（負なら頭から回った所）
+		std::vector<double> h(NW);
+		for (int i = 0; i < NW; i++) {
+			const int k = i - D;
+			h[i] = plain ? a[i].real() : a[size_t((k + NW) % NW)].real() * acw[size_t(std::abs(k))];
+		}
+		return h;
+	}
+	// 山の位置（いくつかの枠のエネルギーの合計）が負の時刻なら、D を決める
+	void find_lead(const std::vector<const cplx *> &hs)
+	{
+		D = 0;
+		std::vector<double> e(NW, 0.0);
+		for (const cplx *H : hs) {
+			const std::vector<double> h = ir(H, true);
+			for (int i = 0; i < NW; i++)
+				e[i] += h[i] * h[i];
+		}
+		const int pk = int(std::max_element(e.begin(), e.end()) - e.begin());
+		if (pk > NW / 2)
+			D = (NW - pk + 64 + tv_conv::B - 1) / tv_conv::B * tv_conv::B;
+	}
+	void start_ltv()
+	{
+		const long T = long(cv.time()) - D;      // 回している時刻（入口より D 遅れ）
+		if (T < 0) {
+			for (auto &s : slot)
+				s.i = -1;
+			return;
+		}
+		const long i0 = T / HOP + 1, i1 = (T + NW) / HOP;
+		for (auto &s : slot)
+			if (s.i >= 0 && (s.i < i0 || s.i > i1))
+				s.i = -1;
+		for (long i = i0; i <= i1; i++) {
+			bool have = false;
+			for (auto &s : slot)
+				have |= s.i == i;
+			if (have)
+				continue;
+			for (auto &s : slot) {
+				if (s.i >= 0)
+					continue;
+				long j = i;
+				if (i >= F && per > 0)
+					j = (F - 1 - per) + (i - (F - 1 - per)) % per;
+				j = std::min<long>(j, F - 1);
+				std::vector<cplx> H(NB);
+				std::vector<double> h[2];
+				for (int c = 0; c < 2; c++) {
+					const float *r = &raw[((size_t(j) * 2 + c) * NB) * 2];
+					for (int q = 0; q < NB; q++)
+						H[q] = cplx(r[q * 2], r[q * 2 + 1]);
+					h[c] = ir(H.data());
+				}
+				cv.make(s.f, h);
+				s.i = i;
+				break;
+			}
+		}
+		for (auto &s : slot)
+			if (s.i >= 0)
+				for (int c = 0; c < 2; c++)
+					cv.tail(s.f, c, s.tl[c]);
+	}
+	void start_dyn()
+	{
+		// 今までの NW サンプルにハン窓を掛けた大きさ（オフラインの「片側のスペクトルの 2 乗の平均」とほぼ同じ値: Σ(x w)²）
+		const size_t t = cv.time(), mm = mono.size() - 1;
+		double e = 0;
+		for (int q = 0; q < NW; q++) {
+			const long s = long(t) - NW + q;
+			const double x = s >= 0 ? mono[size_t(s) & mm] : 0.0;
+			e += x * x * win2[q];
+		}
+		const double db = 10 * std::log10(e + 1e-30);
+		const int K = int(dbs.size());
+		int j = int(std::upper_bound(dbs.begin(), dbs.end(), db) - dbs.begin()) - 1;
+		j = std::max(0, std::min(K - 2, j));
+		const double u = std::max(0.0, std::min(1.0, (db - dbs[j]) / (dbs[j + 1] - dbs[j])));
+		// 区切りの中では、前の区切りの値から今の値へまっすぐ動かす（2 つの音量の間を越えたら、そこで切り替える）
+		du0 = (u_prev < 0 || j != dj) ? u : u_prev;
+		du1 = u;
+		dj = j;
+		u_prev = u;
+		for (int c = 0; c < 2; c++) {
+			cv.tail(lev[j], c, dtail[0][c]);
+			cv.tail(lev[j + 1], c, dtail[1][c]);
+		}
+	}
+};
+
+// 音量や遅れを周期的に揺らす型（mod_type: Tremolo・Auto Pan・Rotary・Dual Rotor・Slice）を 1 サンプルずつ（modfx と同じ）。
+// 1kHz で 2 つの帯に分け（2 次のバターワースを 2 回、双一次変換。オフラインの filter_freq と同じ応答）、録った A(t)・d(t) を掛けて足し、
+// 周波数の形（.modeq か EQ）を掛ける。周波数の形は位相の無い応答なので負の時刻の PRE タップを先読みし、出口は PRE サンプル遅れる。
+// 録った d(t) が負になる型（Rotary・Auto Pan 2 で −258 サンプルまで。元の音より先に出る分）は、その分も先読みして D サンプル遅らせて回す。
+// 歪みを中に持つ Rotary の音量 2 段は、入口の包絡をオフラインは前後 25ms の RMS で測るが、こちらは今までの 50ms（近似）
+class mod_rt {
+public:
+	static constexpr size_t PRE = 64;
+
+	bool init(const block &b, const std::string &moddir, int tempo)
+	{
+		std::string k = "t" + std::to_string(b.msb) + "_" + std::to_string(b.lsb);
+		for (int i = 1; i <= 16; i++)
+			k += "_" + std::to_string(b.p[i]);
+		k += "_" + std::to_string(b.is(14, 0x50) ? tempo : 0);
+		if (!motif_fx::load_mod(moddir + "/" + k + ".mod", m100))
+			return false;
+		stereo = !(b.msb == 8 && b.lsb >= 0x50 && b.lsb <= 0x72);
+		std::vector<float> eqm;
+		if (FILE *f = std::fopen((moddir + "/" + k + ".modeq").c_str(), "rb")) {
+			eqm.resize(2 * 2049);
+			if (std::fread(eqm.data(), sizeof(float), eqm.size(), f) != eqm.size())
+				eqm.clear();
+			std::fclose(f);
+		}
+		bool has_eq = false;
+		motif_fx::mod_eq(b, 1000.0, has_eq);
+		has_shape = !eqm.empty() || has_eq;
+		auto shape = [&](double fq, int ch) -> cplx {
+			if (!eqm.empty()) {
+				const double x = fq / (FS / 4096.0);
+				const int i = std::max(0, std::min(2047, int(x)));
+				const double fr = std::max(0.0, std::min(1.0, x - i));
+				return eqm[ch * 2049 + i] + (eqm[ch * 2049 + i + 1] - eqm[ch * 2049 + i]) * fr;
+			}
+			bool h;
+			return motif_fx::mod_eq(b, fq, h);
+		};
+		for (int bd = 0; bd < 2; bd++)
+			for (int ch = 0; ch < 2; ch++)
+				nrm[bd][ch] = 1;
+		if (has_shape)
+			for (int ch = 0; ch < 2; ch++) {
+				nrm[0][ch] = std::max(1e-3, std::abs(shape(220.0, ch)));
+				nrm[1][ch] = std::max(1e-3, std::abs(shape(440.0 * std::exp2(27 / 12.0), ch)));
+				sh[ch].init(fir_from([&](double f) { return shape(f, ch); }, 4096, PRE));
+			}
+		lv = b.msb == 8 && ((b.lsb >= 0x51 && b.lsb <= 0x53) || (b.lsb >= 0x61 && b.lsb <= 0x63)) &&
+		     motif_fx::load_mod(moddir + "/" + k + "_L25.mod", m25) && m25.indb != m100.indb;
+		// 1kHz で分ける 2 次のバターワース（双一次変換）
+		const double K = std::tan(motif_fx::PI * 1000.0 / FS), nn = 1 / (1 + std::sqrt(2.0) * K + K * K);
+		lpb[0] = K * K * nn, lpb[1] = 2 * K * K * nn, lpb[2] = K * K * nn;
+		hpb[0] = nn, hpb[1] = -2 * nn, hpb[2] = nn;
+		a1 = 2 * (K * K - 1) * nn, a2 = (1 - std::sqrt(2.0) * K + K * K) * nn;
+		for (auto &r : ring)
+			r.assign(1 << 15, 0.0);
+		for (auto &s : st)
+			s[0] = s[1] = 0;
+		env.assign(size_t(0.05 * FS), 0.0);
+		esum = 0;
+		t = 0;
+		double dmin = 0;
+		for (const motif_fx::mod_file *m : {&m100, &m25})
+			for (int i = 0; i < m->frames; i++)
+				for (int c = 1; c < 8; c += 2)
+					dmin = std::min(dmin, double(m->raw[size_t(i) * 8 + c]));
+		D = size_t(std::ceil(-dmin)) + (dmin < 0 ? 1 : 0);
+		return true;
+	}
+	int latency() const { return int(D) + (has_shape ? int(PRE) : 0); }
+
+	void tick(double &L, double &R)
+	{
+		const double xs[2] = {stereo ? L : (L + R) / 2, stereo ? R : (L + R) / 2};
+		const size_t mask = ring[0].size() - 1;
+		// 帯に分ける（2 次を 2 回。st は [ch × 2 + 帯][段] の状態）
+		for (int ch = 0; ch < 2; ch++)
+			for (int bd = 0; bd < 2; bd++) {
+				double v = xs[ch];
+				for (int s = 0; s < 2; s++)
+					v = biquad(bd == 0 ? lpb : hpb, st[(ch * 2 + bd) * 2 + s], v);
+				ring[ch * 2 + bd][t & mask] = v;
+			}
+		double o[2];
+		core(m100, o);
+		if (lv) {
+			const double mo = (xs[0] + xs[1]) / 2;
+			const size_t w = env.size(), ei = t % w;
+			esum += mo * mo - env[ei];
+			env[ei] = mo * mo;
+			const double e = 10 * std::log10(std::max(esum, 0.0) / double(w) + 1e-20);
+			double o25[2];
+			core(m25, o25);
+			const bool lo25 = m25.indb < m100.indb;
+			const double lo_db = lo25 ? m25.indb : m100.indb, hi_db = lo25 ? m100.indb : m25.indb;
+			const double u = std::max(0.0, std::min(1.0, (e - lo_db) / (hi_db - lo_db)));
+			for (int ch = 0; ch < 2; ch++) {
+				const double olo = lo25 ? o25[ch] : o[ch], ohi = lo25 ? o[ch] : o25[ch];
+				o[ch] = (1 - u) * olo + u * ohi;
+			}
+		}
+		if (has_shape) {
+			o[0] = sh[0].tick(o[0]);
+			o[1] = sh[1].tick(o[1]);
+		}
+		L = o[0];
+		R = o[1];
+		t++;
+	}
+
+private:
+	motif_fx::mod_file m100, m25;
+	bool stereo = true, has_shape = false, lv = false;
+	double nrm[2][2] = {{1, 1}, {1, 1}};
+	conv_rt sh[2];
+	double lpb[3] = {}, hpb[3] = {}, a1 = 0, a2 = 0;
+	double st[8][2] = {};
+	std::vector<double> ring[4], env;
+	double esum = 0;
+	size_t t = 0, D = 0;
+
+	double biquad(const double *b, double (&s)[2], double x)
+	{
+		// 転置直接形 II
+		const double y = b[0] * x + s[0];
+		s[0] = b[1] * x - a1 * y + s[1];
+		s[1] = b[2] * x - a2 * y;
+		return y;
+	}
+	double series(const motif_fx::mod_file &m, int col) const
+	{
+		const double mm = m.frames;
+		double u = (double(t) - double(D)) / FS * m.rate;
+		if (m.period > 0 && u >= mm - 1)
+			u = (mm - 1 - m.period) + std::fmod(u - (mm - 1 - m.period), double(m.period));
+		else if (u > mm - 1)
+			u = mm - 1;
+		const int i = int(u);
+		const double fr = u - i;
+		const float a0 = m.raw[size_t(i) * 8 + col], a1v = m.raw[size_t(std::min(i + 1, m.frames - 1)) * 8 + col];
+		return a0 + (a1v - a0) * fr;
+	}
+	void core(const motif_fx::mod_file &m, double o[2]) const
+	{
+		const size_t mask = ring[0].size() - 1;
+		o[0] = o[1] = 0;
+		if (t < D)
+			return;
+		const size_t tau = t - D;               // 回している時刻（入口より D 遅れ）
+		for (int bd = 0; bd < 2; bd++)
+			for (int ch = 0; ch < 2; ch++) {
+				const double A = series(m, bd * 4 + ch * 2) / nrm[bd][ch], d = series(m, bd * 4 + ch * 2 + 1);
+				const double pos = double(tau) - d;
+				if (pos < 0)
+					continue;
+				const size_t k0 = size_t(pos);
+				const double fr = pos - double(k0);
+				const std::vector<double> &xb = ring[ch * 2 + bd];
+				const double v0 = xb[k0 & mask], v = k0 + 1 <= t ? v0 + (xb[(k0 + 1) & mask] - v0) * fr : v0;
+				o[ch] += A * v;
+			}
+	}
+};
+
 // エフェクトの 1 つのブロック（インサーションの A・B、コーラスの枠のほかの型）を 1 サンプルずつ。入れた左右 → 出口の左右（その場で書き換える）。
 // 回せる型: 3 Band EQ・2 Band EQ（0F 00・0F 01）、Harmonic Enhancer（0F 10）、Cross Delay（02 30・02 60）、コンプ（0A 00・0A 08）、
 // インサーションのコーラス（05 00 系）、フランジャー（06 00・06 01）、Ensemble Detune（05 30）。ほかは素通し（supported() が偽）
@@ -376,6 +943,12 @@ public:
 			kind = 8;
 		} else if (motif_fx::lti_type(b) && !fxddir.empty() && lti_init(b, fxddir + "/../fxlti", tempo)) {
 			kind = 9;
+		} else if (motif_fx::dyn_type(b) && !fxddir.empty() && tv.init_dyn(b, fxddir + "/../fxdyn")) {
+			kind = 10;
+		} else if (motif_fx::ltv_type(b) && !fxddir.empty() && tv.init_ltv(b, fxddir + "/../fxltv", tempo)) {
+			kind = 10;
+		} else if (motif_fx::mod_type(b) && !fxddir.empty() && md.init(b, fxddir + "/../fxmod", tempo)) {
+			kind = 11;
 		} else
 			kind = -1;                       // まだ回せない型（素通し）
 	}
@@ -383,7 +956,9 @@ public:
 	bool thru() const { return kind == 0; }
 	bool approx() const { return approx_; }
 	// この枠の出口の遅れ（サンプル。歪みだけ DIST_PRE）
-	int latency() const { return kind == 8 ? int(DIST_PRE) : 0; }
+	int latency() const { return kind == 8 ? int(DIST_PRE) : kind == 10 ? tv.latency() : kind == 11 ? md.latency() : 0; }
+	// 録った応答をその場の形に直して回す型（オフラインとは少し違う。ltv_rt・mod_rt）
+	bool recorded() const { return kind == 10 || kind == 11; }
 	// 前の枠の遅れで音が n サンプル遅れて届くとき、揺れなどの時計もその分遅らせて始める（オフラインと同じ位相にする）
 	void delay_start(int n) { skip = n; }
 
@@ -488,6 +1063,12 @@ public:
 			t++;
 			break;
 		}
+		case 10:
+			tv.tick(L, R);
+			break;
+		case 11:
+			md.tick(L, R);
+			break;
 		case 9: {
 			// LTI（lti と同じ）: 左右から左右への 4 本の録った応答
 			if (lti_thru)
@@ -538,6 +1119,8 @@ private:
 	// 先読み 64・256・1024 で差が 1.3e-3・3.4e-4・9.8e-5。弾くときの遅れを小さくしたいので 64（1.45ms）
 	conv_rt l4[4];
 	bool lti_thru = false;
+	ltv_rt tv;
+	mod_rt md;
 
 	// lti と同じ: プリセットの組のまま録った応答（fxlti/<名前>.lti、左→左・左→右・右→左・右→右）。Dry/Wet 1 は素通し
 	bool lti_init(const block &b, const std::string &ltidir, int tempo)
@@ -840,6 +1423,7 @@ public:
 	}
 	bool supported() const { return A.supported() && Bk.supported(); }
 	bool approx() const { return A.approx() || Bk.approx(); }
+	bool recorded() const { return A.recorded() || Bk.recorded(); }
 	const block_rt &block_a() const { return A; }
 	const block_rt &block_b() const { return Bk; }
 	int latency() const { return lat; }

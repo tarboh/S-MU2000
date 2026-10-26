@@ -67,6 +67,10 @@ def export(syx, out):
         mm, bank = BANKS.get((f["bank_msb"], f["bank_lsb"]), (None, "%d/%d" % (f["bank_msb"], f["bank_lsb"])))
         voice = "%s_%03d" % (mm, f["prog"]) if mm else "-"
         arpsw = x[0x1F] >> 1 & 1
+        # パートの EQ（37 pp 2E〜38）: 低域の周波数（2 バイト）・利き、中域の周波数（2 バイト）・利き・幅、高域の周波数（2 バイト）・利き
+        if len(x) > 0x38:
+            f.update(eqlf=x[0x2E] << 7 | x[0x2F], eqlg=x[0x30], eqmf=x[0x32] << 7 | x[0x33], eqmg=x[0x34], eqmq=x[0x35],
+                     eqhf=x[0x36] << 7 | x[0x37], eqhg=x[0x38])
         lines.append("part %d voice=%s bank=%s:%03d arpsw=%d " % (p, voice, bank, f["prog"] + 1, arpsw) + " ".join("%s=%d" % kv for kv in f.items()))
     with open(out, "w", encoding="utf-8", newline="\n") as fo:
         fo.write("\n".join(lines) + "\n")

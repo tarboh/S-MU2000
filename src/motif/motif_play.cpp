@@ -996,6 +996,44 @@ int main(int argc, char **argv)
 					pl->mul->set_block_values(pl->mtx, x[0], x[1], v);
 				}
 			}
+			if (!selftest_seq.empty()) {
+				// MIDI の並び（16 進、; で区切る）を 0.1 秒おきに流し、そのあと 3 秒鳴らして WAV に書く（実機の tools/motif/mr_multi_hw.py と同じ並びで比べる）
+				std::vector<std::vector<u8>> msgs;
+				for (size_t a0 = 0; a0 < selftest_seq.size();) {
+					size_t e = selftest_seq.find(';', a0);
+					if (e == std::string::npos)
+						e = selftest_seq.size();
+					std::vector<u8> m;
+					for (const char *c = selftest_seq.c_str() + a0; c < selftest_seq.c_str() + e;) {
+						char *end = nullptr;
+						const long v = std::strtol(c, &end, 16);
+						if (end == c)
+							break;
+						m.push_back(u8(v));
+						c = end;
+					}
+					if (!m.empty())
+						msgs.push_back(m);
+					a0 = e + 1;
+				}
+				std::vector<s16> pcm;
+				std::vector<s16> buf(4410 * 2);
+				for (auto &m : msgs) {
+					{
+						std::lock_guard<std::mutex> lk(pl->mtx);
+						pl->midi_message(m[0], m.size() > 1 ? m[1] : 0, m.size() > 2 ? m[2] : 0);
+					}
+					pl->fill(buf.data(), 4410);
+					pcm.insert(pcm.end(), buf.begin(), buf.end());
+				}
+				for (int t = 0; t < 30; t++) {
+					pl->fill(buf.data(), 4410);
+					pcm.insert(pcm.end(), buf.begin(), buf.end());
+				}
+				write_wav16(selftest, pcm);
+				std::printf("マルチ %s に MIDI を %zu 個流した\n", pl->mul->cfg.name.c_str(), msgs.size());
+				return 0;
+			}
 			std::vector<s16> pcm(44100 * 3 * 2);
 			const u32 block = 441;
 			for (u32 i = 0; i < 44100 * 3; i += block) {
