@@ -918,7 +918,8 @@ wet ÷ dry で応答をそのまま読める（録音の頭は 1 本ごとに ±
     エネルギーの比だと倍音まで線形の利きに数えるので、前の形のまま
   * **Touch Wah 系は音量 4 段で録る**（`mr_fx_dyn.py`）。STFT の枠ごとに入口の音量で応答を補間する（Early Fusn −7.4 / −8.8 → −2.4 / −0.6dB、TouchWah −5.6 → −1.8dB）。
     Dynamic Filter / Flanger / Phaser・Multi Band Comp も録ったが、この形では一つの音量のときより離れたので使わない
-  * **V-Distortion の中のディレイ**: 遅れ（左 300・右 400ms、帰り 400ms ごと）と帰り（1 回で −12dB）は式どおり。こだまの大きさは Delay Mix / 95（/127 では 3dB 小さかった）
+  * **V-Distortion の中のディレイ**: 遅れ（左 300・右 400ms、帰り 400ms ごと）と帰り（1 回で −12dB）は式どおり。こだまの大きさは Delay Mix / 95（/127 では 3dB 小さかった）。
+    掛かるのは Dry/Wet で混ぜたあとの音（2026-10-27、Dry/Wet 1・21 の音色で確かめた。sampler の文書の「ギターの音色」）
   * 3 Band EQ は、外れた音色の組（StrMachine・RotoGtr）でも実機と 0.6dB 以内。外れは後ろのブロックの側
   * **コーラス系とフランジャーも組のまま録る**（Chorus 1〜5・Celeste 1〜4・Flanger 1・2、131 組を足して 270 組）。式（Chorus 1・Flanger 1 で測ったもの）より優先する。
     コーラス系は Input Mode（15）が 0 なら左右を足す。Celeste 3 → Tempo Delay の J-Pop が −2.9 / −5.5 → −0.9 / −4.1dB

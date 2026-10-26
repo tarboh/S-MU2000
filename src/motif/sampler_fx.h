@@ -441,7 +441,8 @@ inline double edge_p(double e)
 inline bool dist_type(const block &b) { return b.is(9, 48) || b.is(9, 49) || b.is(9, 0) || b.is(9, 16) || b.is(9, 1) || b.is(9, 32); }
 
 // V-Distortion の中のディレイ（遅れ・帰り・大きさを 01_049・01_068 で確かめた）: 帰りの線（遅れ p8 × 0.1ms、帰り (p9 − 64) / 64、戻りに 1 次の LPF (1 − p12 / 10)²）から、
-// 左は p6・右は p7（× 0.1ms）で取り出し、Delay Mix（p11 / 95）で足す
+// 左は p6・右は p7（× 0.1ms）で取り出し、Delay Mix（p11 / 95）で足す。掛かるのは Dry/Wet で混ぜたあとの音（元の音のこだまも出る。
+// Dry/Wet 1 の GM の Mute・21 の SomeHair で、歪みの側だけに掛けると離したあとが実機より 15〜19dB 小さく、混ぜたあとなら 2〜3dB。2026-10-27）
 inline void vdist_delay(buf &y, const block &b, int ch)
 {
 	const size_t n = y.size();
@@ -533,11 +534,11 @@ inline void distortion(buf &L, buf &R, const block &b, const std::string &fxddir
 			v = v / std::pow(1 + std::pow(std::fabs(v / c), p), 1 / p);
 		}
 		buf y = filter_freq(u, n, [fc](double f) { return 1.0 / cplx(1 - (f / fc) * (f / fc), (f / fc) / 1.6); });
-		if (b.is(9, 16) && b.p[11] > 0)
-			vdist_delay(y, b, ch);
 		buf &o = ch == 0 ? L : R;
 		for (size_t i = 0; i < n; i++)
 			o[i] = gdry * o[i] + gwet * y[i] * og;
+		if (b.is(9, 16) && b.p[11] > 0)
+			vdist_delay(o, b, ch);
 	}
 }
 

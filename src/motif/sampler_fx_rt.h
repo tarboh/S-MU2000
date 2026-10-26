@@ -1038,7 +1038,7 @@ public:
 			break;
 		}
 		case 8: {
-			// 歪み（distortion と同じ）: 左右を足した音 → 録った応答 → 柔らかい頭打ち → 2 次の LPF →（V-Distortion はディレイ）→ 元の音と混ぜる。
+			// 歪み（distortion と同じ）: 左右を足した音 → 録った応答 → 柔らかい頭打ち → 2 次の LPF → 元の音と混ぜる →（V-Distortion はディレイ）。
 			// LPF は負の時刻のタップ（DIST_PRE）を頭へ回したので、出口はこの枠の中で DIST_PRE サンプル遅れる（元の音も遅らせて混ぜる）
 			const double x = (L + R) / 2;
 			ring_l[t & mask] = L;
@@ -1049,17 +1049,19 @@ public:
 				double u = (c == 0 ? fl : fr).tick(x) * dk;
 				u = u / std::pow(1 + std::pow(std::fabs(u / dc), dp), 1 / dp);
 				y[c] = (c == 0 ? el : er).tick(u);
-				if (vd_on) {
-					std::vector<double> &line = c == 0 ? fl_y[0] : fl_y[1];
-					const double back = t >= vd_df ? line[(t - vd_df) & mask] : 0.0;
-					vd_lp[c] = (1 - vd_a) * back + vd_a * vd_lp[c];
-					line[t & mask] = y[c] + vd_fb * vd_lp[c];
-					const size_t dt = vd_dt[c];
-					y[c] += vd_mix * (t >= dt ? line[(t - dt) & mask] : 0.0);
-				}
 			}
 			L = gdry * L0 + gwet * y[0] * og;
 			R = gdry * R0 + gwet * y[1] * og;
+			if (vd_on)
+				for (int c = 0; c < 2; c++) {
+					double &o = c == 0 ? L : R;
+					std::vector<double> &line = fl_y[c];
+					const double back = t >= vd_df ? line[(t - vd_df) & mask] : 0.0;
+					vd_lp[c] = (1 - vd_a) * back + vd_a * vd_lp[c];
+					line[t & mask] = o + vd_fb * vd_lp[c];
+					const size_t dt = vd_dt[c];
+					o += vd_mix * (t >= dt ? line[(t - dt) & mask] : 0.0);
+				}
 			t++;
 			break;
 		}
