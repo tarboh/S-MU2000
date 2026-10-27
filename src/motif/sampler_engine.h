@@ -936,13 +936,25 @@ private:
 			p.aeg.level[i] = al[i];
 		if (at.empty())
 			p.aeg.time[3] = geti(e.f, "release");
-		// CC73・CC75・CC72 のずれ（アタック・ディケイ 1 と 2・リリース）と、マルチのパートのずらし
+		// CC73・CC75・CC72 のずれ（アタック・ディケイ 1 と 2・リリース）と、マルチのパートのずらし。
+		// ドラムの鍵もアタック・ディケイは同じ 2 目盛りだが、リリースは CC72 が 0〜127 のどれでも効かず、ノートオフで即座に消える
+		// （tools/motif/mr_drum_cc.py、2026-10-27）。パートのリリースのずらしも同じものと見て、ドラムの鍵には足さない（こちらは測っていない）
+		// ドラムの鍵のディケイ 2 の 127 はホールドで、パッチには「時間 0・行き先はディケイ 1 のレベルのまま」と書いてある。ホールドの鍵も CC75 を下げると
+		// 127 からずらしたディケイ 2 で 0 へ下がる（CC48 で 95、CC32 で 63 相当）。ずらして 127 に届いたものはホールドに
 		if (off_atk || off_dec || off_rel || p_atk || p_dec || p_rel) {
 			auto cl = [](int v) { return std::max(0, std::min(127, v)); };
+			const bool drum_key = geti(e.f, "dnote", -1) >= 0;
 			p.aeg.time[0] = cl(p.aeg.time[0] + off_atk + p_atk);
 			p.aeg.time[1] = cl(p.aeg.time[1] + off_dec + p_dec);
-			p.aeg.time[2] = cl(p.aeg.time[2] + off_dec + p_dec);
-			p.aeg.time[3] = cl(p.aeg.time[3] + off_rel + p_rel);
+			if (drum_key) {
+				const bool hold = p.aeg.level[3] == p.aeg.level[2];
+				const int d2 = cl((hold ? 127 : p.aeg.time[2]) + off_dec + p_dec);
+				p.aeg.time[2] = d2 >= 127 ? 0 : d2;
+				p.aeg.level[3] = d2 >= 127 ? p.aeg.level[2] : 0;
+			} else {
+				p.aeg.time[2] = cl(p.aeg.time[2] + off_dec + p_dec);
+				p.aeg.time[3] = cl(p.aeg.time[3] + off_rel + p_rel);
+			}
 		}
 		p.aeg.time_vel_sens = geti(e.f, "aegtv", 64);
 		p.aeg.time_vel_segment = geti(e.f, "aegtvs", 4);
