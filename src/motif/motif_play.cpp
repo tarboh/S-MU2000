@@ -159,6 +159,7 @@ struct player {
 	bool bulk_on = false;
 	std::map<std::array<int, 3>, std::vector<unsigned char>> bulk_blocks;
 	std::unique_ptr<motif_multi::config> pending_bulk;
+	std::string gm_multi_path;              // GM Mode On で読むマルチ（capture/gm_on.multi。tools/motif/mr_gm_on.py が書く）
 
 	// マスターボリューム（0〜127）の倍率。実機で測った（tools/motif/mr_master_vol.py、2026-10-28）: 112・100・80・64・32・16 で −2.39・−4.73・−8.40・
 	// −12.04・−24.42・−37.65dB（ほぼ 40·log10(値 / 127)、小さい値ほど少し深い）。点の間は値で直線、16 より下は 40·log10 に −1.66dB
@@ -185,6 +186,16 @@ struct player {
 	{
 		if (m.size() == 8 && m[1] == 0x7F && m[3] == 0x04 && m[4] == 0x01) {
 			midi_master = master_volume_gain(m[6]);
+			return;
+		}
+		// GM Mode On（F0 7E xx 09 01 F7）: 実機はマルチの編集バッファを決まった GM 用の状態にそっくり置き換える（名前だけ前のまま。
+		// 2 つのマルチから始めて 1266 バイトが同じだった。tools/motif/mr_gm_on.py、2026-10-28）。その状態を一括ロードと同じ道で読む
+		if (m.size() == 6 && m[1] == 0x7E && m[3] == 0x09 && m[4] == 0x01) {
+			auto c = std::make_unique<motif_multi::config>();
+			if (!gm_multi_path.empty() && c->load(gm_multi_path)) {
+				c->name = "GM";
+				pending_bulk = std::move(c);
+			}
 			return;
 		}
 		// 一括ロード F0 43 0n 7F 00 bh bl ah am al dd… cs F7（チェックサムは bh から cs までの和の下 7 ビットが 0）
@@ -1033,6 +1044,7 @@ int main(int argc, char **argv)
 	const std::map<int, std::vector<motif_multi::fx_param>> fx_params = motif_multi::load_fx_params((dir / ".." / "fx_params.txt").string());
 
 	auto pl = std::make_unique<player>();
+	pl->gm_multi_path = (dir / ".." / "gm_on.multi").string();
 	// アルペジオの型の表（mr_arp_fit.py が作る。パッチの置き場の 1 つ上）
 	const bool arp_ok = pl->arplib.load((dir / ".." / "arp_prog.txt").string());
 	pl->arp.set_library(&pl->arplib);
