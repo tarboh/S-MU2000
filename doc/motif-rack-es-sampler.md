@@ -829,7 +829,12 @@ MIX PART の表はマルチのパートと同じ並び）と、MOTIF ES6/7/8 の
 * 入れなかった（プリセットで使われていない）: マルチのパートのデチューン（37 pp 10）・AEG のサステイン（22）・FEG のずらし（27〜2C）は、取ったマルチ 128 個の
   2046 パートで全部初期値。受信スイッチ（1F〜21）も全部入り。マスターエフェクト（36 11 00）は 128 個とも切（区画の最後のバイト 0x22 がスイッチ、0 = 切）。
   受信スイッチのビットの並びは Data List のとおり: 1F は bit1 アルペジオ・bit2 CC・bit3 バンク・bit4 PC・bit5 AT・bit6 PB、20 は bit0 音量/エクスプレッション・
-  bit1 パン・bit3 サステイン/ソステヌート・bit5 MW、21 は bit0 FC2・bit1 FS・bit2 FC1・bit3 BC・bit4 KN1・bit5 KN2・bit6 RB（PB と音量は実機で確かめた）
+  bit1 パン・bit3 サステイン/ソステヌート・bit5 MW、21 は bit0 FC2・bit1 FS・bit2 FC1・bit3 BC・bit4 KN1・bit5 KN2・bit6 RB
+* **受信スイッチを芯に入れた**（`tools/motif/mr_rx_bits2.py`。一括ロード・パラメーターチェンジで切られることがあるので）: 組ごとにスイッチを全部入れて
+  状態を戻してから 1 つだけ切ると、切った組は CC74（1F bit2）・ベンド（1F bit6）・CC7・CC11（20 bit0）・CC10（20 bit1）・CC64（20 bit3）を全く受けなかった
+  （前の `mr_rx_bits.py` は、状態を戻す CC まで切ったスイッチで止められていて、組どうしが混ざっていた）。芯は `multi::receives_cc`・`aftertouch`・`pitch_bend` で見る。
+  CC は 1F bit2 と、そのコントローラーのスイッチ（FC1 = CC4・BC = CC2・KN1・KN2 = CC16・17・RB = CC22）の両方が入っているときだけ受ける。
+  120 から上はいつも受ける（測っていない）。FC2・FS は CC の番号がシステムの割り当てで決まるので見ていない。芯で CC7 20 は、入れたまま −28.1dB（実機 −28.2dB）、切ると 0dB
 * 曲の頭の一括ロードが MOTIF-RACK の形（6F）だと ES は受けない（「ドラムキットのインサーション」の節）。芯の motif_play も SysEx は受けない
 
 ### マイクロチューニングと音程のキーフォロー（2026-10-28。`tools/motif/mr_tuning.py`・`mr_pitch_kf.py`、録音は `capture/tuning`・`pitchkf`・`tuning_presets`・`pkf90`）

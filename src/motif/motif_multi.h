@@ -797,12 +797,38 @@ public:
 			if (p->ch == ch)
 				part_off(*p, key);
 	}
+	// パートの受信スイッチ（37 pp 1F〜21、Data List の MIX PART の並び）で、この CC を受けるか。1F bit2 が CC 全体、そのうえで
+	// 20 bit0 音量/エクスプレッション（7・11）・bit1 パン（10）・bit3 サステイン/ソステヌート（64・66）・bit5 MW（1）、21 bit2 FC1（4）・bit3 BC（2）・
+	// bit4 KN1（16）・bit5 KN2（17）・bit6 RB（22）。バンク（0・32）は 1F bit3 で別に見る。120 から上（モードのメッセージ）はいつも受ける。
+	// 実機で、切った組は CC74・CC7・CC11・CC10・CC64 を全く受けなかった（tools/motif/mr_rx_bits2.py、2026-10-28）
+	static bool receives_cc(const part &P, int num)
+	{
+		if (num >= 120 || num == 0 || num == 32)
+			return true;
+		const int r1 = P.cfg.get("rx1", 127), r2 = P.cfg.get("rx2", 127), r3 = P.cfg.get("rx3", 127);
+		if (!(r1 >> 2 & 1))
+			return false;
+		switch (num) {
+		case 7: case 11: return r2 & 1;
+		case 10: return r2 >> 1 & 1;
+		case 64: case 66: return r2 >> 3 & 1;
+		case 1: return r2 >> 5 & 1;
+		case 4: return r3 >> 2 & 1;
+		case 2: return r3 >> 3 & 1;
+		case 16: return r3 >> 4 & 1;
+		case 17: return r3 >> 5 & 1;
+		case 22: return r3 >> 6 & 1;
+		}
+		return true;
+	}
 	void control(int ch, int num, int val)
 	{
 		for (auto &p : parts) {
 			if (p->ch != ch)
 				continue;
 			part &P = *p;
+			if (!receives_cc(P, num))
+				continue;
 			switch (num) {
 			case 1: src(P, 1, val); break;
 			case 2: src(P, 7, val); break;
@@ -881,7 +907,7 @@ public:
 	void aftertouch(int ch, int v)
 	{
 		for (auto &p : parts)
-			if (p->ch == ch) {
+			if (p->ch == ch && (p->cfg.get("rx1", 127) >> 5 & 1)) {      // Receive AT（1F bit5）
 				src(*p, 2, v);
 				src(*p, 3, v);
 			}
@@ -889,7 +915,7 @@ public:
 	void pitch_bend(int ch, int v)
 	{
 		for (auto &p : parts)
-			if (p->ch == ch)
+			if (p->ch == ch && (p->cfg.get("rx1", 127) >> 6 & 1))      // Receive PB（1F bit6）
 				src(*p, 0, v);
 	}
 	void all_off()
