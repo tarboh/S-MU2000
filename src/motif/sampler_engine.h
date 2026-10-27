@@ -872,11 +872,22 @@ private:
 				return &e;
 		return nullptr;
 	}
+	// ベロシティのクロスフェード（41 ee 00 の 0x10、エレメントの vxf）: 範囲の外でも、端からの距離 d がクロスフェードの値 X より小さければ鳴らし、
+	// 振幅に 1 − d / X を掛ける（実機で測った。tools/motif/mr_vel_xfade.py、2026-10-28。X 4〜127 で、d が X の半分なら −6dB、X 64 で d 63 は −36.1dB。
+	// 端に近い所だけ、実機は 0.3〜0.7dB 小さく減る）。範囲の中は 1、鳴らさないときは 0
+	static double xfade_gain(const element &e, int vel)
+	{
+		const int lo = geti(e.f, "vel_lo"), hi = geti(e.f, "vel_hi"), x = geti(e.f, "vxf");
+		const int d = vel < lo ? lo - vel : vel > hi ? vel - hi : 0;
+		if (d == 0)
+			return 1.0;
+		return d < x ? 1.0 - double(d) / x : 0.0;
+	}
 	int count_elements(int key, int vel) const
 	{
 		int c = 0;
 		for (const element &e : pt.els)
-			if (key >= geti(e.f, "note_lo") && key <= geti(e.f, "note_hi") && vel >= geti(e.f, "vel_lo") && vel <= geti(e.f, "vel_hi"))
+			if (key >= geti(e.f, "note_lo") && key <= geti(e.f, "note_hi") && xfade_gain(e, vel) > 0)
 				c++;
 		return c;
 	}
@@ -886,7 +897,8 @@ private:
 	{
 		const kv &fxline = pt.fxline, &clfoline = pt.clfoline;
 	for (const element &e : pt.els) {
-		if (note < geti(e.f, "note_lo") || note > geti(e.f, "note_hi") || vel < geti(e.f, "vel_lo") || vel > geti(e.f, "vel_hi"))
+		const double xg = xfade_gain(e, vel);
+		if (note < geti(e.f, "note_lo") || note > geti(e.f, "note_hi") || xg <= 0)
 			continue;
 		// ドラムの鍵は、押した鍵に依らず決まった鍵（dnote）で鳴らす（音程・区間・鍵で変わるものは全部その鍵で）
 		const int en = geti(e.f, "dnote", -1) >= 0 ? geti(e.f, "dnote") : note;
@@ -914,6 +926,7 @@ private:
 		p.coarse = geti(e.f, "coarse");
 		p.fine = geti(e.f, "fine");
 		p.level = geti(e.f, "level", 127);
+		p.xfade = xg;
 		// Filter Gain は 1 あたり 0.375dB。サンプルは雛形の音色（250）で録ったので、その差だけ掛ける
 		p.gain = std::pow(10.0, (swp50_filter::filter_gain_db(geti(e.f, "fgain", 250)) - swp50_filter::filter_gain_db(250)) / 20.0);
 		p.pan = (fixed_pan ? 64 : geti(e.f, "pan", 64)) + pan_off;

@@ -173,6 +173,7 @@ struct element_params {
 	int coarse = 0;               // 半音
 	int fine = 0;                 // -64..+63（1 = 1.5625 セント）
 	int level = 127;
+	double xfade = 1.0;           // ベロシティのクロスフェードの倍率（範囲の外で鳴らすとき、1 − 距離 / クロスフェード）
 	double gain = 1.0;            // Filter Gain（録った雛形の 250 からの比）
 	int pan = 64;                 // 1..127、64 が中央
 	int scaling_pan = 64;         // スケーリングパンの深さ（64 が 0）
@@ -422,7 +423,7 @@ struct voice {
 		level = std::fmin(127.0, std::fmax(0.0, p.level + swp50_aeg::level_scaling(p.level_bp, p.level_off, n)));
 		level *= swp50_aeg::key_follow_factor(p.level_kf, n);
 		const double vd = swp50_aeg::velocity_db(p.level_vel_sens, p.level_vel_curve, v);
-		vel_gain = vd <= swp50_aeg::SILENT ? 0.0 : std::pow(10.0, vd / 20.0);
+		vel_gain = vd <= swp50_aeg::SILENT ? 0.0 : std::pow(10.0, vd / 20.0) * p.xfade;
 		if (vel_gain == 0.0)
 			done = true;
 		p.feg.key = n;
