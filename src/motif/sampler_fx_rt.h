@@ -139,14 +139,19 @@ private:
 // リバーブ: 左右を足して半分を、左右の応答にたたみ込んで Return・送りを掛けた wet
 class reverb_rt {
 public:
-	bool init(const block &rv, const std::string &fxdir)
+	// chorev: コーラスからリバーブへの送り（0〜127、Send Chorus To Reverb）。0 でなければ、応答には Return だけを掛け、送りは入口で掛けて、
+	// tick の xl・xr（コーラスの Return の前の wet）に chorev / 127 を掛けて足す（実機で測った。tools/motif/mr_cho_rev.py、2026-10-28）。
+	// 0 なら前と同じ（送りも応答に焼き込む）
+	bool init(const block &rv, const std::string &fxdir, int chorev = 0)
 	{
 		active_ = false;
 		char name[64];
 		std::snprintf(name, sizeof name, "/reverb_%d_%d.irx", rv.msb, rv.lsb);
 		motif_fx::stereo_ir ir = motif_fx::load_ir(fxdir + name);
-		if (!ir.ok || rv.send == 0)
+		if (!ir.ok || (rv.send == 0 && chorev <= 0))
 			return false;
+		in_dry = 1.0;
+		in_x = 0.0;
 		if (motif_fx::table4_type(rv)) {
 			double rt[7];
 			const char *c = ir.head["rt"].c_str();
@@ -161,7 +166,12 @@ public:
 			ir.L = motif_fx::reshape(ir.L, rt, target);
 			ir.R = motif_fx::reshape(ir.R, rt, target);
 		}
-		const double g = rv.ret / 96.0 * rv.send / 127.0;
+		double g = rv.ret / 96.0 * rv.send / 127.0;
+		if (chorev > 0) {
+			g = rv.ret / 96.0;
+			in_dry = rv.send / 127.0;
+			in_x = chorev / 127.0;
+		}
 		// 尾を切る: 切る部分の絶対値の合計が、全体の 1e-6 より小さい所まで（1 サンプルずつの大きさで切ると、小さくても長く続く尾
 		// （01 40 の MelodicTom）が足し合わさって 4e-3 ずれた）
 		double total = 0;
@@ -188,15 +198,17 @@ public:
 	bool active() const { return active_; }
 	int partitions() const { return cl.partitions(); }
 
-	void tick(double l, double r, double &ol, double &orr)
+	void tick(double l, double r, double &ol, double &orr, double xl = 0, double xr = 0)
 	{
-		const double x = (l + r) / 2;
+		const double x = in_x != 0.0 ? (l + r) / 2 * in_dry + (xl + xr) / 2 * in_x : (l + r) / 2;
 		ol = cl.tick(x);
 		orr = cr.tick(x);
 	}
+	bool takes_chorus() const { return in_x != 0.0; }
 
 private:
 	bool active_ = false;
+	double in_dry = 1.0, in_x = 0.0;
 	conv_rt cl, cr;
 };
 
@@ -1422,6 +1434,7 @@ public:
 			depth = 0.176 * ch.p[2] / 1000 * FS;
 			off = motif_fx::MOD_DELAY_MS[std::min(127, ch.p[4])] / 1000 * FS;
 			g = 2.06 * ch.ret / 96.0 * ch.send / 127.0;
+			gp = 2.06 * ch.send / 127.0;
 			return true;
 		}
 		// ほかの型は、送りを掛けた音をインサーションと同じ部品（block_rt）に通す（sampler_fx.h の system_chorus）
@@ -1439,9 +1452,12 @@ public:
 	// インサーションの遅れで音が n サンプル遅れて届くとき、時計もその分遅らせて始める
 	void delay_start(int n) { skip = n; }
 
-	void tick(double l, double r, double &ol, double &orr)
+	// pl・pr を渡すと、Return を掛ける前の wet も返す（コーラスからリバーブへの送りは Return の前から。Return 0 でも送られた）
+	void tick(double l, double r, double &ol, double &orr, double *pl = nullptr, double *pr = nullptr)
 	{
 		ol = orr = 0;
+		if (pl)
+			*pl = *pr = 0;
 		if (skip > 0) {
 			skip--;
 			return;
@@ -1460,6 +1476,8 @@ public:
 				const double fr = pos - double(i);
 				const double x0 = ring[i & mask], x1 = i + 1 <= t ? ring[(i + 1) & mask] : x0;
 				(c == 0 ? ol : orr) += (x0 + (x1 - x0) * fr) * g;
+				if (pl)
+					*(c == 0 ? pl : pr) += (x0 + (x1 - x0) * fr) * gp;
 			}
 			t++;
 		} else if (kind == 2) {
@@ -1469,6 +1487,10 @@ public:
 			bk.tick(L, R);
 			ol = (L - dl) * go;
 			orr = (R - dr) * go;
+			if (pl) {
+				*pl = L - dl;
+				*pr = R - dr;
+			}
 		}
 	}
 
@@ -1476,7 +1498,7 @@ private:
 	int kind = 0;
 	size_t t = 0;
 	std::vector<double> ring;
-	double hz = 0, depth = 0, off = 0, g = 0, gi = 0, go = 0;
+	double hz = 0, depth = 0, off = 0, g = 0, gp = 0, gi = 0, go = 0;
 	int skip = 0;
 	block_rt bk;
 };

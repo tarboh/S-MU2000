@@ -498,16 +498,17 @@ struct player {
 					rr *= rs;
 					cl *= cs;
 					cr *= cs;
+					// コーラスを先に回し、Return の前の wet をリバーブへ（コーラスからリバーブへの送り）。足す順は前と同じ（リバーブ → コーラス）
+					double ql = 0, qr = 0, pl = 0, pr = 0;
+					if (cur->cho.active())
+						cur->cho.tick(cl, cr, ql, qr, &pl, &pr);
 					if (cur->rev.active()) {
-						cur->rev.tick(rl, rr, xl, xr);
+						cur->rev.tick(rl, rr, xl, xr, pl, pr);
 						if (use_rev)
 							wl += xl, wr += xr;
 					}
-					if (cur->cho.active()) {
-						cur->cho.tick(cl, cr, xl, xr);
-						if (use_cho)
-							wl += xl, wr += xr;
-					}
+					if (cur->cho.active() && use_cho)
+						wl += ql, wr += qr;
 					dl += wl;
 					dr += wr;
 				}
@@ -570,7 +571,7 @@ std::unique_ptr<loaded> load_voice(const voice_entry &v)
 	L->cho_send = ch.send;
 	motif_fx::block rv127 = rv, ch127 = ch;
 	rv127.send = ch127.send = 127;
-	L->rev.init(rv127, cap + "/fx");
+	L->rev.init(rv127, cap + "/fx", motif_sampler::geti(L->pt.fxline, "chorev"));
 	std::snprintf(t, sizeof t, "%02X %02X", rv.msb, rv.lsb);
 	L->rev_name = L->rev.active() ? t : std::string(t) + "（応答が無い）";
 	L->cho.init(ch127, motif_sampler::geti(L->pt.fxline, "tempo", 120), cap + "/fxd");

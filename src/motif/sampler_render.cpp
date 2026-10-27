@@ -207,6 +207,22 @@ int main(int argc, char **argv)
 		buf oL(L), oR(R);
 		if (use_rev)
 			reverb(L, R, rv, fxdir + "/fx", oL, oR, L.size());
+		// コーラスからリバーブへの送り（fx の chorev、0〜127）: コーラスの Return の前の wet × chorev / 127 を、送り 127 のリバーブにも通す
+		// （実機で測った。tools/motif/mr_cho_rev.py、2026-10-28。リバーブは線形なので、元の音の分と分けて足しても同じ）
+		const int chorev = geti(fxline, "chorev");
+		if (use_rev && use_cho && chorev > 0 && ch.send > 0) {
+			block pre = ch;
+			pre.ret = 96;
+			buf pL(L.size(), 0.0), pR(R.size(), 0.0);
+			system_chorus(L, R, pre, pL, pR, fxdir + "/fxd", geti(fxline, "tempo", 120));
+			for (size_t i = 0; i < pL.size(); i++) {
+				pL[i] *= chorev / 127.0;
+				pR[i] *= chorev / 127.0;
+			}
+			block r127 = rv;
+			r127.send = 127;
+			reverb(pL, pR, r127, fxdir + "/fx", oL, oR, L.size());
+		}
 		if (use_cho)
 			system_chorus(L, R, ch, oL, oR, fxdir + "/fxd", geti(fxline, "tempo", 120));
 		for (size_t i = 0; i < l.size(); i++) {

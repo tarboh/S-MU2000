@@ -51,6 +51,9 @@ def export(syx, out):
         fx.append("reverb=" + fx_line(b, (0x36, 0x01, 0x00), mr_params.COMMON_BLOCKS[(0x40, 0x01, 0x00)]))
     if (0x36, 0x02, 0x00) in b:
         fx.append("chorus=" + fx_line(b, (0x36, 0x02, 0x00), mr_params.COMMON_BLOCKS[(0x40, 0x02, 0x00)]))
+    if (0x36, 0x02, 0x00) in b:
+        dch = mr_params.decode_rows(mr_params.COMMON_BLOCKS[(0x40, 0x02, 0x00)], b[(0x36, 0x02, 0x00)])
+        fx.append("chorev=%d" % dch.get("send_to_reverb", 0))       # コーラスからリバーブへの送り（36 02 00 の 0x24）
     fx.append("tempo=%d" % ar["tempo"])
     lines.append("fx " + " ".join(fx))
     # マスター EQ（36 10 00）: 5 バンド × ゲイン・周波数（表 3）・Q・形（バンド 1・5 だけ。0 棚・1 山）

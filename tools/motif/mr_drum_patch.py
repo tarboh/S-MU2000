@@ -43,6 +43,8 @@ def common_lines(b):
         if key in ("reverb", "chorus"):
             vals += [d.get("return", 96), 127]           # 送りは鍵ごと（rsend・csend）なので、リバーブ・コーラスは送り 127 で作る
         fx[key] = ",".join(str(x) for x in vals)
+        if key == "chorus":
+            fx["chorev"] = d.get("send_to_reverb", 0)              # コーラスからリバーブへの送り（46 02 00 の 0x24）
     a = b.get((0x46, 0x70, 0x00), bytes(0x34))
     tempo = (a[0x28] << 7 | a[0x29]) if len(a) > 0x29 else 120
     fx["connect"] = con[0]

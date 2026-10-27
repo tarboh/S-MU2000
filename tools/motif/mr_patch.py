@@ -102,6 +102,7 @@ def main():
         if key in ("reverb", "chorus"):
             vals += [b.get("return", 96), v["common"].get("%s_send" % key, 0)]
         fx[key] = ",".join(str(x) for x in vals)
+    fx["chorev"] = v.get("chorus", {}).get("send_to_reverb", 0)      # コーラスからリバーブへの送り（40 02 00 の 0x24）
     fx["connect"] = v.get("insertion_connect", {}).get("insertion_connect_type", 0)
     fx["tempo"] = voice_tempo(vpath)
     lines.append("fx " + " ".join("%s=%s" % kv for kv in fx.items()))

@@ -372,7 +372,7 @@ public:
 		};
 		const motif_fx::block rv = get("reverb"), ch = get("chorus");
 		char t[96];
-		rev.init(rv, cap + "/fx");
+		rev.init(rv, cap + "/fx", geti(cfg.fxline, "chorev"));
 		std::snprintf(t, sizeof t, "%02X %02X", rv.msb, rv.lsb);
 		rev_name = rev.active() ? t : std::string(t) + "（応答が無い）";
 		cho.init(ch, tempo, cap + "/fxd");
@@ -787,17 +787,17 @@ public:
 				cl += p->csl[j] * s2;
 				cr += p->csr[j] * s2;
 			}
-			double xl = 0, xr = 0;
+			// コーラスを先に回し、Return の前の wet をリバーブへ（コーラスからリバーブへの送り）。足す順は前と同じ（リバーブ → コーラス）
+			double xl = 0, xr = 0, ql = 0, qr = 0, pl = 0, pr = 0;
+			if (cho.active())
+				cho.tick(cl, cr, ql, qr, &pl, &pr);
 			if (rev.active()) {
-				rev.tick(rl, rr, xl, xr);
+				rev.tick(rl, rr, xl, xr, pl, pr);
 				if (use_rev)
 					ml += xl, mr += xr;
 			}
-			if (cho.active()) {
-				cho.tick(cl, cr, xl, xr);
-				if (use_cho)
-					ml += xl, mr += xr;
-			}
+			if (cho.active() && use_cho)
+				ml += ql, mr += qr;
 			if (use_meq)
 				meq.process(ml, mr);
 			// 実機の出口は ±1.0 で頭打ち
