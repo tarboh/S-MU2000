@@ -242,8 +242,14 @@ struct amp_eg {
 				db = from + (to - from) * (1.0 - left / len);
 			}
 		}
-		return db <= FLOOR_DB ? 0.0 : std::pow(10.0, db / 20.0);
+		// dB が前のサンプルと同じ（サステインなど）なら、前の倍率を使う（同じ値になる）
+		if (db != out_db) {
+			out_db = db;
+			out_amp = db <= FLOOR_DB ? 0.0 : std::pow(10.0, db / 20.0);
+		}
+		return out_amp;
 	}
+	double out_db = 1e300, out_amp = 0.0;
 };
 
 } // namespace swp50_aeg

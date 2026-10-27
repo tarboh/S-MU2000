@@ -474,8 +474,9 @@ private:
 			vs[vi].resize(n);
 		}
 		block_n = n;
-		if (pool && nv > 1)
-			pool->run(nv, [this](size_t vi) { render_voice(vi); });
+		worker_pool *wp = pool ? pool.get() : ext_pool;
+		if (wp && nv > 1)
+			wp->run(nv, [this](size_t vi) { render_voice(vi); });
 		else
 			for (size_t vi = 0; vi < nv; vi++)
 				render_voice(vi);
@@ -712,8 +713,11 @@ public:
 			}
 		}
 	};
+	// 外の糸の束を借りる（マルチで、エレメントの多いパートの中を分けて描く。nullptr で借りない）。同じ束を同時に 2 か所で使わないこと
+	void use_pool(worker_pool *p) { ext_pool = p; }
 private:
 	std::unique_ptr<worker_pool> pool;
+	worker_pool *ext_pool = nullptr;
 
 	const sample *get_sample(const std::string &file)
 	{

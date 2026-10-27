@@ -553,12 +553,26 @@ struct voice {
 		cents += glide;
 		p.lfo.speed_mul = co.speed_mul;
 		tick++;
-		pos += cents != 0.0 ? step * std::exp2(cents / 1200.0) : step;
+		// 音程の倍率・音量の倍率は、入力が前のサンプルと同じなら前の値を使う（同じ値になる。鳴り続ける音では毎サンプル同じなので速くなる）
+		if (cents != last_cents) {
+			last_cents = cents;
+			last_ratio = std::exp2(cents / 1200.0);
+		}
+		pos += cents != 0.0 ? step * last_ratio : step;
 		if (s.loop_start < 0 && pos >= double(s.frames))
 			done = true;
 		// FEG を目盛りに足してフィルターの g を決め直すのは重いので、FEG の深さが 0 でなければ毎サンプル（芯の試しなので素直に書く）
 		const double fs = p.feg.step();
-		if (p.feg.depth != 64 || p.lfo.fmod || co.filter || cm.cutoff != 0 || cm.reso != 0 || cm.hpf != 0) {
+		const double fin = fs + p.lfo.filter_octaves_now() * 25.6 + co.cutoff;
+		// 下で使う入力（FEG・LFO・コモン LFO・コントロールセットのずれ）が前のサンプルと全部同じなら、決まる値も同じなので何もしない
+		// （鳴り続ける音では毎サンプル同じ。BigStrings の 17 音で 1 ブロックの持ち時間の 48% → 下の数、2026-10-28）
+		const bool same_in = fin == last_fin && co.reso == last_creso && cm.cutoff == last_mcut && cm.reso == last_mreso && cm.hpf == last_mhpf;
+		if (!same_in && (p.feg.depth != 64 || p.lfo.fmod || co.filter || cm.cutoff != 0 || cm.reso != 0 || cm.hpf != 0)) {
+			last_fin = fin;
+			last_creso = co.reso;
+			last_mcut = cm.cutoff;
+			last_mreso = cm.reso;
+			last_mhpf = cm.hpf;
 			swp50_filter::filter_params fp = p.filter;
 			// カットオフのベロシティ感度は FEG より前に足す（FEG で 255 を越える所で頭打ちにしてから下げると暗くなりすぎる。
 			// 2026-10-24、Crazy Mod のエレメント 1 を感度 +40・ベロシティ 40 で実機と比べた）
@@ -567,7 +581,7 @@ struct voice {
 			double base = p.filter.cutoff + swp50_filter::velocity_steps(p.filter.vel_sens, velocity);
 			if (cm.cutoff != 0)
 				base = std::max(0.0, std::min(255.0, base + cm.cutoff));
-			fp.cutoff = int(std::lround(swp50_filter::cutoff_with_feg(base, fs + p.lfo.filter_octaves_now() * 25.6 + co.cutoff, p.filter.type)));
+			fp.cutoff = int(std::lround(swp50_filter::cutoff_with_feg(base, fin, p.filter.type)));
 			fp.vel_sens = 64;
 			fp.reso = std::max(0, std::min(127, int(std::lround(p.filter.reso + co.reso + cm.reso))));
 			if (cm.hpf != 0)
@@ -606,7 +620,21 @@ struct voice {
 			if (--kill == 0)
 				done = true;
 		}
-		const double g = kg * eg * vel_gain * level_gain(std::min(127.0, level + cm.level) - co.drop) * (p.lfo.amod ? std::pow(10.0, p.lfo.amp_db_now() / 20.0) : 1.0);
+		const double lv = std::min(127.0, level + cm.level) - co.drop;
+		if (lv != last_lv) {
+			last_lv = lv;
+			last_lg = level_gain(lv);
+		}
+		double am = 1.0;
+		if (p.lfo.amod) {
+			const double ad = p.lfo.amp_db_now();
+			if (ad != last_ad) {
+				last_ad = ad;
+				last_am = std::pow(10.0, ad / 20.0);
+			}
+			am = last_am;
+		}
+		const double g = kg * eg * vel_gain * last_lg * am;
 		if (co.panning || cm.pan != 0)
 			pan_gains(pan_offset + co.pan + cm.pan);
 		// 離したあと出力がほぼ聞こえない（倍率 −80dB 未満）間は、実機はリリースを 4 倍の速さで進める
@@ -629,6 +657,10 @@ struct voice {
 		} else
 			quiet = 0;
 	}
+	double last_cents = 0.0, last_ratio = 1.0;          // 音程の倍率の使い回し
+	double last_fin = 1e300, last_creso = 0, last_mcut = 0, last_mreso = 0, last_mhpf = 0;   // フィルターの入力の使い回し
+	double last_lv = -1e9, last_lg = 0.0;               // レベルの倍率の使い回し
+	double last_ad = 0.0, last_am = 1.0;                // LFO の音量の倍率の使い回し
 	static constexpr double QUIET_END = 1e-5;
 	static constexpr int QUIET_END_SAMPLES = 4410;
 	int quiet = 0;

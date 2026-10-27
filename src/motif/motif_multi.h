@@ -312,6 +312,7 @@ struct part {
 	std::atomic<int> voices{0};
 	std::atomic<float> peak{0};
 	double ins_rev = 0, ins_cho = 0;      // ドラム: インサーションを通った音のリバーブ・コーラスへの送り（/ 127）
+	int ins_quiet = 0;                     // 入る音も出る音も無いまま続いたサンプルの数（鳴らす糸だけ）
 	swp50_eq::part_eq peq;                 // パートの EQ（37 pp 2E〜38）
 	// 描いた音（render の中だけ）。rs・cs はリバーブ・コーラスへ送る音（ふつうの音色は ol・orr と同じ、ドラムは鍵ごとの送りを掛けたもの）
 	float ol[256] = {}, orr[256] = {}, rsl[256] = {}, rsr[256] = {}, csl[256] = {}, csr[256] = {};
@@ -756,9 +757,23 @@ public:
 			const bool from_arp = P.arpsw && P.ch == arp_ch;
 			render_part(P, n, from_arp ? evs : nullptr, from_arp ? ne : 0);
 		};
-		if (pool)
-			pool->run(parts.size(), work);
-		else
+		if (pool) {
+			// エレメントの多いパートは、パートの中のエレメントを糸の束で分けて 1 つずつ描き、残りのパートを束で並べて描く
+			// （1 つのパートに音が集まると 1 本の糸では間に合わず、ブツブツ切れた。BigStrings の 17 音（51 エレメント）で 1 ブロックの
+			// 持ち時間の 60%、遅いブロックは 134%。2026-10-28）。足す順は変わらないので、音は同じ
+			size_t light[16];
+			size_t nl = 0;
+			for (size_t i = 0; i < parts.size(); i++) {
+				part &P = *parts[i];
+				if (P.eg && P.eg->active_voices() >= HEAVY_VOICES) {
+					P.eg->use_pool(pool.get());
+					work(i);
+					P.eg->use_pool(nullptr);
+				} else
+					light[nl++] = i;
+			}
+			pool->run(nl, [&](size_t k) { work(light[k]); });
+		} else
 			for (size_t i = 0; i < parts.size(); i++)
 				work(i);
 		for (int j = 0; j < n; j++) {
@@ -811,6 +826,8 @@ public:
 
 private:
 	std::unique_ptr<motif_sampler::engine::worker_pool> pool;
+	static constexpr int INS_IDLE_SAMPLES = 5 * 44100;   // 鳴っていないパートのインサーションを止めるまでの無音
+	static constexpr size_t HEAVY_VOICES = 12;    // これ以上のエレメントが鳴っているパートは、中を分けて描く
 	std::string pdir, capdir;
 	int tempo = 120;
 	int bank_msb[16] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
@@ -895,11 +912,23 @@ private:
 		}
 		const double pg = P.mute ? 0.0 : std::pow(P.vol / 127.0, 2.0) * std::pow(P.exp / 127.0, 2.0);
 		float pk = 0;
+		// 鳴っていないパートのインサーションは、入る音が無く、出る音も 5 秒続けて 1e-8 未満なら回さない（2026-10-28。無音でも毎サンプル
+		// 回していて、マルチ 41_000 では音を 1 つも鳴らさずに 1 本の糸で 1 ブロックの持ち時間の 63% かかっていた）。捨てるのは 1e-8 未満の尾だけ。
+		// 止めている間は揺れる型の LFO も進まない
+		bool in_silent = P.eg->active_voices() == 0;
+		for (int j = 0; j < n && in_silent; j++)
+			if (l[j] != 0.0f || r[j] != 0.0f || g0[j] != 0.0f || g1[j] != 0.0f || g2[j] != 0.0f || h0[j] != 0.0f || h1[j] != 0.0f || h2[j] != 0.0f)
+				in_silent = false;
+		const bool ins_idle = in_silent && P.ins_quiet >= INS_IDLE_SAMPLES;
+		double ins_peak = 0;
 		for (int j = 0; j < n; j++) {
 			double dl, dr, il = 0, ir = 0;
-			if (P.has_ins && use_ins) {
+			if (P.has_ins && use_ins && ins_idle) {
+				dl = dr = 0.0;
+			} else if (P.has_ins && use_ins) {
 				const double xl[3] = {g0[j], g1[j], g2[j]}, xr[3] = {h0[j], h1[j], h2[j]};
 				P.ins->tick(xl, xr, dl, dr, il, ir);
+				ins_peak = std::max(ins_peak, std::max(std::max(std::fabs(dl), std::fabs(dr)), std::max(std::fabs(il), std::fabs(ir))));
 			} else {
 				dl = l[j];
 				dr = r[j];
@@ -921,6 +950,10 @@ private:
 			pk = std::max(pk, std::max(std::fabs(P.ol[j]), std::fabs(P.orr[j])));
 		}
 		P.peak = std::max(pk, P.peak.load() * 0.95f);
+		if (!in_silent || ins_peak >= 1e-8)
+			P.ins_quiet = 0;
+		else if (P.ins_quiet < INS_IDLE_SAMPLES)
+			P.ins_quiet += n;
 	}
 };
 
