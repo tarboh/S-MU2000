@@ -363,7 +363,14 @@ struct player {
 				if (cur)
 					cur->eg->reset_controls();
 				break;
+			case 96:
+			case 97:
+				if (rpn_msb == 0 && cur)
+					cur->eg->rpn_step(rpn_lsb, a == 96 ? 1 : -1);
+				break;
 			case 123:
+			case 124:
+			case 125:                 // オムニ切・入も All Notes Off として働く（実機で確かめた）
 				for (int k = 0; k < 128; k++)
 					while (key_count[k] > 0)
 						note_off(k);

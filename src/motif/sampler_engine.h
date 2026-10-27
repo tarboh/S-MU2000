@@ -290,6 +290,20 @@ public:
 	// RPN のデータ（CC6 = MSB・CC38 = LSB）。num は RPN の番号（MSB 0 のもの）: 0 ベンドの幅・1 Fine Tune・2 Coarse Tune。
 	// 実機のマルチで測った（tools/motif/mr_rpn_tune.py、2026-10-27）: Coarse は (値 − 64) 半音で ±24 で頭打ち、Fine は (値 − 64) / 64 × 100 セント。
 	// どちらも音の高さを変える（ドラムでも鍵はずらさず、同じ楽器が高さだけ変わる）。プログラムチェンジと CC121 のあとも残る
+	// CC96・97（Data Increment・Decrement）: 選んだ RPN の上の桁を 1 つ動かす（実機: ベンドの幅 2 に 96 を 3 回で 5 半音、Coarse は 1 半音ずつ、
+	// Fine は 1 回 1.56 セント = 上の桁 1 つ。tools/motif/mr_rpn_incdec.py、2026-10-28）
+	void rpn_step(int num, int dir)
+	{
+		if (num == 0)
+			set_pb_range(std::max(0, std::min(24, pbup - 64 + dir)));
+		else if (num == 1) {
+			fine14 = std::max(0, std::min(16383, fine14 + dir * 128));
+			apply_ctl();
+		} else if (num == 2) {
+			coarse = std::max(-24, std::min(24, coarse + dir));
+			apply_ctl();
+		}
+	}
 	void rpn_data(int num, int cc, int val)
 	{
 		if (num == 0 && cc == 6)

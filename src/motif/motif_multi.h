@@ -701,7 +701,14 @@ public:
 				if (P.eg)
 					P.eg->reset_controls();
 				break;
+			case 96:
+			case 97:
+				if (P.rpn_msb == 0 && P.eg)
+					P.eg->rpn_step(P.rpn_lsb, num == 96 ? 1 : -1);
+				break;
 			case 123:
+			case 124:
+			case 125:                 // オムニ切・入も All Notes Off として働く（実機で確かめた）
 				if (P.eg)
 					P.eg->all_notes_off();
 				break;
