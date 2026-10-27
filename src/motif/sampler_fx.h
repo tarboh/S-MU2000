@@ -773,6 +773,10 @@ inline void pitch_change(buf &L, buf &R, const block &b)
 			const double af = std::min(50.0, std::max(3.0, std::fabs(fine)));
 			lo = interp(gx, glo, 4, af) / 1000 * FS;
 			span = interp(gx, gsp, 4, af) / 1000 * FS;
+			// Fine 0（音程を変えない）は、のこぎりが無く遅れは Initial Delay（p2、表 2）だけ。表の |Fine| 3 の下限 2.1ms のままだと、
+			// 同じ波形を左右に分けた Drive（PRE2:066、Initial Delay 0.2ms）で左右が逆相になった（相関 実機 0.92・前の芯 0.10・直して 0.91。2026-10-27）
+			if (fine == 0)
+				lo = MOD_DELAY_MS[std::min(127, b.p[2])] / 1000 * FS;
 		} else {
 			span = 1280.0;
 			lo = span / 4;

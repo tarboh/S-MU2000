@@ -947,7 +947,8 @@ int main(int argc, char **argv)
 	if (!shot.empty())
 		pl->master = 0.0f;       // 撮るだけのときは音を出さない
 	if (!selftest.empty()) {
-		// 画面を出さずに、音の糸と同じ道で和音を鳴らして書く
+		// 画面を出さずに、音の糸と同じ道で和音を鳴らして書く。全体の音量は 1.0（画面の初期値 0.8 = −1.9dB のままだと、実機の録音より小さく出る）
+		pl->master = 1.0f;
 		if (list.empty()) {
 			std::fprintf(stderr, "パッチが見つからない: %s\n", dir.string().c_str());
 			return 1;

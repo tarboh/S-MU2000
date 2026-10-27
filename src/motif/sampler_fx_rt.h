@@ -856,7 +856,7 @@ private:
 
 // エフェクトの 1 つのブロック（インサーションの A・B、コーラスの枠のほかの型）を 1 サンプルずつ。入れた左右 → 出口の左右（その場で書き換える）。
 // 回せる型: 3 Band EQ・2 Band EQ（0F 00・0F 01）、Harmonic Enhancer（0F 10）、Cross Delay（02 30・02 60）、コンプ（0A 00・0A 08）、
-// インサーションのコーラス（05 00 系）、フランジャー（06 00・06 01）、Ensemble Detune（05 30）。ほかは素通し（supported() が偽）
+// インサーションのコーラス（05 00 系）、フランジャー（06 00・06 01）、Ensemble Detune（05 30）、Pitch Change 1・2（0B 00・01）。ほかは素通し（supported() が偽）
 class block_rt {
 public:
 	// fxddir は capture の置き場の fxd（録った応答があるかを見るため。空なら見ない）
@@ -943,6 +943,47 @@ public:
 			fl_y[1].assign(1 << 16, 0.0);
 			eq_init(b, 6);
 			kind = 5;
+		} else if (b.is(11, 0) || b.is(11, 1)) {
+			// Pitch Change 1・2（pitch_change と同じ。2 は Fine をセントとして 1 の表を逆に引く）
+			static const double fx[15] = {-50, -10, -3, 0, 3, 5, 6, 7, 8, 10, 15, 20, 30, 40, 50},
+					    fy[15] = {-26.2, -10.79, -5.51, 0.0, 2.48, 5.13, 5.47, 7.88, 7.58, 10.59, 10.22, 10.06, 18.26, 23.77, 26.15};
+			static const double gx[4] = {3, 5, 10, 50}, glo[4] = {2.1, 3.2, 4.6, 13.0}, gsp[4] = {11.4, 12.7, 16.7, 29.8};
+			gd = std::cos(motif_fx::PI / 2 * (v - 1) / 126.0);
+			gw = std::sin(motif_fx::PI / 2 * (v - 1) / 126.0);
+			const int semi = b.p[1] - 64;
+			for (int c = 0; c < 2; c++) {
+				double fine = b.p[c == 0 ? 3 : 4] - 64;
+				if (b.is(11, 1)) {
+					double ys[15], xs[15];
+					int ord[15];
+					for (int i = 0; i < 15; i++)
+						ord[i] = i;
+					std::stable_sort(ord, ord + 15, [](int a2, int b2) { return fy[a2] < fy[b2]; });
+					for (int i = 0; i < 15; i++) {
+						ys[i] = fy[ord[i]];
+						xs[i] = fx[ord[i]];
+					}
+					fine = motif_fx::interp(ys, xs, 15, fine);
+				}
+				const int pan = std::max(1, b.p[c == 0 ? 11 : 13]), lvl = b.p[c == 0 ? 12 : 14];
+				const double cents = 100.0 * semi + motif_fx::interp(fx, fy, 15, fine);
+				pc_rate[c] = 1 - std::exp2(cents / 1200.0);
+				if (semi == 0) {
+					const double af = std::min(50.0, std::max(3.0, std::fabs(fine)));
+					pc_lo[c] = motif_fx::interp(gx, glo, 4, af) / 1000 * FS;
+					pc_span[c] = motif_fx::interp(gx, gsp, 4, af) / 1000 * FS;
+					if (fine == 0)
+						pc_lo[c] = motif_fx::MOD_DELAY_MS[std::min(127, b.p[2])] / 1000 * FS;
+				} else {
+					pc_span[c] = 1280.0;
+					pc_lo[c] = pc_span[c] / 4;
+				}
+				const double a = motif_fx::PI / 2 * (pan - 1) / 126.0, g = lvl / 127.0;
+				pc_gl[c] = g * std::cos(a);
+				pc_gr[c] = g * std::sin(a);
+				pc_hz[c] = std::fabs(pc_rate[c]) * FS / pc_span[c];
+			}
+			kind = 12;
 		} else if (motif_fx::dist_type(b) && !fxddir.empty() && dist_init(b, fxddir)) {
 			kind = 8;
 		} else if (motif_fx::lti_type(b) && !fxddir.empty() && lti_init(b, fxddir + "/../fxlti", tempo)) {
@@ -1105,6 +1146,29 @@ public:
 			eq(L, R);
 			break;
 		}
+		case 12: {
+			// 入口は左右の平均
+			ring_l[t & mask] = (L + R) / 2;
+			double oL = 0, oR = 0;
+			for (int c = 0; c < 2; c++) {
+				const double rate = pc_rate[c], lo = pc_lo[c], span = pc_span[c];
+				double y;
+				if (std::fabs(rate) < 1e-9)
+					y = at0(ring_l, double(t) - lo);
+				else {
+					const double sw = std::fmod(double(t) * pc_hz[c] / FS + (c == 0 ? 0.0 : 0.5), 1.0), s1 = rate > 0 ? sw : 1 - sw;
+					const double d1 = lo + span * s1, d2 = std::max(0.0, rate > 0 ? lo + span * (s1 - 1) : lo + span * (s1 + 1));
+					const double u = std::min(1.0, std::max(0.0, (sw - 0.75) / 0.25));
+					y = (1 - u) * at0(ring_l, double(t) - d1) + u * at0(ring_l, double(t) - d2);
+				}
+				oL += y * pc_gl[c];
+				oR += y * pc_gr[c];
+			}
+			L = gd * L + gw * oL;
+			R = gd * R + gw * oR;
+			t++;
+			break;
+		}
 		}
 	}
 
@@ -1121,6 +1185,7 @@ private:
 	std::vector<double> sq;
 	double gd = 1, gw = 0, hz = 0, depth = 0, off = 0, fb = 0, dph = 0;
 	double ens_init[2] = {0, 0}, ens_rate[2] = {0, 0}, ens_span[2] = {0, 0};
+	double pc_rate[2] = {0, 0}, pc_lo[2] = {0, 0}, pc_span[2] = {0, 0}, pc_hz[2] = {0, 0}, pc_gl[2] = {0, 0}, pc_gr[2] = {0, 0};
 	// オフラインの LPF（filter_freq の 2 次）の応答には先の音を使う尾がある。角がナイキストに近い組（V-Distortion の 20000Hz）では 1/n でゆっくり減り、
 	// 先読み 64・256・1024 で差が 1.3e-3・3.4e-4・9.8e-5。弾くときの遅れを小さくしたいので 64（1.45ms）
 	conv_rt l4[4];
