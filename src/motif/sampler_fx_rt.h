@@ -9,7 +9,7 @@
 //   LTI（ディレイ・リバーブ系などプリセットの組のまま録った応答、fxlti）、揺れる型（フェイザー・ワウなどの .ltv、Touch Wah の .dyn、
 //   Tremolo・Rotary などの .mod。ltv_rt・mod_rt、オフラインとは少し違う）。インサーションの組（エレメントのスイッチ 0・1・2）とつなぎ方は
 //   insertion_groups と同じ。ほかの型は、インサーションでは素通し（supported() が偽）、コーラスの枠では掛けない（active() が偽）。
-//   コーラス系とフランジャーは、オフラインが録った応答（.ltv）を使う型なら近似（approx()。ltv はその場では 93ms 遅れるので式の作りで回す）
+//   コーラス系とフランジャーも、録った応答（.ltv）があれば ltv_rt で回す（2026-10-27。それまでは式の作りで回す近似だった）
 #pragma once
 
 #include "sampler_fx.h"
@@ -872,7 +872,11 @@ public:
 		t = 0;
 		stereo_in = b.p[15] == 1;
 		const int v = std::max(1, b.p[10]);
-		if (b.is(15, 0) || b.is(15, 1)) {
+		if (approx_ && tv.init_ltv(b, fxddir + "/../fxltv", tempo)) {
+			// コーラス系・フランジャーも、録った応答（.ltv）があればオフラインと同じくそれを使う（2026-10-27。それまでは式で回す近似）
+			approx_ = false;
+			kind = 10;
+		} else if (b.is(15, 0) || b.is(15, 1)) {
 			const bool three = b.is(15, 0);
 			const auto h = fir_from([&](double f) { return three ? motif_fx::eq3(b, f) : motif_fx::eq2(b, f); });
 			fl.init(h);
@@ -1046,8 +1050,8 @@ public:
 			const double L0 = t >= DIST_PRE ? ring_l[(t - DIST_PRE) & mask] : 0.0, R0 = t >= DIST_PRE ? ring_r[(t - DIST_PRE) & mask] : 0.0;
 			double y[2];
 			for (int c = 0; c < 2; c++) {
-				double u = (c == 0 ? fl : fr).tick(x) * dk;
-				u = u / std::pow(1 + std::pow(std::fabs(u / dc), dp), 1 / dp);
+				double u = (c == 0 ? fl : fr).tick(x) * dk + dbs;
+				u = u / std::pow(1 + std::pow(std::fabs(u / dc), dp), 1 / dp) - db0;
 				y[c] = (c == 0 ? el : er).tick(u);
 			}
 			L = gdry * L0 + gwet * y[0] * og;
@@ -1157,6 +1161,7 @@ private:
 	}
 
 	static constexpr size_t DIST_PRE = 64;
+	double dbs = 0, db0 = 0;                 // 頭打ちの上下の違い（distortion と同じ）
 	double dk = 1, dc = 1, dp = 2, og = 1, gdry = 1, gwet = 0, vd_fb = 0, vd_a = 0, vd_mix = 0, vd_lp[2] = {0, 0};
 	size_t vd_df = 1, vd_dt[2] = {1, 1};
 	bool vd_on = false;
@@ -1228,7 +1233,15 @@ private:
 		gwet = std::sin(ang);
 		fl.init(std::vector<double>(ir.L.begin(), ir.L.end()));
 		fr.init(std::vector<double>(ir.R.begin(), ir.R.end()));
-		const auto h = fir_from([fc](double f) { return 1.0 / cplx(1 - (f / fc) * (f / fc), (f / fc) / 1.6); }, 4096, DIST_PRE);
+		dbs = std::atof(ir.head["b"].c_str()) * dc;
+		db0 = dbs / std::pow(1 + std::pow(std::fabs(dbs / dc), dp), 1 / dp);
+		std::vector<double> h;
+		if (!ir.post.empty()) {
+			// 頭打ちのあとの応答（オフラインと同じ）。出口を LPF の組と同じだけ（DIST_PRE）遅らせる
+			h.assign(DIST_PRE, 0.0);
+			h.insert(h.end(), ir.post.begin(), ir.post.end());
+		} else
+			h = fir_from([fc](double f) { return 1.0 / cplx(1 - (f / fc) * (f / fc), (f / fc) / 1.6); }, 4096, DIST_PRE);
 		el.init(h);
 		er.init(h);
 		vd_on = b.is(9, 16) && b.p[11] > 0;

@@ -176,6 +176,7 @@ inline block parse_block(const std::string &s)
 // ---- 読み込み（.irx・.dsx） ----
 struct stereo_ir {
 	buf L, R;
+	buf post;           // 歪みの頭打ちのあとの応答（.dsx の post= タップ。V-Distortion、tools/motif/mr_fx_dist2.py）
 	std::map<std::string, std::string> head;
 	bool ok = false;
 };
@@ -211,6 +212,10 @@ inline stereo_ir load_ir(const std::string &path)
 			r.R[i] = d[2 * i + 1];
 		}
 		r.ok = true;
+		const long np = std::atol(r.head["post"].c_str());
+		std::vector<float> q(size_t(std::max(0L, np)));
+		if (np > 0 && std::fread(q.data(), sizeof(float), q.size(), f) == q.size())
+			r.post.assign(q.begin(), q.end());
 	}
 	std::fclose(f);
 	return r;
@@ -527,13 +532,15 @@ inline void distortion(buf &L, buf &R, const block &b, const std::string &fxddir
 	buf x(n);
 	for (size_t i = 0; i < n; i++)
 		x[i] = (L[i] + R[i]) / 2;
+	// 頭打ちのあとの応答（post）がある組は、LPF の代わりにそれを掛け、頭打ちの上下の違い b（入口を b × c ずらしてずらした分を引く）も入れる
+	const double bs = std::atof(ir.head["b"].c_str()) * c;
+	auto soft = [c, p](double v) { return v / std::pow(1 + std::pow(std::fabs(v / c), p), 1 / p); };
+	const double b0 = soft(bs);
 	for (int ch = 0; ch < 2; ch++) {
 		buf u = convolve(x, ch == 0 ? ir.L : ir.R, n);
-		for (auto &v : u) {
-			v *= k;
-			v = v / std::pow(1 + std::pow(std::fabs(v / c), p), 1 / p);
-		}
-		buf y = filter_freq(u, n, [fc](double f) { return 1.0 / cplx(1 - (f / fc) * (f / fc), (f / fc) / 1.6); });
+		for (auto &v : u)
+			v = soft(v * k + bs) - b0;
+		buf y = !ir.post.empty() ? convolve(u, ir.post, n) : filter_freq(u, n, [fc](double f) { return 1.0 / cplx(1 - (f / fc) * (f / fc), (f / fc) / 1.6); });
 		buf &o = ch == 0 ? L : R;
 		for (size_t i = 0; i < n; i++)
 			o[i] = gdry * o[i] + gwet * y[i] * og;
