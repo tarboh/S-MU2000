@@ -10,7 +10,8 @@
 // インサーションを掛けるパートは、画面でパートごとに入り切りできる（set_part_ins・sync_ins）。実機の「8 パートまで」は外した。
 // パートの EQ（37 pp 2E〜38）はインサーションのあとで掛ける（swp50_eq::part_eq）。
 // パートのカットオフ・レゾナンス・AEG の時間のずらし（37 pp 17・18・23・25・26）は engine_options で足す。
-// まだ無いもの: パートの AEG のサステイン・FEG のずらし（22・27〜2C）・デチューン、マスター EQ・マスターエフェクト、
+// マスター EQ（36 10 00）はリバーブ・コーラスを足したあとで掛ける（swp50_eq::master_eq）。
+// まだ無いもの: パートの AEG のサステイン・FEG のずらし（22・27〜2C）・デチューン、マスターエフェクト、
 // コーラスからリバーブへの送り、パートの出口の割り当て。ベロシティの効き（深さ × 値 / 64 + オフセット − 64）は Data List の説明からで、実機では測っていない。
 #pragma once
 
@@ -22,6 +23,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <map>
 #include <memory>
@@ -103,6 +105,7 @@ struct part_cfg {
 struct config {
 	std::string name, file;
 	kv arpline, fxline;
+	std::vector<int> meq;                // マスター EQ（36 10 00 の 20 バイト。無ければ空）
 	std::vector<int> ins;                // インサーションを使うパート（0〜15）
 	std::array<part_cfg, 16> part;
 
@@ -127,6 +130,19 @@ struct config {
 				arpline = motif_sampler::parse(t);
 			else if (!t.compare(0, 3, "fx "))
 				fxline = motif_sampler::parse(t);
+			else if (!t.compare(0, 4, "meq ")) {
+				auto m = motif_sampler::parse(t);
+				auto it = m.find("v");
+				meq.clear();
+				if (it != m.end())
+					for (const char *c = it->second.c_str(); *c;) {
+						meq.push_back(std::atoi(c));
+						const char *n = std::strchr(c, ',');
+						if (!n)
+							break;
+						c = n + 1;
+					}
+			}
 			else if (!t.compare(0, 4, "ins ")) {
 				const kv m = motif_sampler::parse(t);
 				auto it = m.find("parts");
@@ -311,7 +327,8 @@ public:
 	motif_fx_rt::chorus_rt cho;
 	std::string rev_name, cho_name;
 	motif_arp::arpeggiator arp;
-	bool use_ins = true, use_rev = true, use_cho = true;
+	bool use_ins = true, use_rev = true, use_cho = true, use_meq = true;
+	swp50_eq::master_eq meq;               // マスター EQ（リバーブ・コーラスを足したあと、全体の音量の前）
 
 	// 読む（読む糸で）。パッチはパッチの置き場、エフェクトの応答は capture の置き場（fx/・fxd/）から
 	bool load(const config &c, const std::string &patch_dir, const std::string &cap, int threads)
@@ -323,6 +340,8 @@ public:
 		pdir = patch_dir;
 		capdir = cap;
 		tempo = std::max(1, geti(cfg.fxline, "tempo", 120));
+		if (cfg.meq.size() >= 20)
+			meq.set(cfg.meq.data());
 		for (int i = 0; i < 16; i++) {
 			auto P = std::make_unique<part>();
 			P->cfg = cfg.part[size_t(i)];
@@ -764,6 +783,8 @@ public:
 				if (use_cho)
 					ml += xl, mr += xr;
 			}
+			if (use_meq)
+				meq.process(ml, mr);
 			// 実機の出口は ±1.0 で頭打ち
 			const float a = float(std::fmax(-1.0, std::fmin(1.0, ml * master))), b = float(std::fmax(-1.0, std::fmin(1.0, mr * master)));
 			peak = std::max(peak, std::max(std::fabs(a), std::fabs(b)));

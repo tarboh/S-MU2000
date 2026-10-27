@@ -11,6 +11,7 @@
 // * 周波数の値 → 中心周波数は 3 つとも別の表（どれもおよそ 25 前後で 1 オクターブ）。16 刻みで測った点を対数で補間し、外は端の傾きで延ばす
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 
 namespace swp50_eq {
@@ -99,6 +100,60 @@ struct part_eq {
 			return;
 		L = hi[0].process(mid[0].process(lo[0].process(L)));
 		R = hi[1].process(mid[1].process(lo[1].process(R)));
+	}
+};
+
+// マルチのマスター EQ（36 10 00）。5 バンド × ゲイン・周波数・Q・形（2026-10-27、tools/motif/mr_master_eq.py。FX-MWSweep の止まったノイズで、
+// 1 回の打鍵の中で平らなときと 1 バンドを変えたときを比べた）。
+// * ゲインは (値 − 64) dB（52〜76 で ±12dB）。周波数はエフェクトの表 3 の目盛り（12 = 80Hz・22 = 225Hz・34 = 1kHz・44 = 3.2kHz・54 = 11kHz）
+// * 山（バンド 2〜4 と、形 1 のバンド 1・5）: RBJ の山で Q = 値 / 20（29 組で平均 0.52dB）。中の 3 バンドは形の欄が効かない
+// * 棚（形 0 のバンド 1・5）: 1 次の棚。角はバンド 1 が 表 3 × √A、バンド 5 が 表 3 × √2 ÷ √A（A = 10^(|ゲイン| / 40)。0.49・0.54dB）
+// エフェクトの表 3（sampler_fx.h の T3）をここにも持つ（この見出しはエフェクトの見出しを読まない）
+struct master_eq {
+	static constexpr double T3[61] = {20, 22, 25, 28, 32, 36, 40, 45, 50, 56, 63, 70, 80, 90, 100, 110, 125, 140, 160, 180, 200, 225, 250, 280,
+		315, 355, 400, 450, 500, 560, 630, 700, 800, 900, 1000, 1100, 1200, 1400, 1600, 1800, 2000, 2200, 2500, 2800, 3200, 3600, 4000, 4500,
+		5000, 5600, 6300, 7000, 8000, 9000, 10000, 11000, 12000, 14000, 16000, 18000, 20000};
+	biquad q[5][2];
+	bool on[5] = {};
+	bool flat = true;
+
+	static void shelf1(biquad &b, bool low, double f0, double gdb)
+	{
+		const double A = std::pow(10.0, gdb / 20), K = std::tan(PI * std::min(f0, FS * 0.49) / FS), r = std::sqrt(A);
+		if (low)
+			b.set(K * r + 1, K * r - 1, 0, K / r + 1, K / r - 1, 0);
+		else
+			b.set(r + K, K - r, 0, 1 / r + K, K - 1 / r, 0);
+	}
+	// v: 36 10 00 の 20 バイト（バンドごとにゲイン・周波数・Q・形）
+	void set(const int *v)
+	{
+		flat = true;
+		for (int b = 0; b < 5; b++) {
+			const int g = v[4 * b] - 64, f = std::max(0, std::min(60, v[4 * b + 1])), qv = std::max(1, v[4 * b + 2]), shape = v[4 * b + 3];
+			on[b] = g != 0;
+			if (!on[b])
+				continue;
+			flat = false;
+			const double sa = std::pow(10.0, std::abs(g) / 40.0);
+			for (int c = 0; c < 2; c++) {
+				if ((b == 0 || b == 4) && shape == 0)
+					shelf1(q[b][c], b == 0, b == 0 ? T3[f] * sa : T3[f] * std::sqrt(2.0) / sa, g);
+				else
+					peaking(q[b][c], T3[f], g, qv / 20.0);
+				q[b][c].reset();
+			}
+		}
+	}
+	void process(double &L, double &R)
+	{
+		if (flat)
+			return;
+		for (int b = 0; b < 5; b++)
+			if (on[b]) {
+				L = q[b][0].process(L);
+				R = q[b][1].process(R);
+			}
 	}
 };
 

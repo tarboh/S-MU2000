@@ -4,9 +4,10 @@
   # 名前
   arp type=… sw=… …               マルチのアルペジオ（36 00 00 の 0x14〜0x33。音色の 40 70 00 と同じ並び）
   fx reverb=… chorus=…            パッチの fx 行と同じ形（型,パラメーター 1〜16,Return,送り）。送りはパートごとなので 127 にする
+  meq v=…                         マスター EQ（36 10 00 の 20 バイト）
   ins parts=0,3,…                 インサーションを使うパート（36 00 60〜63 のビット。8 つまで）
   part n voice=PRE1:000 bank=63,0 prog=0 ch=0 … パートごとの設定（下の PART の並び）
-マスター EQ（36 10 00）とマスターエフェクト（36 11 00）は、まだ芯に無いので書かない。マルチのデータはヤマハのものなので配らないこと。"""
+マスター EQ（36 10 00）は meq の行に 20 個の値を書く。マスターエフェクト（36 11 00）は、まだ芯に無いので書かない。マルチのデータはヤマハのものなので配らないこと。"""
 import os
 import sys
 
@@ -52,6 +53,10 @@ def export(syx, out):
         fx.append("chorus=" + fx_line(b, (0x36, 0x02, 0x00), mr_params.COMMON_BLOCKS[(0x40, 0x02, 0x00)]))
     fx.append("tempo=%d" % ar["tempo"])
     lines.append("fx " + " ".join(fx))
+    # マスター EQ（36 10 00）: 5 バンド × ゲイン・周波数（表 3）・Q・形（バンド 1・5 だけ。0 棚・1 山）
+    meq = b.get((0x36, 0x10, 0x00))
+    if meq and len(meq) >= 20:
+        lines.append("meq v=" + ",".join(str(v) for v in meq[:20]))
     # インサーションのパート: 0x60 は予約、0x61 がパート 15・16、0x62 が 8〜14、0x63 が 1〜7（ビット 0 が若い番号）
     ins = []
     for byte, first, count in ((0x63, 0, 7), (0x62, 7, 7), (0x61, 14, 2)):
