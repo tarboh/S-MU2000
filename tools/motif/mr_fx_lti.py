@@ -62,6 +62,34 @@ def needed():
                 tempo = voice_tempo(v) if t in TEMPO_TYPES else 0
                 k = key_of(ins, tempo)
                 sets.setdefault(k, (ins, tempo, []))[2].append(v)
+    # ドラムキット（mr_drum_patch.py が書いたパッチの fx 行と、鍵ごとの ins。2026-10-27 に足した。前はふつうの音色だけで、
+    # Hard Kit の Isolator などは組が無く素通しになっていた）
+    for p in sorted(glob.glob(os.path.join(CAP, "patches_all", "2[018]_*.patch"))):
+        v = os.path.basename(p)[:-6]
+        fx, sw = {}, set()
+        for line in open(p, encoding="utf-8"):
+            if line.startswith("fx "):
+                fx = dict(x.split("=", 1) for x in line.split()[1:])
+            elif line.startswith("element "):
+                sw.add(int(line.split(" ins=", 1)[1].split()[0]))
+        con = int(fx.get("connect", 0))
+        used = set()
+        for s in sw:
+            if s == 1:
+                used |= {"A"} | ({"B"} if con == 1 else set())
+            if s == 2:
+                used |= {"B"} | ({"A"} if con == 2 else set())
+        for blk in used:
+            vals = [int(x) for x in fx.get("insa" if blk == "A" else "insb", "0").split(",")]
+            if len(vals) < 17:
+                continue
+            ins = dict(("param%d" % i, vals[i]) for i in range(1, 17))
+            ins["type"] = vals[0]
+            t = (ins["type"] >> 7, ins["type"] & 0x7F)
+            if t in LTI_TYPES and (t in NO_DW or ins["param10"] > 1):
+                tempo = int(fx.get("tempo", 120)) if t in TEMPO_TYPES else 0
+                k = key_of(ins, tempo)
+                sets.setdefault(k, (ins, tempo, []))[2].append(v)
     return sets
 
 
@@ -120,6 +148,23 @@ def ir_pair(base, side, n):
     win = int(0.008 * FS)
     cand = np.concatenate([h0[-win:], h0[:win]])
     lag = int(np.argmax(np.abs(cand))) - win
+    # 山より前の「前鳴り」を残す（2026-10-27）。Isolator は帯を分けるフィルターが山の前に 100 サンプルほど鳴り、山から切ると
+    # エネルギーの 13〜51% を捨てて形が崩れていた（Hard Kit の 1,86,31,96 で、低域と中域の差が 17dB のはずが 0dB）。
+    # 山の 93ms 前までのうち、捨てる所のエネルギーが全体の 0.1% 未満になる、いちばん短い幅だけ前から始める（その分だけ遅れて出る。
+    # 前鳴りの無い組は 0 で、前と同じ。23ms を超える組も前と同じ）
+    L0 = len(h0)
+    tot = float(np.sum(h0 ** 2))
+    seg = np.array([h0[(lag - i) % L0] for i in range(4096, 0, -1)])      # 山の 4096 前 … 1 前
+    acc = np.cumsum(seg ** 2)                                            # acc[j] = 4096 前から (4096 − j) 前までのエネルギー
+    pre = 0
+    for i in range(1, 4097):
+        if acc[4096 - i] > 1e-3 * tot:                                   # i 前から捨てると 0.1% を超える
+            pre = i
+    pre = pre and pre + 8
+    # 1024（23ms）より前まで要る組は、山の選び方が怪しい（左右どちらかの元の音の線が弱い録音など）。90ms 遅らせるよりは前のとおりに
+    if pre > 1024:
+        pre = 0
+    lag -= pre
     hs = [np.roll(h, -lag)[:n] for h in hs]
     return hs, lag
 
