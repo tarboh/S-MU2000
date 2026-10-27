@@ -75,6 +75,7 @@ def export(syx, out):
         mm, bank = BANKS.get((f["bank_msb"], f["bank_lsb"]), (None, "%d/%d" % (f["bank_msb"], f["bank_lsb"])))
         voice = "%s_%03d" % (mm, f["prog"]) if mm else "-"
         arpsw = x[0x1F] >> 1 & 1
+        f["detune"] = (x[0x10] & 0x0F) << 4 | (x[0x11] & 0x0F)       # 37 pp 10: 4 ビットずつの 2 バイト（128 が 0、1 あたり 0.394 セント）
         # パートの EQ（37 pp 2E〜38）: 低域の周波数（2 バイト）・利き、中域の周波数（2 バイト）・利き・幅、高域の周波数（2 バイト）・利き
         if len(x) > 0x38:
             f.update(eqlf=x[0x2E] << 7 | x[0x2F], eqlg=x[0x30], eqmf=x[0x32] << 7 | x[0x33], eqmg=x[0x34], eqmq=x[0x35],

@@ -179,6 +179,10 @@ struct engine_options {
 	bool fixed_pan = false;  // マルチのパートの Voice Pan off: エレメントのパンを使わず中央にする
 	// マルチのパートのずらし（37 pp 17・18・23・25・26、パラメーターの目盛りにしたもの）。CC74・71・73・75・72 のずれに足す
 	int part_cutoff = 0, part_reso = 0, part_atk = 0, part_dec = 0, part_rel = 0;
+	// 37 pp 22・27・28・2A・2B・2C（AEG のサステイン・FEG のサステイン・アタック・ディケイ・リリース・深さ。どれも 2 × (値 − 64) の目盛り）と
+	// デチューン（37 pp 10、セント）。ドラムの鍵には掛けない
+	int part_asus = 0, part_fsus = 0, part_fatk = 0, part_fdec = 0, part_frel = 0, part_fdep = 0;
+	double part_detune = 0;
 };
 
 // 区間のサンプルは、同じファイルなら音色（エンジン）をまたいで 1 つを使い回す（マルチで同じ波形のパートが並んでも、メモリを食わない）
@@ -203,7 +207,8 @@ public:
 	using options = engine_options;
 
 	explicit engine(const patch &p, options o = options()) : pt(p), rng(o.seed < 0 ? 0u : unsigned(o.seed)), seed(o.seed), nidx(o.note_index), pan_off(o.pan_offset), fixed_pan(o.fixed_pan),
-		p_cutoff(o.part_cutoff), p_reso(o.part_reso), p_atk(o.part_atk), p_dec(o.part_dec), p_rel(o.part_rel)
+		p_cutoff(o.part_cutoff), p_reso(o.part_reso), p_atk(o.part_atk), p_dec(o.part_dec), p_rel(o.part_rel),
+		p_asus(o.part_asus), p_fsus(o.part_fsus), p_fatk(o.part_fatk), p_fdec(o.part_fdec), p_frel(o.part_frel), p_fdep(o.part_fdep), p_detune(o.part_detune)
 	{
 		std::istringstream ss(pt.ctrlline.count("sets") ? pt.ctrlline.at("sets") : "");
 		std::string t;
@@ -356,6 +361,16 @@ public:
 		p_dec = dec;
 		p_rel = rel;
 		apply_ctl();
+	}
+	void set_part_offsets2(int asus, int fsus, int fatk, int fdec, int frel, int fdep, double detune)
+	{
+		p_asus = asus;
+		p_fsus = fsus;
+		p_fatk = fatk;
+		p_fdec = fdec;
+		p_frel = frel;
+		p_fdep = fdep;
+		p_detune = detune;
 	}
 	void set_pb_raw(int up, int down)            // 37 pp 09・0A の値そのまま（64 が 0 半音）
 	{
@@ -646,6 +661,8 @@ private:
 	// チャンネルの CC のずれ（値 − 64）: 74 明るさ（カットオフ）・71 レゾナンス・73 アタック・75 ディケイ・72 リリース
 	int off_cutoff = 0, off_reso = 0, off_atk = 0, off_dec = 0, off_rel = 0;
 	int p_cutoff = 0, p_reso = 0, p_atk = 0, p_dec = 0, p_rel = 0;      // マルチのパートのずらし（engine_options）
+	int p_asus = 0, p_fsus = 0, p_fatk = 0, p_fdec = 0, p_frel = 0, p_fdep = 0;
+	double p_detune = 0;
 	int last_key = -1;                       // いちばん最後に鳴らした鍵（ポルタメントの出どころ）
 	std::vector<int> held_stack;             // モノで押さえている鍵の並び（後が新しい）
 	size_t started = 0;
@@ -1097,6 +1114,25 @@ private:
 		for (int i = 0; i < 5 && i < int(fl.size()); i++)
 			p.feg.level[i] = fl[i];
 		p.feg.depth = geti(e.f, "fegd", 64);
+		// マルチのパートの FEG・AEG のサステイン・デチューン（ドラムの鍵には掛けない）。AEG のサステインは、Dry Syn（サステイン 104）で
+		// 値 96・127 が +3.23dB、48・32・16 が −6.47・−16.85・−44.94dB、0 が無音（ディケイ 2 のレベルに 2 × (値 − 64)、tools/motif/mr_part_offset2.py）。
+		// デチューンは鍵に依らず値 1 あたり 0.394 セント（±127 で ±50 セント。Data List の表示は Hz だが、鍵 36 と 84 で同じセント）
+		if (geti(e.f, "dnote", -1) < 0) {
+			auto cl = [](int v, int lo, int hi) { return std::max(lo, std::min(hi, v)); };
+			if (p_asus)
+				p.aeg.level[3] = cl(p.aeg.level[3] + p_asus, 0, 127);
+			if (p_fatk || p_fdec || p_frel) {
+				p.feg.time[1] = cl(p.feg.time[1] + p_fatk, 0, 127);
+				p.feg.time[2] = cl(p.feg.time[2] + p_fdec, 0, 127);
+				p.feg.time[3] = cl(p.feg.time[3] + p_fdec, 0, 127);
+				p.feg.time[4] = cl(p.feg.time[4] + p_frel, 0, 127);
+			}
+			if (p_fsus)
+				p.feg.level[3] = cl(p.feg.level[3] + p_fsus, -128, 127);
+			if (p_fdep)
+				p.feg.depth = cl(p.feg.depth + p_fdep, 0, 127);
+			p.detune_cents = p_detune;
+		}
 		p.feg.time_vel_sens = geti(e.f, "fegtv", 64);
 		p.feg.time_vel_segment = geti(e.f, "fegtvs", 4);
 		p.feg.level_factor = swp50_filter::feg_level_velocity_factor(geti(e.f, "feglv", 64), geti(e.f, "feglc"), vel);

@@ -369,6 +369,7 @@ inline bool config_from_bulk(const std::map<std::array<int, 3>, std::vector<unsi
 		for (auto &t : PART)
 			pc.f[t.name] = num(X[size_t(t.off)]);
 		pc.f["arpsw"] = num(X[0x1F] >> 1 & 1);
+		pc.f["detune"] = num((X[0x10] & 0x0F) << 4 | (X[0x11] & 0x0F));       // 4 ビットずつの 2 バイト
 		if (X.size() > 0x38) {
 			pc.f["eqlf"] = num(int(X[0x2E]) << 7 | X[0x2F]);
 			pc.f["eqlg"] = num(X[0x30]);
@@ -507,6 +508,7 @@ public:
 		o.part_atk = 2 * (pc.get("aeg_atk", 64) - 64);
 		o.part_dec = 2 * (pc.get("aeg_dec", 64) - 64);
 		o.part_rel = 2 * (pc.get("aeg_rel", 64) - 64);
+		part_offsets2(pc, o.part_asus, o.part_fsus, o.part_fatk, o.part_fdec, o.part_frel, o.part_fdep, o.part_detune);
 		v.pt = std::move(pt);
 		v.eg = std::make_unique<motif_sampler::engine>(*v.pt, o);
 		v.eg->preload();
@@ -675,6 +677,18 @@ public:
 			v.eg->all_sound_off();
 	}
 
+	// 37 pp 22・27・28・2A・2B・2C・10 → エンジンのずらし（tools/motif/mr_part_offset2.py、2026-10-28）
+	static void part_offsets2(const part_cfg &pc, int &asus, int &fsus, int &fatk, int &fdec, int &frel, int &fdep, double &detune)
+	{
+		asus = 2 * (pc.get("aeg_sus", 64) - 64);
+		fsus = 2 * (pc.get("feg_sus", 64) - 64);
+		fatk = 2 * (pc.get("feg_atk", 64) - 64);
+		fdec = 2 * (pc.get("feg_dec", 64) - 64);
+		frel = 2 * (pc.get("feg_rel", 64) - 64);
+		fdep = 2 * (pc.get("feg_depth", 64) - 64);
+		detune = (pc.get("detune", 128) - 128) * 0.394;
+	}
+
 	// パラメーターチェンジ（F0 43 1n 7F 00 ah am al dd… F7。mtx の中で）。マルチのパート（37 pp xx）とマスター EQ（36 10 xx）を受ける
 	// （2026-10-28）。パートの値は part 行の欄（.multi の名前）と同じ所に書き、音と関わるものはその場で効かせる。バンク・番号は、
 	// プログラムチェンジと同じく画面の糸で読んでから入れ替える。Voice Pan（24）・FEG のずらしなど、音色を作るときだけ見る欄は次に音色を作るときから
@@ -697,10 +711,10 @@ public:
 		static const struct { int off; const char *name; } T[] = {
 			{0x00, "bank_msb"}, {0x01, "bank_lsb"}, {0x02, "prog"}, {0x03, "ch"}, {0x04, "mode"}, {0x05, "vel_lo"}, {0x06, "vel_hi"},
 			{0x07, "note_lo"}, {0x08, "note_hi"}, {0x09, "pbup"}, {0x0A, "pbdown"}, {0x0B, "vsd"}, {0x0C, "vso"}, {0x0D, "vol"}, {0x0E, "pan"},
-			{0x12, "rev"}, {0x13, "cho"}, {0x15, "dry"}, {0x16, "shift"}, {0x17, "cutoff"}, {0x18, "reso"}, {0x1A, "porta"}, {0x1B, "ptime"},
-			{0x1C, "pmode"}, {0x1E, "out"}, {0x1F, "rx1"}, {0x20, "rx2"}, {0x21, "rx3"}, {0x22, "aeg_sus"}, {0x23, "aeg_atk"}, {0x24, "voicepan"},
-			{0x25, "aeg_dec"}, {0x26, "aeg_rel"}, {0x27, "feg_sus"}, {0x28, "feg_atk"}, {0x2A, "feg_dec"}, {0x2B, "feg_rel"}, {0x2C, "feg_depth"},
-			{0x2E, "eqlf"}, {0x30, "eqlg"}, {0x32, "eqmf"}, {0x34, "eqmg"}, {0x35, "eqmq"}, {0x36, "eqhf"}, {0x38, "eqhg"}};
+			{0x10, "detune"}, {0x12, "rev"}, {0x13, "cho"}, {0x15, "dry"}, {0x16, "shift"}, {0x17, "cutoff"}, {0x18, "reso"}, {0x1A, "porta"},
+			{0x1B, "ptime"}, {0x1C, "pmode"}, {0x1E, "out"}, {0x1F, "rx1"}, {0x20, "rx2"}, {0x21, "rx3"}, {0x22, "aeg_sus"}, {0x23, "aeg_atk"},
+			{0x24, "voicepan"}, {0x25, "aeg_dec"}, {0x26, "aeg_rel"}, {0x27, "feg_sus"}, {0x28, "feg_atk"}, {0x2A, "feg_dec"}, {0x2B, "feg_rel"},
+			{0x2C, "feg_depth"}, {0x2E, "eqlf"}, {0x30, "eqlg"}, {0x32, "eqmf"}, {0x34, "eqmg"}, {0x35, "eqmq"}, {0x36, "eqhf"}, {0x38, "eqhg"}};
 		const char *name = nullptr;
 		for (auto &t : T)
 			if (t.off == al)
@@ -708,7 +722,10 @@ public:
 		if (!name)
 			return;
 		const bool two = al == 0x2E || al == 0x32 || al == 0x36;      // 周波数は 2 バイト
-		set(name, two ? v2 : v);
+		if (al == 0x10)                                                // デチューンは 4 ビットずつの 2 バイト（上位・下位）
+			set(name, n >= 2 ? ((d[0] & 0x0F) << 4 | (d[1] & 0x0F)) : (d[0] & 0x0F) << 4);
+		else
+			set(name, two ? v2 : v);
 		const part_cfg &pc = P.cfg;
 		switch (al) {
 		case 0x00: case 0x01: case 0x02:
@@ -739,6 +756,14 @@ public:
 				P.eg->set_porta(pc.get("porta", 0) != 0, pc.get("ptime", 0), pc.get("pmode", 0) != 0);
 			break;
 		case 0x1F: P.arpsw = (v >> 1 & 1) != 0; break;
+		case 0x10: case 0x22: case 0x27: case 0x28: case 0x2A: case 0x2B: case 0x2C:
+			if (P.eg) {
+				int a1, a2, a3, a4, a5, a6;
+				double dt;
+				part_offsets2(pc, a1, a2, a3, a4, a5, a6, dt);
+				P.eg->set_part_offsets2(a1, a2, a3, a4, a5, a6, dt);
+			}
+			break;
 		case 0x2E: case 0x30: case 0x32: case 0x34: case 0x35: case 0x36: case 0x38:
 			P.peq.set(pc.get("eqlf", 0x40), pc.get("eqlg", 0x40), pc.get("eqmf", 0x80), pc.get("eqmg", 0x40), pc.get("eqmq", 0x10),
 			          pc.get("eqhf", 0xC0), pc.get("eqhg", 0x40));
