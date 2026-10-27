@@ -1,5 +1,5 @@
 """V-Distortion（09 10）を「線形の応答 h1 → 頭打ち → 後ろの応答 h2」に当てはめる（2026-10-27。録音を読むだけで、実機には何も送らない）。
-  python mr_fx_dist2.py 組の名前（t9_16_… の形） [--write]
+  python mr_fx_dist2.py 組の名前（t9_16_… の形） [--write] [--out 置き場（既定 capture/fxds）]
 mr_fx_dist.py の Wiener 型（線形の応答 → 頭打ち → LPF）は、V-Distortion では LPF の欄が無いので 20kHz にしていた。強く歪む組（Drive 40 から上）で、
 実機より 4〜8kHz が 10〜20dB 明るく、ギターの音色で外れていた。V-Distortion にはスピーカーの作り（p3）があり、頭打ちのあとに暗くする形が入っているらしい。
 1. 小さいノイズ（_s64 があればそれ）の wet / dry から、全体の線形の応答 H = H1·H2
@@ -42,7 +42,12 @@ def harm_amp(x, nh):
 
 
 def main():
+    global OUT
     a = sys.argv[1:]
+    if "--out" in a:
+        i = a.index("--out")
+        OUT = a[i + 1]
+        del a[i:i + 2]
     k = a[0]
     tag = k
     small = os.path.join(OUT, "insa_%s_s64" % k)
@@ -146,12 +151,15 @@ def main():
     old_path = os.path.join(OUT, k + ".dsx.wiener")
     if not os.path.exists(old_path):
         old_path = os.path.join(OUT, k + ".dsx")
-    with open(old_path, "rb") as fo:
-        hd = dict(x.split("=") for x in fo.readline().decode().split()[1:])
-        nfr = int(hd["frames"])
-        ow = np.frombuffer(fo.read(nfr * 8), "<f4").reshape(-1, 2)
-    oc, op, ofc = float(hd["c"]), float(hd["p"]), float(hd["fc"])
-    s_old = score(lambda d: D.lpf2(D.clip(np.convolve(d, ow[:, 0])[:len(d)], oc, op), ofc))
+    if os.path.exists(old_path):
+        with open(old_path, "rb") as fo:
+            hd = dict(x.split("=") for x in fo.readline().decode().split()[1:])
+            nfr = int(hd["frames"])
+            ow = np.frombuffer(fo.read(nfr * 8), "<f4").reshape(-1, 2)
+        oc, op, ofc = float(hd["c"]), float(hd["p"]), float(hd["fc"])
+        s_old = score(lambda d: D.lpf2(D.clip(np.convolve(d, ow[:, 0])[:len(d)], oc, op), ofc))
+    else:
+        s_old = float("inf")                                                # 前の形が無い（新しい組）
     s_new = score(lambda d: post(clipb(np.convolve(d, h1L)[:len(d)], c, p, bb)))
     use = s_new < s_old - 0.5
     # Comp+Dist（09 01）は中のコンプの動きが正弦波では見えず、ギターの音色で悪くなった（01_052 1.6 → 9.6dB、00_035 0.6 → 4.5dB）ので前の形のまま。

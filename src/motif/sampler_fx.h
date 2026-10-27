@@ -1338,8 +1338,93 @@ inline bool dynfx(buf &L, buf &R, const block &b, const std::string &dyndir)
 	return true;
 }
 
+// Wah+Dist+Dly（0C 40）のワウ: 入口（左右の平均）の山を追う検出（立ち上がり 2ms・戻り 680ms）で、ワウの値 = Wah Cutoff（p12）+ 15 × Wah Sensitive（p11）× 検出
+// （上限 82）。値 → 山の周波数は WDD_FC の表、形は Q = Resonance（p13）/ 10 の帯域通過（TPT の SVF、山の高さ 1）。
+// Aggressor（PRE6:001）の組で、Drive 0 の正弦波 8 段・ノイズ 6 段に二乗平均 0.69dB（tools/motif/mr_fx_wdd.py、capture/fxwdd。2026-10-27）。
+// 戻りは Wah Release（p14）の表（64 = 170ms）より遅く、上限 82 は感度 48・Cutoff 0 の組でだけ確かめた
+static const double WDD_P[17] = {0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 127};
+static const double WDD_FC[17] = {12.1, 29.1, 59.6, 109.6, 186.3, 297.9, 453.9, 666.9, 948.9, 1314.9, 1785.5, 2380.7, 3127.3, 4058.4, 5214.8, 6673.6, 8256.2};
+
+struct touch_wah {
+	double p12 = 0, sens = 0, k = 1, att = 0, rel = 0, env = 0, ic1 = 0, ic2 = 0, lf[17] = {};
+	void init(const block &b)
+	{
+		p12 = b.p[12];
+		sens = b.p[11];
+		k = 10.0 / std::max(1, b.p[13]);
+		att = std::exp(-1 / (0.002 * FS));
+		rel = std::exp(-1 / (0.680 * FS));
+		env = ic1 = ic2 = 0;
+		for (int i = 0; i < 17; i++)
+			lf[i] = std::log(WDD_FC[i]);
+	}
+	double tick(double v)
+	{
+		const double av = std::fabs(v);
+		env = av > env ? att * env + (1 - att) * av : rel * env;
+		const double p = std::min(82.0, p12 + 15 * sens * env);
+		const double fc = std::exp(interp(WDD_P, lf, 17, std::max(p, p12)));
+		const double g = std::tan(PI * std::min(fc, 20000.0) / FS), a1 = 1 / (1 + g * (g + k));
+		const double v1 = a1 * ic1 + g * a1 * (v - ic2), v2 = ic2 + g * v1;
+		ic1 = 2 * v1 - ic1;
+		ic2 = 2 * v2 - ic2;
+		return k * v1;
+	}
+};
+
+// Wah+Dist+Dly の歪みの部分の応答（fxds/t12_64_<p1〜p16>.dsx。Delay mix・Dry/Wet・Wah Sensitive は 0・127・0 にそろえた名前）
+inline std::string wdd_key(const block &b)
+{
+	std::string k = "t12_64";
+	for (int i = 1; i <= 16; i++)
+		k += "_" + std::to_string(i == 3 || i == 11 ? 0 : i == 10 ? 127 : b.p[i]);
+	return k;
+}
+
+// Wah+Dist+Dly（0C 40）: 左右の平均 → ワウ（touch_wah）→ ワウの無い前の応答 → 柔らかい頭打ち → 後ろの応答 → 元の音 cos・wet sin で混ぜる →
+// 混ぜたあとにこだま（Delay Time p1 × 0.1ms、帰り (p2 − 64) / 63、倍率 (Delay mix p3 / 127)² / √2）。こだまは Dry/Wet 42 で元の音も返ってきた
+// （V-Distortion と同じく混ぜたあと）。倍率は mix 40 の 1 点（0.0701）だけで確かめた。応答の組が無ければ false（録った応答の近似に任せる）
+inline bool wah_dist_delay(buf &L, buf &R, const block &b, const std::string &fxddir)
+{
+	const stereo_ir ir = load_ir(fxddir + "/../fxds/" + wdd_key(b) + ".dsx");
+	if (!ir.ok)
+		return false;
+	const double c = std::atof(ir.head.at("c").c_str()), p = std::atof(ir.head.at("p").c_str());
+	auto soft = [c, p](double v) { return v / std::pow(1 + std::pow(std::fabs(v / c), p), 1 / p); };
+	const double bs = std::atof(ir.head.count("b") ? ir.head.at("b").c_str() : "0") * c, b0 = soft(bs);
+	const double ang = PI / 2 * (std::max(1, b.p[10]) - 1) / 126.0, gdry = std::cos(ang), gwet = std::sin(ang);
+	const size_t n = L.size();
+	touch_wah w;
+	w.init(b);
+	buf x(n);
+	for (size_t i = 0; i < n; i++)
+		x[i] = w.tick((L[i] + R[i]) / 2);
+	const size_t T = size_t(std::max(1, b.p[1])) * FS / 10000;
+	const double fb = (b.p[2] - 64) / 63.0, mix = (b.p[3] / 127.0) * (b.p[3] / 127.0) / std::sqrt(2.0);
+	for (int ch = 0; ch < 2; ch++) {
+		buf u = convolve(x, ch == 0 ? ir.L : ir.R, n);
+		for (auto &v : u)
+			v = soft(v + bs) - b0;
+		const buf y = ir.post.empty() ? u : convolve(u, ir.post, n);
+		buf &o = ch == 0 ? L : R;
+		for (size_t i = 0; i < n; i++)
+			o[i] = gdry * o[i] + gwet * y[i];
+		if (b.p[3] > 0) {
+			buf line(n, 0.0);
+			for (size_t t = 0; t < n; t++) {
+				line[t] = o[t] + (t >= T ? fb * line[t - T] : 0.0);
+				if (t >= T)
+					o[t] += mix * line[t - T];
+			}
+		}
+	}
+	return true;
+}
+
 inline void apply_block(buf &L, buf &R, const block &b, const std::string &fxddir, int tempo = 120)
 {
+	if (b.is(12, 0x40) && wah_dist_delay(L, R, b, fxddir))
+		return;
 	if (dyn_type(b) && dynfx(L, R, b, fxddir + "/../fxdyn"))
 		return;
 	if (b.is(15, 0x70)) {

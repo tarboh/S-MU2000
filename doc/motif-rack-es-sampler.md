@@ -929,7 +929,34 @@ FEG はノイズの明るさ、10ms ごと 3 秒）と照らして、実効の�
 * 結果: ギター 62 音色は形の差の平均 2.84dB（中央値 2.72、2dB 未満が 19・4dB 越えが 11）、音量の差の平均 +0.47dB。ほかの 16 音色は 2.95dB・+1.14dB。
   ボイスモードでギター 57 音色を比べたとき（2.85dB、物差しは少し違う）と同じくらいで、マルチだけで外れる所は見つからなかった
 * 外れの大きいもの:
-  * Aggressor（PRE6:001）実機が +13dB: インサーション A の Wah+Dist+Dly（0C 40）を、録った応答（音量 100 のノイズでの姿）で代えている。歪みが入らない
+  * Aggressor（PRE6:001）実機が +13dB: インサーション A の Wah+Dist+Dly（0C 40）を、録った応答（音量 100 のノイズでの姿）で代えていた。歪みが入らない
+    （下の節で作った。+13.5 → 和音 +2.3dB、形 6.92 → 5.28dB）
+
+### Wah+Dist+Dly（0C 40、2026-10-27。`tools/motif/mr_fx_wdd.py`・`mr_fx_dist2.py --out`、録音は `capture/fxwdd`）
+
+プリセットで使うのは Aggressor（PRE6:001）と PNut Brit（PRE6:002、Dry/Wet 1 で効いていない）だけなので、Aggressor の組のまま（Delay Time 160.0ms・帰り 84・
+Delay mix 40・Drive 29・Output 90・EQ Low 69・Mid 72・Dry/Wet 42・Wah Sensitive 48・Cutoff 0・Resonance 30・Release 64）、1 か所ずつ変えて録った。
+Data List の並び: 01 Delay Time（0.1ms、14 ビット）・02 帰り・03 Delay mix・04 Drive・05 Output・06・07 EQ・10 Dry/Wet・11 Wah Sensitive・12 Wah Cutoff・13 Resonance・14 Wah Release。
+
+* 正弦波 8 段（鍵 48、Delay mix 0・Dry/Wet 127）: そのままの組は −13dB で頭打ち（音量 32 で +21dB）。Wah Sensitive 0 では小さい音で +7.7dB のまっすぐな歪み、
+  Drive 0 では大きい音で −17.8dB のまっすぐな利きで、音量 48・32 だけ出口が大きい（ワウの山が音量につれて 130Hz を通り過ぎる）。
+  これで「Drive 0 でワウだけ」「感度 0 で歪みだけ」に分けて測れる
+* **ワウの形**（感度 0・Drive 0、Cutoff を 0〜127 で 8 おき、ノイズ）: Q = Resonance / 10（30 → 3.0）の帯域通過（山の高さ 1、両側 −6dB/オクターブ）。
+  Q を 2〜4 で比べて 3.0 が最良。Cutoff → 山の周波数は 17 点の表（12.1Hz〜8.26kHz。外れ 0.1〜0.4dB、104 から上は 0.3〜1.2dB）。残りの部分（Drive 0 の歪みの経路）はほぼ平らな +15dB
+* **ワウの動き**: ワウの値 = Cutoff + 15 × Sensitive × 検出（上限 82）。検出は左右の平均の山を追う形（立ち上がり 2ms・戻り 680ms）。正弦波とノイズで、
+  同じ RMS でもノイズのほうが約 1.41 倍効く（山を追う形で説明が付く）。Drive 0 の正弦波 8 段・ノイズ 6 段で二乗平均 0.69dB、鍵 36・48・72 の正弦波で 0.80dB。
+  段（音量 127 → 64）の録音では、下げたあと出口が 0.4 秒かけて上がる（ワウがゆっくり下りてくる）。戻りは Release の表（64 = 170ms）より遅い。上限 82 はこの組だけ
+* **歪みの部分**: 感度 0 の組で `mr_fx_dist2.py` を当てはめ（正弦波 8 段の音量の外れ 0.22dB）、その h1 から止まったワウ（Cutoff 0 の帯域通過）を割り戻して
+  「ワウの無い前の応答」にした（`mr_fx_wdd.py`、`fxds/t12_64_<p1〜p16>.dsx`。Delay mix・Dry/Wet・Sensitive は 0・127・0 の名前）。
+  動くワウ → 前の応答 → 頭打ち → 後ろの応答で、そのままの組の正弦波 8 段の出口が 0.4dB 以内
+* **こだま**: 混ぜたあと（Dry/Wet 42 で元の音も返ってくる。V-Distortion と同じ）。遅れは Delay Time どおり（7055 サンプル = 160.0ms）、帰りは 1 回 0.317 倍
+  （(84 − 64) / 63）、1 つ目の倍率は 0.0701（Delay mix 40 の 1 点。(40 / 127)² / √2 と同じ値だが確かめていない）
+* **混ぜ方**: 元の音 cos・wet sin（ほかの歪みと同じ）。そのままの組の正弦波とノイズで、帯ごとの形と音量が 0.4〜1.5dB。直線の決まりだと 1〜2dB 大きすぎた
+* 芯: `sampler_fx.h` の `touch_wah`・`wah_dist_delay`、`sampler_fx_rt.h` は歪みの枠（`wdd_init`）に頭打ちの前のワウと、V-Distortion のディレイの線（LPF なし）を使う。
+  応答の組（.dsx）が無い組は、前と同じ録った応答で代える
+* マルチの Aggressor（パート 1、和音・E2・E5）: 音量の差 +13.5 → +2.3dB（和音）、形の差 6.92 → 5.28dB。高い音（E5）は実機のほうが明るい（重心 450〜650Hz 対 200〜260Hz）。
+  入口の大きさを ±4〜12dB、検出の効きを 1.5〜3 倍にしても、区間ごとに良し悪しが入れ替わるだけだった（ワウが倍音の上を動く音なので、1 回の録音どうしでは詰め切れない）。
+  鍵 48・E2 は実機でも鳴らない
   * CrunchyGtr・Beater・Feedbacker・SmallAmp・2CoilAmp2・DynamicAmp（4〜7dB）: 歪み（V-Distortion・Comp+Dist・Amp Simulator）。ボイスモードでも外れている
   * Baby・TouchWah・12Str Mono の低い音: ワウの LFO の位相（録るたびに違う）・Touch Wah の追い方
   * BalladEP の低い音・Soft Lead の高い音（5〜9dB）: まだ見ていない

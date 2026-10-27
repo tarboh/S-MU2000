@@ -864,6 +864,7 @@ public:
 	{
 		kind = 0;
 		eq_on = false;
+		wah_on = false;
 		approx_ = !fxddir.empty() && (motif_fx::chorus_type(b) || motif_fx::flanger_type(b)) && has_ltv(b, fxddir + "/../fxltv", tempo);
 		if (b.msb == 0)
 			return;                          // thru
@@ -984,6 +985,8 @@ public:
 				pc_hz[c] = std::fabs(pc_rate[c]) * FS / pc_span[c];
 			}
 			kind = 12;
+		} else if (b.is(12, 0x40) && !fxddir.empty() && wdd_init(b, fxddir)) {
+			kind = 8;                        // Wah+Dist+Dly（wah_dist_delay と同じ）: 歪みの枠に、頭打ちの前のワウと混ぜたあとのこだまを足して回す
 		} else if (motif_fx::dist_type(b) && !fxddir.empty() && dist_init(b, fxddir)) {
 			kind = 8;
 		} else if (motif_fx::lti_type(b) && !fxddir.empty() && lti_init(b, fxddir + "/../fxlti", tempo)) {
@@ -1085,7 +1088,7 @@ public:
 		case 8: {
 			// 歪み（distortion と同じ）: 左右を足した音 → 録った応答 → 柔らかい頭打ち → 2 次の LPF → 元の音と混ぜる →（V-Distortion はディレイ）。
 			// LPF は負の時刻のタップ（DIST_PRE）を頭へ回したので、出口はこの枠の中で DIST_PRE サンプル遅れる（元の音も遅らせて混ぜる）
-			const double x = (L + R) / 2;
+			const double x = wah_on ? wah.tick((L + R) / 2) : (L + R) / 2;
 			ring_l[t & mask] = L;
 			ring_r[t & mask] = R;
 			const double L0 = t >= DIST_PRE ? ring_l[(t - DIST_PRE) & mask] : 0.0, R0 = t >= DIST_PRE ? ring_r[(t - DIST_PRE) & mask] : 0.0;
@@ -1229,7 +1232,47 @@ private:
 	double dbs = 0, db0 = 0;                 // 頭打ちの上下の違い（distortion と同じ）
 	double dk = 1, dc = 1, dp = 2, og = 1, gdry = 1, gwet = 0, vd_fb = 0, vd_a = 0, vd_mix = 0, vd_lp[2] = {0, 0};
 	size_t vd_df = 1, vd_dt[2] = {1, 1};
-	bool vd_on = false;
+	bool vd_on = false, wah_on = false;
+	motif_fx::touch_wah wah;
+
+	// Wah+Dist+Dly（wah_dist_delay と同じ値）。こだまは V-Distortion の線を、LPF なし・左右同じ遅れで使う
+	bool wdd_init(const block &b, const std::string &fxddir)
+	{
+		const motif_fx::stereo_ir ir = motif_fx::load_ir(fxddir + "/../fxds/" + motif_fx::wdd_key(b) + ".dsx");
+		if (!ir.ok)
+			return false;
+		dc = std::atof(ir.head.at("c").c_str());
+		dp = std::atof(ir.head.at("p").c_str());
+		dk = 1.0;
+		og = 1.0;
+		const double ang = motif_fx::PI / 2 * (std::max(1, b.p[10]) - 1) / 126.0;
+		gdry = std::cos(ang);
+		gwet = std::sin(ang);
+		fl.init(std::vector<double>(ir.L.begin(), ir.L.end()));
+		fr.init(std::vector<double>(ir.R.begin(), ir.R.end()));
+		dbs = std::atof(ir.head.count("b") ? ir.head.at("b").c_str() : "0") * dc;
+		db0 = dbs / std::pow(1 + std::pow(std::fabs(dbs / dc), dp), 1 / dp);
+		std::vector<double> h(DIST_PRE, 0.0);
+		if (ir.post.empty())
+			h.push_back(1.0);
+		else
+			h.insert(h.end(), ir.post.begin(), ir.post.end());
+		el.init(h);
+		er.init(h);
+		wah.init(b);
+		wah_on = true;
+		vd_on = b.p[3] > 0;
+		if (vd_on) {
+			vd_dt[0] = vd_dt[1] = vd_df = size_t(std::max(1, b.p[1])) * FS / 10000;
+			vd_fb = (b.p[2] - 64) / 63.0;
+			vd_a = 0;
+			vd_mix = (b.p[3] / 127.0) * (b.p[3] / 127.0) / std::sqrt(2.0);
+			vd_lp[0] = vd_lp[1] = 0;
+			fl_y[0].assign(1 << 16, 0.0);
+			fl_y[1].assign(1 << 16, 0.0);
+		}
+		return true;
+	}
 
 	// distortion と同じ値の決め方（応答は fxd の既定の組か、fxds のプリセットの組のまま録ったもの）
 	bool dist_init(const block &b, const std::string &fxddir)
