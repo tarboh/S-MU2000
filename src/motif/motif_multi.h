@@ -292,7 +292,7 @@ struct part {
 	bool mute = false, arpsw = false;
 	pedals ped;
 	int down[128] = {};                    // 押さえている鍵（ノートシフトのあと。ソステヌートが見る）
-	int rpn_msb = 127, rpn_lsb = 127;      // RPN（CC101・100）。0・0 で CC6 がピッチベンドの幅
+	int rpn_msb = 127, rpn_lsb = 127;      // RPN（CC101・100）。0・0 ベンドの幅・0・1 Fine Tune・0・2 Coarse Tune（engine::rpn_data）
 	std::atomic<int> voices{0};
 	std::atomic<float> peak{0};
 	double ins_rev = 0, ins_cho = 0;      // ドラム: インサーションを通った音のリバーブ・コーラスへの送り（/ 127）
@@ -651,8 +651,9 @@ public:
 			case 99:
 			case 98: P.rpn_msb = P.rpn_lsb = 127; break;   // NRPN は受けない
 			case 6:
-				if (P.rpn_msb == 0 && P.rpn_lsb == 0 && P.eg)
-					P.eg->set_pb_range(val);
+			case 38:
+				if (P.rpn_msb == 0 && P.eg)
+					P.eg->rpn_data(P.rpn_lsb, num, val);
 				break;
 			case 5:
 			case 65:

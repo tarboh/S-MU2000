@@ -287,6 +287,21 @@ public:
 		pbdown = 64 - std::min(48, std::max(0, semis));
 		apply_ctl();
 	}
+	// RPN のデータ（CC6 = MSB・CC38 = LSB）。num は RPN の番号（MSB 0 のもの）: 0 ベンドの幅・1 Fine Tune・2 Coarse Tune。
+	// 実機のマルチで測った（tools/motif/mr_rpn_tune.py、2026-10-27）: Coarse は (値 − 64) 半音で ±24 で頭打ち、Fine は (値 − 64) / 64 × 100 セント。
+	// どちらも音の高さを変える（ドラムでも鍵はずらさず、同じ楽器が高さだけ変わる）。プログラムチェンジと CC121 のあとも残る
+	void rpn_data(int num, int cc, int val)
+	{
+		if (num == 0 && cc == 6)
+			set_pb_range(val);
+		else if (num == 1) {
+			fine14 = cc == 6 ? val << 7 : (fine14 & ~127) | val;
+			apply_ctl();
+		} else if (num == 2 && cc == 6) {
+			coarse = std::max(-24, std::min(24, val - 64));
+			apply_ctl();
+		}
+	}
 	// Reset All Controllers（CC121）で戻すもの
 	void reset_controls()
 	{
@@ -308,6 +323,8 @@ public:
 		mono = o.mono;
 		pbup = o.pbup;
 		pbdown = o.pbdown;
+		coarse = o.coarse;
+		fine14 = o.fine14;
 		apply_ctl();
 	}
 
@@ -587,6 +604,7 @@ private:
 	bool mono = false, same_single = false, porta = false, fulltime = false;
 	int ptime = 0, ptmode = 0;
 	int pbup = 66, pbdown = 62;
+	int coarse = 0, fine14 = 8192;           // RPN 2（半音）と RPN 1（14 ビット、8192 が真ん中）
 	// チャンネルの CC のずれ（値 − 64）: 74 明るさ（カットオフ）・71 レゾナンス・73 アタック・75 ディケイ・72 リリース
 	int off_cutoff = 0, off_reso = 0, off_atk = 0, off_dec = 0, off_rel = 0;
 	int p_cutoff = 0, p_reso = 0, p_atk = 0, p_dec = 0, p_rel = 0;      // マルチのパートのずらし（engine_options）
@@ -746,6 +764,8 @@ private:
 			const int pb = srcval[0];
 			if (pb != 64)
 				m.cents += pb > 64 ? (pb - 64) / 63.0 * (pbup - 64) * 100.0 : (pb - 64) / 64.0 * (64 - pbdown) * 100.0;
+			// RPN 2・1（Coarse・Fine Tune）
+			m.cents += coarse * 100.0 + (fine14 - 8192) / 8192.0 * 100.0;
 			// CC74・CC71: カットオフ・レゾナンスの値に足す（頭打ちはフィルターの側で 0〜255・0〜127）
 			m.cutoff += off_cutoff + p_cutoff;
 			m.reso += off_reso + p_reso;

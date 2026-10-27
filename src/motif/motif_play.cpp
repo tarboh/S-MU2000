@@ -335,8 +335,9 @@ struct player {
 			case 99:
 			case 98: rpn_msb = rpn_lsb = 127; break;     // NRPN は受けない
 			case 6:
-				if (rpn_msb == 0 && rpn_lsb == 0 && cur)
-					cur->eg->set_pb_range(b);
+			case 38:
+				if (rpn_msb == 0 && cur)
+					cur->eg->rpn_data(rpn_lsb, a, b);
 				break;
 			case 5:
 			case 10:
