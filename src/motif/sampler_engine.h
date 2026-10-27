@@ -875,6 +875,33 @@ private:
 	// ベロシティのクロスフェード（41 ee 00 の 0x10、エレメントの vxf）: 範囲の外でも、端からの距離 d がクロスフェードの値 X より小さければ鳴らし、
 	// 振幅に 1 − d / X を掛ける（実機で測った。tools/motif/mr_vel_xfade.py、2026-10-28。X 4〜127 で、d が X の半分なら −6dB、X 64 で d 63 は −36.1dB。
 	// 端に近い所だけ、実機は 0.3〜0.7dB 小さく減る）。範囲の中は 1、鳴らさないときは 0
+	// マイクロチューニング（40 00 00 の 0x04 Scale）: 鍵 key の、平均律からのずれ（セント）。実機で測った（tools/motif/mr_tuning.py、2026-10-28。
+	// サインの雛形の鍵 60〜71 の高さ。どの表も A（鍵 69）は 0 にそろっている（Indian を除く）。Indian は鍵 48〜83 でオクターブごとに同じだった）。
+	// 1/4 Tone は鍵 72 の音から 1 鍵 50 セント、1/8 Tone は鍵 64 の音から 1 鍵 25 セント（鍵 24〜107 で 1 セント以内）。
+	// 主音（0x0F）は 0x10 で送っても 0x0F で送っても、どの音階でも高さが変わらなかった（プリセットはどれも C）ので使わない
+	static double micro_tuning_cents(int scale, int key)
+	{
+		static const double T[13][12] = {
+			{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+			{16.3, -12.7, 20.1, 31.5, 2.4, 14.1, -15.3, 18.7, -11.7, 0, 34.3, 3.5},         // PureMajor
+			{16.3, 49.4, 20.1, 31.5, 2.4, 14.1, 46.9, 18.7, 29.2, 0, 34.3, 3.5},            // PureMinor
+			{11.8, 2.5, 3.6, 5.6, 2.4, 9.4, 0, 8.2, 3.5, 0, 8.3, 3.5},                     // Werckmeister
+			{10.4, 1.4, 3.6, 4.7, -3.5, 8.3, 0, 6.9, 2.3, 0, 7.1, -2.4},                   // Kirnberger
+			{5.9, 0, 1.3, 3.4, -1.2, 7.2, -2.4, 5.7, 1.2, 0, 5.8, -4.7},                   // Vallotti & Young
+			{50.5, 50.4, 49.2, 50.1, 50.5, 49.3, 50.4, 50.3, 49.1, 50.5, 50.5, 49.2},      // 1/4 Shift
+			{0}, {0},                                                                      // 1/4 Tone・1/8 Tone（下の式）
+			{0, -99.5, -17.6, -117.5, -58.4, 34.1, -65.5, -14.2, -115.0, -29.2, -128.7, -26.9},   // Indian
+			{0, 0, 0, 0, 0, 0, -50.3, 0, 0, 0, 0, -50.3},                                 // Arabic 1
+			{0, 0, 0, 0, -49.3, 0, 0, 0, 0, 0, 0, -50.3},                                 // Arabic 2
+			{0, 0, 0, 0, 0, 0, -50.3, 0, 0, 0, 0, 0}};                                    // Arabic 3
+		if (scale == 7)
+			return (key - 72) * 50.0 - (key - 72) * 100.0;
+		if (scale == 8)
+			return (key - 64) * 25.0 - (key - 64) * 100.0;
+		if (scale < 0 || scale > 12)
+			return 0.0;
+		return T[scale][((key % 12) + 12) % 12];
+	}
 	static double xfade_gain(const element &e, int vel)
 	{
 		const int lo = geti(e.f, "vel_lo"), hi = geti(e.f, "vel_hi"), x = geti(e.f, "vxf");
@@ -1050,6 +1077,10 @@ private:
 		p.peg.time_kf = geti(e.f, "pegkf", 64);
 		p.peg.time_kf_center = geti(e.f, "pegkc", 60);
 		p.pitch_kf = geti(e.f, "pkf", 96);
+		if (geti(e.f, "dnote", -1) < 0) {
+			p.micro_cents = micro_tuning_cents(geti(this->pt.voiceline, "mts"), note);
+			p.micro_cents_center = micro_tuning_cents(geti(this->pt.voiceline, "mts"), geti(e.f, "pkc", 60));
+		}
 		p.pitch_kf_center = geti(e.f, "pkc", 60);
 		p.pitch_vel_sens = geti(e.f, "pvel", 64);
 		p.eq_type = geti(e.f, "eqtype", swp50_eq::THRU);

@@ -186,6 +186,8 @@ struct element_params {
 	swp50_lfo::element_lfo lfo;
 	swp50_filter::filter_eg peg;  // PEG（depth が深さ、level_factor が高さのベロシティ感度）
 	int pitch_kf = 96, pitch_kf_center = 60, pitch_vel_sens = 64;
+	double micro_cents = 0;       // マイクロチューニングのずれ（セント。音色の音階と鍵で決まる）
+	double micro_cents_center = 0;   // 音程のキーフォローの中心の鍵のずれ
 	swp50_filter::filter_params filter;
 	swp50_filter::filter_eg feg;
 	int eq_type = swp50_eq::THRU, eq_res = 16, eq_f1 = 100, eq_g1 = 0x40, eq_f2 = 200, eq_g2 = 0x40;
@@ -418,7 +420,9 @@ struct voice {
 		p.peg.key = n;
 		p.peg.velocity = v;
 		p.peg.key_on();
-		static_cents = (swp50_peg::key_follow_ratio(p.pitch_kf) - 1.0) * 100.0 * (n - p.pitch_kf_center)
+		// マイクロチューニングは、ずらした高さに中心の鍵からキーフォローを掛ける（実機: キーフォロー 90・1/8 Tone で 1 鍵 22.5 セント = 0.9 × 25）
+		const double kfr = swp50_peg::key_follow_ratio(p.pitch_kf);
+		static_cents = p.micro_cents_center + kfr * (100.0 * (n - p.pitch_kf_center) + p.micro_cents - p.micro_cents_center) - 100.0 * (n - p.pitch_kf_center)
 			+ swp50_peg::velocity_cents(p.pitch_vel_sens, v);
 		level = std::fmin(127.0, std::fmax(0.0, p.level + swp50_aeg::level_scaling(p.level_bp, p.level_off, n)));
 		level *= swp50_aeg::key_follow_factor(p.level_kf, n);

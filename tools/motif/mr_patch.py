@@ -108,9 +108,10 @@ def main():
     lines.append("fx " + " ".join("%s=%s" % kv for kv in fx.items()))
     c = v.get("common", {})
     # 1 音以外の鳴らし方（モノ/ポリ・同じ鍵の扱い・ポルタメント。sampler_render --events で使う）
-    lines.append("voice volume=%d mono=%d same=%d porta=%d pmode=%d ptime=%d ptmode=%d" % (
+    # mts: マイクロチューニングの音階（40 00 00 の 0x04。芯の engine::micro_tuning_cents）
+    lines.append("voice volume=%d mono=%d same=%d porta=%d pmode=%d ptime=%d ptmode=%d mts=%d" % (
         c.get("volume", 127), c.get("mono_poly", 1), c.get("same_note_key_on_assign", 1), c.get("portamento_switch", 0),
-        c.get("portamento_mode", 0), c.get("portamento_time", 0), c.get("portamento_time_mode", 0)))
+        c.get("portamento_mode", 0), c.get("portamento_time", 0), c.get("portamento_time_mode", 0), c.get("micro_tuning_scale", 0)))
     ar = voice_arp(vpath)
     if ar:
         lines.append("arp " + " ".join("%s=%s" % kv for kv in ar.items()))

@@ -29,6 +29,9 @@ int main()
 	CHECK(std::fabs(key_follow_ratio(48) * 1200 - -480.4) < 5);
 	CHECK(std::fabs(key_follow_ratio(112) * 1200 - 1919.6) < 5);
 	CHECK(std::fabs(key_follow_ratio(127) * 1200 - 2400.0) < 5);
+	CHECK(std::fabs(key_follow_ratio(90) - 0.90) < 1e-9);     // 2026-10-28 の細かい測り（mr_pitch_kf.py）
+	CHECK(std::fabs(key_follow_ratio(74) - 0.10) < 1e-9);
+	CHECK(std::fabs(key_follow_ratio(32) + 1.00) < 1e-9);
 	// ベロシティ感度
 	CHECK(std::fabs(velocity_cents(80, 127) - 296.4) < 5);
 	CHECK(std::fabs(velocity_cents(96, 64) - 300.2) < 5);
