@@ -347,6 +347,29 @@ public:
 	int get_polyphony() const { return polyphony; }
 	// マルチのパートのパン（− 64）。次に鳴らす音から効く
 	void set_pan_offset(int o) { pan_off = o; }
+	// マルチのパートのパラメーターチェンジ（37 pp xx）で、鳴らし方を後から変える（engine_options・パッチの voice の行で決めたもの）
+	void set_part_offsets(int cutoff, int reso, int atk, int dec, int rel)
+	{
+		p_cutoff = cutoff;
+		p_reso = reso;
+		p_atk = atk;
+		p_dec = dec;
+		p_rel = rel;
+		apply_ctl();
+	}
+	void set_pb_raw(int up, int down)            // 37 pp 09・0A の値そのまま（64 が 0 半音）
+	{
+		pbup = up;
+		pbdown = down;
+		apply_ctl();
+	}
+	void set_porta(bool on, int time, bool full)
+	{
+		porta = on;
+		ptime = time;
+		fulltime = full;
+	}
+	void set_mono(bool m) { mono = m; }
 
 	void note_on(int key, int vel)
 	{

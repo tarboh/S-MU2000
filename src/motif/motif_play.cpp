@@ -153,6 +153,70 @@ struct player {
 	u8 status = 0, d0 = 0;
 	int nd = 0;
 	bool in_sysex = false;
+	std::vector<u8> sx;                     // 受けている途中の SysEx（F0 から）
+	float midi_master = 1.0f;               // MIDI で受けたマスターボリューム（ユニバーサル・システムの 00 00 00）の倍率
+	// マルチの一括ロード（0E 5F 00 … 0F 5F 00）。受け終わった設定は pending_bulk に置き、画面の糸が読んで入れ替える
+	bool bulk_on = false;
+	std::map<std::array<int, 3>, std::vector<unsigned char>> bulk_blocks;
+	std::unique_ptr<motif_multi::config> pending_bulk;
+
+	// マスターボリューム（0〜127）の倍率。実機で測った（tools/motif/mr_master_vol.py、2026-10-28）: 112・100・80・64・32・16 で −2.39・−4.73・−8.40・
+	// −12.04・−24.42・−37.65dB（ほぼ 40·log10(値 / 127)、小さい値ほど少し深い）。点の間は値で直線、16 より下は 40·log10 に −1.66dB
+	static float master_volume_gain(int v)
+	{
+		static const double X[7] = {16, 32, 64, 80, 100, 112, 127}, Y[7] = {-37.65, -24.42, -12.04, -8.40, -4.73, -2.39, 0.0};
+		if (v <= 0)
+			return 0.0f;
+		double db;
+		if (v < 16)
+			db = 40 * std::log10(v / 127.0) - 1.66;
+		else {
+			int i = 0;
+			while (i < 5 && v > X[i + 1])
+				i++;
+			db = Y[i] + (v - X[i]) / (X[i + 1] - X[i]) * (Y[i + 1] - Y[i]);
+		}
+		return float(std::pow(10.0, db / 20));
+	}
+
+	// SysEx を受けた（mtx の中で）。マスターボリューム（ユニバーサル F0 7F xx 04 01 ll mm F7・システムの 00 00 00）と、
+	// パラメーターチェンジ（F0 43 1n 7F 00 ah am al dd… F7）のうちマルチのパート・マスター EQ（motif_multi::param_change）を受ける
+	void sysex_message(const std::vector<u8> &m)
+	{
+		if (m.size() == 8 && m[1] == 0x7F && m[3] == 0x04 && m[4] == 0x01) {
+			midi_master = master_volume_gain(m[6]);
+			return;
+		}
+		// 一括ロード F0 43 0n 7F 00 bh bl ah am al dd… cs F7（チェックサムは bh から cs までの和の下 7 ビットが 0）
+		if (m.size() >= 12 && m[1] == 0x43 && (m[2] & 0xF0) == 0x00 && m[3] == 0x7F && m[4] == 0x00) {
+			int sum = 0;
+			for (size_t i = 5; i + 1 < m.size(); i++)
+				sum += m[i];
+			if (sum & 0x7F)
+				return;
+			const std::array<int, 3> addr = {m[7], m[8], m[9]};
+			if (addr == std::array<int, 3>{0x0E, 0x5F, 0x00}) {
+				bulk_on = true;
+				bulk_blocks.clear();
+			} else if (addr == std::array<int, 3>{0x0F, 0x5F, 0x00}) {
+				if (bulk_on) {
+					auto c = std::make_unique<motif_multi::config>();
+					if (motif_multi::config_from_bulk(bulk_blocks, *c))
+						pending_bulk = std::move(c);
+				}
+				bulk_on = false;
+			} else if (bulk_on && (addr[0] == 0x36 || addr[0] == 0x37))
+				bulk_blocks[addr] = std::vector<unsigned char>(m.begin() + 10, m.end() - 2);
+			return;
+		}
+		if (m.size() >= 10 && m[1] == 0x43 && (m[2] & 0xF0) == 0x10 && m[3] == 0x7F && m[4] == 0x00) {
+			const int ah = m[5], am = m[6], al = m[7], n = int(m.size()) - 9;
+			if (ah == 0 && am == 0 && al == 0)
+				midi_master = master_volume_gain(m[8]);
+			else if (mul)
+				mul->param_change(ah, am, al, m.data() + 8, n);
+		}
+	}
 
 	// ここから下は mtx を取ってから呼ぶ
 	void note_on(int key, int vel)
@@ -388,9 +452,15 @@ struct player {
 			return;                          // リアルタイム
 		if (v == 0xF0) {
 			in_sysex = true;
+			sx.assign(1, v);
+			status = 0;                      // SysEx はランニングステータスを打ち切る
 			return;
 		}
 		if (v == 0xF7) {
+			if (in_sysex) {
+				sx.push_back(v);
+				sysex_message(sx);
+			}
 			in_sysex = false;
 			return;
 		}
@@ -404,7 +474,12 @@ struct player {
 			nd = 0;
 			return;
 		}
-		if (in_sysex || !status)
+		if (in_sysex) {
+			if (sx.size() < 65536)
+				sx.push_back(v);
+			return;
+		}
+		if (!status)
 			return;
 		const int need = (status & 0xF0) == 0xC0 || (status & 0xF0) == 0xD0 ? 1 : 2;
 		if (nd == 0) {
@@ -435,7 +510,7 @@ struct player {
 				const int n = int(std::min<u32>(256, frames - done));
 				float l[256] = {}, r[256] = {};
 				if (mul)
-					mul->render(n, l, r, master, pk);
+					mul->render(n, l, r, master * midi_master, pk);
 				for (int j = 0; j < n; j++) {
 					out[2 * (done + j)] = s16(std::lround(l[j] * 32767.0f));
 					out[2 * (done + j) + 1] = s16(std::lround(r[j] * 32767.0f));
@@ -446,7 +521,7 @@ struct player {
 			peak = std::max(pk, peak.load() * 0.9f);
 			return;
 		}
-		const double part = std::pow(cc7 / 127.0, 2.0) * std::pow(cc11 / 127.0, 2.0) * master;
+		const double part = std::pow(cc7 / 127.0, 2.0) * std::pow(cc11 / 127.0, 2.0) * master * midi_master;
 		u32 done = 0;
 		while (done < frames) {
 			const int n = int(std::min<u32>(256, frames - done));
@@ -540,6 +615,14 @@ struct player {
 };
 
 // マルチを読む（読む糸で）。パートの音色はパッチの置き場、エフェクトの応答はその 1 つ上（capture）から
+std::unique_ptr<motif_multi::multi> load_multi_cfg(const motif_multi::config &c, const fs::path &dir, const motif_arp::library *lib)
+{
+	auto M = std::make_unique<motif_multi::multi>();
+	M->load(c, dir.string(), (dir / "..").string(), int(std::min(8u, std::max(1u, std::thread::hardware_concurrency() - 1))));
+	M->arp.set_library(lib);
+	return M;
+}
+
 std::unique_ptr<motif_multi::multi> load_multi(const std::string &file, const fs::path &dir, const motif_arp::library *lib)
 {
 	motif_multi::config c;
@@ -985,7 +1068,7 @@ int main(int argc, char **argv)
 					const std::string file = motif_multi::patch_of(r.msb, r.lsb, r.prog, bank);
 					if (file.empty())
 						continue;
-					motif_multi::part_voice v = pl->mul->build_voice(r.part, file, bank, r.pan);
+					motif_multi::part_voice v = pl->mul->build_voice(r.part, file, bank, r.pan, &r.cfg);
 					pl->mul->swap_voice(*pl->mul->parts[size_t(r.part)], v);
 				}
 			}
@@ -1030,8 +1113,20 @@ int main(int argc, char **argv)
 				std::vector<s16> buf(4410 * 2);
 				for (auto &m : msgs) {
 					{
+						// 受け口と同じ道（SysEx も流せる）
 						std::lock_guard<std::mutex> lk(pl->mtx);
-						pl->midi_message(m[0], m.size() > 1 ? m[1] : 0, m.size() > 2 ? m[2] : 0);
+						for (u8 b : m)
+							pl->midi_byte(b);
+					}
+					// 一括ロードを受けたら、その場で読んで入れ替える
+					if (pl->pending_bulk) {
+						auto c = std::move(pl->pending_bulk);
+						auto M = load_multi_cfg(*c, dir, &pl->arplib);
+						std::lock_guard<std::mutex> lk(pl->mtx);
+						if (M) {
+							pl->mul = std::move(M);
+							std::printf("一括ロードのマルチ %s に入れ替えた\n", pl->mul->cfg.name.c_str());
+						}
 					}
 					pl->fill(buf.data(), 4410);
 					pcm.insert(pcm.end(), buf.begin(), buf.end());
@@ -1117,7 +1212,8 @@ int main(int argc, char **argv)
 			for (auto &m : msgs) {
 				{
 					std::lock_guard<std::mutex> lk(pl->mtx);
-					pl->midi_message(m[0], m.size() > 1 ? m[1] : 0, m.size() > 2 ? m[2] : 0);
+					for (u8 b : m)
+						pl->midi_byte(b);
 				}
 				pl->fill(buf.data(), 4410);
 			}
@@ -1333,7 +1429,7 @@ int main(int argc, char **argv)
 					pv_part = r.part;
 					pv_multi = pl->mul.get();
 					pv_loader = std::thread([&, r, file, bank, M = pv_multi]() {
-						motif_multi::part_voice v = M->build_voice(r.part, file, bank, r.pan);
+						motif_multi::part_voice v = M->build_voice(r.part, file, bank, r.pan, &r.cfg);
 						std::lock_guard<std::mutex> lk(ready_mtx);
 						pv_new = std::move(v);
 						pv_ready = true;
@@ -1372,6 +1468,26 @@ int main(int argc, char **argv)
 				}
 				mstatus = pl->mul->cfg.name;
 				old.reset();
+			}
+		}
+		// MIDI で受けたマルチの一括ロード: 選んだマルチと同じ道で読んで入れ替える（読んでいる途中なら、次の回にまた見る）
+		if (!loading) {
+			std::unique_ptr<motif_multi::config> pb;
+			{
+				std::lock_guard<std::mutex> lk(pl->mtx);
+				pb = std::move(pl->pending_bulk);
+			}
+			if (pb) {
+				if (loader.joinable())
+					loader.join();
+				loading = true;
+				mstatus = "読み込み中: 一括ロード " + pb->name;
+				loader = std::thread([&, c = *pb]() {
+					auto M = load_multi_cfg(c, dir, &pl->arplib);
+					std::lock_guard<std::mutex> lk(ready_mtx);
+					ready_m = std::move(M);
+					loading = false;
+				});
 			}
 		}
 		if (multi_ui && mwant >= 0 && mwant != mselected && !loading) {

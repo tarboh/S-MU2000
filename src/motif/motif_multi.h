@@ -19,6 +19,7 @@
 #include "sampler_engine.h"
 #include "sampler_fx_rt.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -274,6 +275,7 @@ struct part_voice {
 // プログラムチェンジで替える頼み（パート・バンク・番号）
 struct pc_request {
 	int part, msb, lsb, prog, pan;
+	part_cfg cfg;                        // 頼んだときのパートの設定の写し（パラメーターチェンジで変わっていることがある。読む糸は mtx の外で読む）
 };
 
 // バンクの MSB・LSB と番号 → パッチのファイル名の頭（mr_multi_export.py の BANKS と同じ）と、一覧の名前。無いバンクなら空
@@ -294,6 +296,96 @@ inline std::string patch_of(int msb, int lsb, int prog, std::string &bank)
 			return f;
 		}
 	return std::string();
+}
+
+// マルチの一括ロード（0E 5F 00 … 0F 5F 00 の間のブロック。番地 → データ）を、.multi を読んだのと同じ config にする
+// （tools/motif/mr_multi_export.py と同じ読み方、2026-10-28）。無いブロックの欄は .multi の既定と同じ。曲の頭の一括ロードを受けるのに使う
+inline bool config_from_bulk(const std::map<std::array<int, 3>, std::vector<unsigned char>> &b, config &c)
+{
+	c = config();
+	auto get = [&](int h, int m, int l) -> const std::vector<unsigned char> * {
+		auto it = b.find({h, m, l});
+		return it == b.end() ? nullptr : &it->second;
+	};
+	const auto *com = get(0x36, 0x00, 0x00);
+	if (!com || com->size() < 0x34)
+		return false;
+	const auto &C = *com;
+	for (int i = 0; i < 10; i++)
+		c.name += char(C[size_t(i)] >= 0x20 && C[size_t(i)] < 0x7F ? C[size_t(i)] : ' ');
+	while (!c.name.empty() && c.name.back() == ' ')
+		c.name.pop_back();
+	auto w = [&](int i) { return int(C[size_t(i)]) << 7 | C[size_t(i) + 1]; };
+	auto num = [](int v) { return std::to_string(v); };
+	c.arpline = {{"type", num(w(0x14))}, {"sw", num(C[0x16])}, {"hold", num(C[0x17])}, {"unit", num(C[0x18])},
+	             {"note", num(C[0x19]) + "," + num(C[0x1A])}, {"vel", num(C[0x1B]) + "," + num(C[0x1C])}, {"key", num(C[0x1D])},
+	             {"vmode", num(C[0x1E])}, {"change", num(C[0x1F])}, {"qv", num(C[0x20])}, {"qs", num(C[0x21])}, {"vrate", num(w(0x22))},
+	             {"grate", num(w(0x24))}, {"swing", num(w(0x26) - 128)}, {"tempo", num(w(0x28))}};
+	std::string sf;
+	for (int i = 0x2A; i < 0x34; i += 2)
+		sf += (sf.empty() ? "" : ",") + num(w(i));
+	c.arpline["sf"] = sf;
+	auto fx = [&](const std::vector<unsigned char> &d) {
+		auto v2 = [&](size_t o) { return o + 1 < d.size() ? (int(d[o]) << 7 | d[o + 1]) : 0; };
+		std::string t = num(v2(0));
+		for (int i = 1; i <= 16; i++)
+			t += "," + num(v2(size_t(2 * i)));
+		t += "," + num(d.size() > 34 ? d[34] : 96) + ",127";
+		return t;
+	};
+	if (const auto *rv = get(0x36, 0x01, 0x00))
+		c.fxline["reverb"] = fx(*rv);
+	if (const auto *ch = get(0x36, 0x02, 0x00)) {
+		c.fxline["chorus"] = fx(*ch);
+		c.fxline["chorev"] = num(ch->size() > 36 ? (*ch)[36] : 0);
+	}
+	c.fxline["tempo"] = num(w(0x28));
+	if (const auto *me = get(0x36, 0x10, 0x00))
+		if (me->size() >= 20)
+			c.meq.assign(me->begin(), me->begin() + 20);
+	// インサーションのパート: 0x60 は予約、0x61 がパート 15・16、0x62 が 8〜14、0x63 が 1〜7（ビット 0 が若い番号）
+	if (C.size() > 0x63) {
+		const int tbl[3][3] = {{0x63, 0, 7}, {0x62, 7, 7}, {0x61, 14, 2}};
+		for (auto &t : tbl)
+			for (int k = 0; k < t[2]; k++)
+				if (C[size_t(t[0])] >> k & 1)
+					c.ins.push_back(t[1] + k);
+		std::sort(c.ins.begin(), c.ins.end());
+	}
+	static const struct { int off; const char *name; } PART[] = {
+		{0x00, "bank_msb"}, {0x01, "bank_lsb"}, {0x02, "prog"}, {0x03, "ch"}, {0x04, "mode"}, {0x05, "vel_lo"}, {0x06, "vel_hi"},
+		{0x07, "note_lo"}, {0x08, "note_hi"}, {0x09, "pbup"}, {0x0A, "pbdown"}, {0x0B, "vsd"}, {0x0C, "vso"}, {0x0D, "vol"}, {0x0E, "pan"},
+		{0x12, "rev"}, {0x13, "cho"}, {0x15, "dry"}, {0x16, "shift"}, {0x17, "cutoff"}, {0x18, "reso"}, {0x1A, "porta"}, {0x1B, "ptime"},
+		{0x1C, "pmode"}, {0x1E, "out"}, {0x1F, "rx1"}, {0x20, "rx2"}, {0x21, "rx3"}, {0x22, "aeg_sus"}, {0x23, "aeg_atk"}, {0x24, "voicepan"},
+		{0x25, "aeg_dec"}, {0x26, "aeg_rel"}, {0x27, "feg_sus"}, {0x28, "feg_atk"}, {0x2A, "feg_dec"}, {0x2B, "feg_rel"}, {0x2C, "feg_depth"}};
+	for (int p = 0; p < 16; p++) {
+		const auto *x = get(0x37, p, 0x00);
+		part_cfg &pc = c.part[size_t(p)];
+		if (!x || x->size() < 0x2D) {
+			pc.voice = "-";
+			continue;
+		}
+		const auto &X = *x;
+		for (auto &t : PART)
+			pc.f[t.name] = num(X[size_t(t.off)]);
+		pc.f["arpsw"] = num(X[0x1F] >> 1 & 1);
+		if (X.size() > 0x38) {
+			pc.f["eqlf"] = num(int(X[0x2E]) << 7 | X[0x2F]);
+			pc.f["eqlg"] = num(X[0x30]);
+			pc.f["eqmf"] = num(int(X[0x32]) << 7 | X[0x33]);
+			pc.f["eqmg"] = num(X[0x34]);
+			pc.f["eqmq"] = num(X[0x35]);
+			pc.f["eqhf"] = num(int(X[0x36]) << 7 | X[0x37]);
+			pc.f["eqhg"] = num(X[0x38]);
+		}
+		std::string bank;
+		const std::string file = patch_of(X[0x00], X[0x01], X[0x02], bank);
+		pc.voice = file.empty() || X[0x02] == 0x7F ? "-" : file;
+		pc.bank = bank;
+		pc.f["voice"] = pc.voice;
+		pc.f["bank"] = bank;
+	}
+	return true;
 }
 
 struct part {
@@ -384,10 +476,10 @@ public:
 	}
 
 	// パート i の音色 voice（パッチのファイル名の頭）を作る（読む糸で呼んでよい。パートの設定で鳴らし方を上書きする）
-	part_voice build_voice(int i, const std::string &voice, const std::string &bank, int pan) const
+	part_voice build_voice(int i, const std::string &voice, const std::string &bank, int pan, const part_cfg *pcfg = nullptr) const
 	{
 		part_voice v;
-		const part_cfg &pc = cfg.part[size_t(i)];
+		const part_cfg &pc = pcfg ? *pcfg : cfg.part[size_t(i)];
 		if (voice == "-" || voice.empty()) {
 			v.label = bank + "（パッチが無い）";
 			return v;
@@ -583,6 +675,77 @@ public:
 			v.eg->all_sound_off();
 	}
 
+	// パラメーターチェンジ（F0 43 1n 7F 00 ah am al dd… F7。mtx の中で）。マルチのパート（37 pp xx）とマスター EQ（36 10 xx）を受ける
+	// （2026-10-28）。パートの値は part 行の欄（.multi の名前）と同じ所に書き、音と関わるものはその場で効かせる。バンク・番号は、
+	// プログラムチェンジと同じく画面の糸で読んでから入れ替える。Voice Pan（24）・FEG のずらしなど、音色を作るときだけ見る欄は次に音色を作るときから
+	void param_change(int ah, int am, int al, const unsigned char *d, int n)
+	{
+		if (n < 1)
+			return;
+		if (ah == 0x36 && am == 0x10 && al < 20) {
+			cfg.meq.resize(20, 64);
+			for (int i = 0; i < n && al + i < 20; i++)
+				cfg.meq[size_t(al + i)] = d[i];
+			meq.set(cfg.meq.data());
+			return;
+		}
+		if (ah != 0x37 || am < 0 || am >= 16)
+			return;
+		part &P = *parts[size_t(am)];
+		auto set = [&](const char *k, int v) { P.cfg.f[k] = std::to_string(v); };
+		const int v = d[0], v2 = n >= 2 ? (d[0] << 7 | d[1]) : d[0];
+		static const struct { int off; const char *name; } T[] = {
+			{0x00, "bank_msb"}, {0x01, "bank_lsb"}, {0x02, "prog"}, {0x03, "ch"}, {0x04, "mode"}, {0x05, "vel_lo"}, {0x06, "vel_hi"},
+			{0x07, "note_lo"}, {0x08, "note_hi"}, {0x09, "pbup"}, {0x0A, "pbdown"}, {0x0B, "vsd"}, {0x0C, "vso"}, {0x0D, "vol"}, {0x0E, "pan"},
+			{0x12, "rev"}, {0x13, "cho"}, {0x15, "dry"}, {0x16, "shift"}, {0x17, "cutoff"}, {0x18, "reso"}, {0x1A, "porta"}, {0x1B, "ptime"},
+			{0x1C, "pmode"}, {0x1E, "out"}, {0x1F, "rx1"}, {0x20, "rx2"}, {0x21, "rx3"}, {0x22, "aeg_sus"}, {0x23, "aeg_atk"}, {0x24, "voicepan"},
+			{0x25, "aeg_dec"}, {0x26, "aeg_rel"}, {0x27, "feg_sus"}, {0x28, "feg_atk"}, {0x2A, "feg_dec"}, {0x2B, "feg_rel"}, {0x2C, "feg_depth"},
+			{0x2E, "eqlf"}, {0x30, "eqlg"}, {0x32, "eqmf"}, {0x34, "eqmg"}, {0x35, "eqmq"}, {0x36, "eqhf"}, {0x38, "eqhg"}};
+		const char *name = nullptr;
+		for (auto &t : T)
+			if (t.off == al)
+				name = t.name;
+		if (!name)
+			return;
+		const bool two = al == 0x2E || al == 0x32 || al == 0x36;      // 周波数は 2 バイト
+		set(name, two ? v2 : v);
+		const part_cfg &pc = P.cfg;
+		switch (al) {
+		case 0x00: case 0x01: case 0x02:
+			if (al == 0x02 && v == 0x7F)
+				break;
+			requests.erase(std::remove_if(requests.begin(), requests.end(), [&](const pc_request &r) { return r.part == am; }), requests.end());
+			requests.push_back({am, pc.get("bank_msb", 63), pc.get("bank_lsb", 0), pc.get("prog", 0), P.pan, P.cfg});
+			break;
+		case 0x03: P.ch = v; break;
+		case 0x04: if (P.eg) P.eg->set_mono(v == 0); break;
+		case 0x09: case 0x0A: if (P.eg) P.eg->set_pb_raw(pc.get("pbup", 64), pc.get("pbdown", 64)); break;
+		case 0x0D: P.vol = v; break;
+		case 0x0E:
+			P.pan = v;
+			if (P.eg)
+				P.eg->control(10, v);
+			break;
+		case 0x12: P.rev = v; break;
+		case 0x13: P.cho = v; break;
+		case 0x15: P.dry = v; break;
+		case 0x17: case 0x18: case 0x23: case 0x25: case 0x26:
+			if (P.eg)
+				P.eg->set_part_offsets(int(std::lround(2.4 * (pc.get("cutoff", 64) - 64))), int(std::lround(1.6 * (pc.get("reso", 64) - 64))),
+				                       2 * (pc.get("aeg_atk", 64) - 64), 2 * (pc.get("aeg_dec", 64) - 64), 2 * (pc.get("aeg_rel", 64) - 64));
+			break;
+		case 0x1A: case 0x1B: case 0x1C:
+			if (P.eg)
+				P.eg->set_porta(pc.get("porta", 0) != 0, pc.get("ptime", 0), pc.get("pmode", 0) != 0);
+			break;
+		case 0x1F: P.arpsw = (v >> 1 & 1) != 0; break;
+		case 0x2E: case 0x30: case 0x32: case 0x34: case 0x35: case 0x36: case 0x38:
+			P.peq.set(pc.get("eqlf", 0x40), pc.get("eqlg", 0x40), pc.get("eqmf", 0x80), pc.get("eqmg", 0x40), pc.get("eqmq", 0x10),
+			          pc.get("eqhf", 0xC0), pc.get("eqhg", 0x40));
+			break;
+		}
+	}
+
 	// プログラムチェンジ（mtx の中で）: そのチャンネルを受けるパートのうち、Receive Program Change（37 pp 1F のビット 4）が入ったものに頼みを積む。
 	// 読むのは画面の糸（take_requests → build_voice → swap_voice）
 	void program_change(int ch, int prog)
@@ -595,7 +758,7 @@ public:
 				continue;
 			// 同じパートの前の頼みは捨てる（続けて送られたら最後のものだけ）
 			requests.erase(std::remove_if(requests.begin(), requests.end(), [&](const pc_request &r) { return r.part == int(i); }), requests.end());
-			requests.push_back({int(i), bank_msb[ch] < 0 ? 63 : bank_msb[ch], bank_lsb[ch] < 0 ? 0 : bank_lsb[ch], prog, P.pan});
+			requests.push_back({int(i), bank_msb[ch] < 0 ? 63 : bank_msb[ch], bank_lsb[ch] < 0 ? 0 : bank_lsb[ch], prog, P.pan, P.cfg});
 		}
 	}
 	std::vector<pc_request> take_requests()
