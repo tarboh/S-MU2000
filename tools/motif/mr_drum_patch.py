@@ -41,7 +41,7 @@ def common_lines(b):
         d = __import__("mr_params").decode_rows(rows[rk], b[blk])
         vals = [d["type"]] + [d.get("param%d" % i, 0) for i in range(1, 17)]
         if key in ("reverb", "chorus"):
-            vals += [d.get("return", 96), 127]           # 送りは鍵ごと（rsend・csend）なので、リバーブ・コーラスは送り 127 で作る
+            vals += [d.get("return", 96), 127, d.get("pan", 64)]   # 送りは鍵ごと（rsend・csend）なので、リバーブ・コーラスは送り 127 で作る。20 個目はパン
         fx[key] = ",".join(str(x) for x in vals)
         if key == "chorus":
             fx["chorev"] = d.get("send_to_reverb", 0)              # コーラスからリバーブへの送り（46 02 00 の 0x24）

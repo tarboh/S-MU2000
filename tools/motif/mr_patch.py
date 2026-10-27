@@ -100,7 +100,7 @@ def main():
             continue
         vals = [b["type"]] + [b.get("param%d" % i, 0) for i in range(1, 17)]
         if key in ("reverb", "chorus"):
-            vals += [b.get("return", 96), v["common"].get("%s_send" % key, 0)]
+            vals += [b.get("return", 96), v["common"].get("%s_send" % key, 0), b.get("pan", 64)]     # 20 個目は Return のパン（0x23）
         fx[key] = ",".join(str(x) for x in vals)
     fx["chorev"] = v.get("chorus", {}).get("send_to_reverb", 0)      # コーラスからリバーブへの送り（40 02 00 の 0x24）
     fx["connect"] = v.get("insertion_connect", {}).get("insertion_connect_type", 0)

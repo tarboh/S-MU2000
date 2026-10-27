@@ -330,7 +330,7 @@ inline bool config_from_bulk(const std::map<std::array<int, 3>, std::vector<unsi
 		std::string t = num(v2(0));
 		for (int i = 1; i <= 16; i++)
 			t += "," + num(v2(size_t(2 * i)));
-		t += "," + num(d.size() > 34 ? d[34] : 96) + ",127";
+		t += "," + num(d.size() > 34 ? d[34] : 96) + ",127," + num(d.size() > 35 ? d[35] : 64);     // Return・送り・パン（0x23）
 		return t;
 	};
 	if (const auto *rv = get(0x36, 0x01, 0x00))

@@ -30,7 +30,7 @@ BANKS = {(63, 0): ("00", "PRE1"), (63, 1): ("01", "PRE2"), (63, 2): ("02", "PRE3
 
 def fx_line(b, key, rows):
     d = mr_params.decode_rows(rows, b[key])
-    vals = [d["type"]] + [d.get("param%d" % i, 0) for i in range(1, 17)] + [d.get("return", 96), 127]
+    vals = [d["type"]] + [d.get("param%d" % i, 0) for i in range(1, 17)] + [d.get("return", 96), 127, d.get("pan", 64)]   # 20 個目は Return のパン
     return ",".join(str(x) for x in vals)
 
 

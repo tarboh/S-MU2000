@@ -185,6 +185,7 @@ public:
 		}
 		if (len == 0)
 			return false;
+		motif_fx::return_pan(false, rv.pan, pgl, pgr);
 		std::vector<double> hl(len), hr(len);
 		for (size_t i = 0; i < len; i++) {
 			hl[i] = ir.L[i] * g;
@@ -201,14 +202,14 @@ public:
 	void tick(double l, double r, double &ol, double &orr, double xl = 0, double xr = 0)
 	{
 		const double x = in_x != 0.0 ? (l + r) / 2 * in_dry + (xl + xr) / 2 * in_x : (l + r) / 2;
-		ol = cl.tick(x);
-		orr = cr.tick(x);
+		ol = cl.tick(x) * pgl;
+		orr = cr.tick(x) * pgr;
 	}
 	bool takes_chorus() const { return in_x != 0.0; }
 
 private:
 	bool active_ = false;
-	double in_dry = 1.0, in_x = 0.0;
+	double in_dry = 1.0, in_x = 0.0, pgl = 1.0, pgr = 1.0;     // Return のパン（motif_fx::return_pan）
 	conv_rt cl, cr;
 };
 
@@ -1427,6 +1428,7 @@ public:
 		if (ch.send == 0)
 			return false;
 		t = 0;
+		motif_fx::return_pan(true, ch.pan, pgl, pgr);
 		if (motif_fx::chorus_type(ch)) {
 			kind = 1;
 			ring.assign(1 << 16, 0.0);
@@ -1475,7 +1477,7 @@ public:
 				const size_t i = size_t(pos);
 				const double fr = pos - double(i);
 				const double x0 = ring[i & mask], x1 = i + 1 <= t ? ring[(i + 1) & mask] : x0;
-				(c == 0 ? ol : orr) += (x0 + (x1 - x0) * fr) * g;
+				(c == 0 ? ol : orr) += (x0 + (x1 - x0) * fr) * g * (c == 0 ? pgl : pgr);
 				if (pl)
 					*(c == 0 ? pl : pr) += (x0 + (x1 - x0) * fr) * gp;
 			}
@@ -1485,8 +1487,8 @@ public:
 			double L = l * gi, R = r * gi;
 			const double dl = L, dr = R;
 			bk.tick(L, R);
-			ol = (L - dl) * go;
-			orr = (R - dr) * go;
+			ol = (L - dl) * go * pgl;
+			orr = (R - dr) * go * pgr;
 			if (pl) {
 				*pl = L - dl;
 				*pr = R - dr;
@@ -1498,7 +1500,7 @@ private:
 	int kind = 0;
 	size_t t = 0;
 	std::vector<double> ring;
-	double hz = 0, depth = 0, off = 0, g = 0, gp = 0, gi = 0, go = 0;
+	double hz = 0, depth = 0, off = 0, g = 0, gp = 0, gi = 0, go = 0, pgl = 1.0, pgr = 1.0;
 	int skip = 0;
 	block_rt bk;
 };

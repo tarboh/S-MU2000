@@ -143,6 +143,7 @@ struct block {
 	int msb = 0, lsb = 0;
 	int p[17] = {0};          // p[1]..p[16]
 	int ret = 96, send = 0;
+	int pan = 64;             // リバーブ・コーラスの Return のパン（40 01 00・40 02 00 の 0x23）。fx の値の 20 個目
 	double pfine[17] = {0};   // Pitch Change 2 から Pitch Change 1 の模型へ渡す、小数の Fine
 	bool use_pfine = false;
 	bool is(int m, int l) const { return msb == m && lsb == l; }
@@ -170,7 +171,34 @@ inline block parse_block(const std::string &s)
 		b.ret = v[17];
 	if (v.size() > 18)
 		b.send = v[18];
+	if (v.size() > 19)
+		b.pan = v[19];
 	return b;
+}
+
+// リバーブ・コーラスの Return のパン（2026-10-28、tools/motif/mr_fx_pan.py。サインの雛形で、リバーブの尾・コーラスの wet の左右の大きさ）。
+// リバーブは左右の和を保つ sin/cos（左に √2·cos θ、右に √2·sin θ、θ = (パン − 1) / 126 × π/2）: 1 で左 +3.22dB・右は無音、32 で +2.51・−5.54dB。
+// コーラスは違う形で、1・32・64・96・127 の左が +1.17・+1.03・0・−4.55・−42.44dB、右が −36.48・−3.68・0・+1.16・+1.17dB。点の間は dB で直線。
+// 64 は 1（掛けない）
+inline void return_pan(bool chorus, int pan, double &gl, double &gr)
+{
+	gl = gr = 1.0;
+	if (pan == 64)
+		return;
+	const int p = pan < 1 ? 1 : pan > 127 ? 127 : pan;
+	if (!chorus) {
+		const double th = (p - 1) / 126.0 * PI / 2;
+		gl = std::sqrt(2.0) * std::cos(th);
+		gr = std::sqrt(2.0) * std::sin(th);
+		return;
+	}
+	static const double P[5] = {1, 32, 64, 96, 127}, DL[5] = {1.17, 1.03, 0, -4.55, -42.44}, DR[5] = {-36.48, -3.68, 0, 1.16, 1.17};
+	int i = 0;
+	while (i < 3 && p > P[i + 1])
+		i++;
+	const double t = (p - P[i]) / (P[i + 1] - P[i]);
+	gl = std::pow(10.0, (DL[i] + t * (DL[i + 1] - DL[i])) / 20);
+	gr = std::pow(10.0, (DR[i] + t * (DR[i + 1] - DR[i])) / 20);
 }
 
 // ---- 読み込み（.irx・.dsx） ----
@@ -292,9 +320,11 @@ inline void reverb(const buf &L, const buf &R, const block &rv, const std::strin
 	for (size_t i = 0; i < x.size(); i++)
 		x[i] = (L[i] + R[i]) / 2;
 	const buf wL = convolve(x, ir.L, len), wR = convolve(x, ir.R, len);
+	double pgl, pgr;
+	return_pan(false, rv.pan, pgl, pgr);
 	for (size_t i = 0; i < len; i++) {
-		oL[i] += wL[i] * g;
-		oR[i] += wR[i] * g;
+		oL[i] += wL[i] * g * pgl;
+		oR[i] += wR[i] * g * pgr;
 	}
 }
 
@@ -318,6 +348,8 @@ inline void chorus(const buf &L, const buf &R, const block &ch, buf &oL, buf &oR
 	const double depth = 0.176 * ch.p[2] / 1000 * FS;
 	const double off = MOD_DELAY_MS[std::min(127, ch.p[4])] / 1000 * FS;
 	const double g = 2.06 * ch.ret / 96.0 * ch.send / 127.0;
+	double pgl, pgr;
+	return_pan(true, ch.pan, pgl, pgr);
 	const size_t n = L.size();
 	for (size_t t = 0; t < n; t++) {
 		double ph = std::fmod(double(t) * hz / FS, 1.0);
@@ -330,7 +362,7 @@ inline void chorus(const buf &L, const buf &R, const block &ch, buf &oL, buf &oR
 			const size_t i = size_t(pos);
 			const double fr = pos - double(i);
 			const double a = (L[i] + R[i]) / 2, b = i + 1 < n ? (L[i + 1] + R[i + 1]) / 2 : a;
-			(c == 0 ? oL : oR)[t] += (a + (b - a) * fr) * g;
+			(c == 0 ? oL : oR)[t] += (a + (b - a) * fr) * g * (c == 0 ? pgl : pgr);
 		}
 	}
 }
@@ -1586,9 +1618,11 @@ inline void system_chorus(const buf &L, const buf &R, const block &ch, buf &oL, 
 	const buf dL = wL, dR = wR;
 	apply_block(wL, wR, ch, fxddir, tempo);
 	const bool wet = SYSCHO_WET;
+	double pgl, pgr;
+	return_pan(true, ch.pan, pgl, pgr);
 	for (size_t i = 0; i < n; i++) {
-		oL[i] += (wL[i] - (wet ? dL[i] : 0.0)) * go;
-		oR[i] += (wR[i] - (wet ? dR[i] : 0.0)) * go;
+		oL[i] += (wL[i] - (wet ? dL[i] : 0.0)) * go * pgl;
+		oR[i] += (wR[i] - (wet ? dR[i] : 0.0)) * go * pgr;
 	}
 }
 
