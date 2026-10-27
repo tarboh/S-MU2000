@@ -39,6 +39,7 @@ struct sample {
 	int key = 60;                 // 録った鍵
 	double stretch = 1.0;         // 切り出しのときの伸び縮み（録った鍵の高さで鳴らすには、1 サンプルあたり 1 / stretch 進む）
 	bool stereo = false;          // 左右が違う（ステレオの波形）。パンは左右を別々の位置に置く
+	bool rom_grid = false;        // 実機が読む元のサンプルの格子に組み直したもの（tools/motif/mr_romgrid.py）。実機と同じ 3 次ラグランジュで読む
 
 	void pack()
 	{
@@ -523,14 +524,27 @@ struct voice {
 		const sample &s = *smp;
 		const long i = long(std::floor(pos));
 		const double t = pos - i;
-		// 4 点のエルミート補間。モノラルの波形は 1 本を補間して左右に同じものを使う
+		// 4 点の補間。モノラルの波形は 1 本を補間して左右に同じものを使う。
+		// 元の格子に組み直したサンプルは、実機（SWP30 と同じ）の 3 次ラグランジュ: −y0·f0(1−t) + y1·f1(1−t) + y2·f1(t) − y3·f0(t)、
+		// f0(t) = (t − t³)/6、f1(t) = t + (t² − t³)/2。下げて鳴らしたときの像の大きさが実機と 0.1〜0.4dB で合う（2026-10-28、mr_romgrid.py）。
+		// 44.1kHz の録音のままのサンプルは 4 点のエルミート（Catmull-Rom）
 		long ix[4];
 		for (int k = 0; k < 4; k++)
 			ix[k] = index_of(s, i - 1 + k);
+		double w[4];
+		if (s.rom_grid) {
+			const double u = 1 - t;
+			w[0] = -(u - u * u * u) / 6;
+			w[1] = u + (u * u - u * u * u) / 2;
+			w[2] = t + (t * t - t * t * t) / 2;
+			w[3] = -(t - t * t * t) / 6;
+		}
 		auto herm = [&](int ch) {
 			double y[4];
 			for (int k = 0; k < 4; k++)
 				y[k] = ix[k] < 0 ? 0.0 : double(ch ? s.right(size_t(ix[k])) : s.left(size_t(ix[k])));
+			if (s.rom_grid)
+				return w[0] * y[0] + w[1] * y[1] + w[2] * y[2] + w[3] * y[3];
 			const double c1 = 0.5 * (y[2] - y[0]), c2 = y[0] - 2.5 * y[1] + 2 * y[2] - 0.5 * y[3], c3 = 0.5 * (y[3] - y[0]) + 1.5 * (y[1] - y[2]);
 			return ((c3 * t + c2) * t + c1) * t + y[1];
 		};

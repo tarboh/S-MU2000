@@ -81,6 +81,7 @@ inline bool load_smpx(const std::string &path, sample &s)
 	s.loop_start = geti(m, "loop_start", -1);
 	s.loop_length = geti(m, "loop_length", 0);
 	s.stretch = m.count("stretch") ? std::atof(m.at("stretch").c_str()) : 1.0;
+	s.rom_grid = m.count("grid") && m.at("grid") == "rom";
 	const int n = geti(m, "frames", 0);
 	std::vector<float> buf(size_t(n) * 2);
 	const size_t got = std::fread(buf.data(), sizeof(float), buf.size(), f);
