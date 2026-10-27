@@ -539,11 +539,15 @@ public:
 	}
 
 	// パートの音色を v と入れ替える（mtx の中で）。前の音色は v に残るので、mtx の外で捨てる。コントローラーの値は引き継ぐ
+	// （プログラムチェンジのすぐあとに来た CC73・75・72 などは、読み終わる前の前の音色が受けている。ドラムキットは読むのに時間がかかるので、
+	// 引き継がないと曲の頭の EG のずらしが全部消えていた）
 	static void swap_voice(part &P, part_voice &v)
 	{
-		if (P.eg && v.eg)
+		if (P.eg && v.eg) {
 			for (int s = 0; s < 16; s++)
 				v.eg->set_source(s, P.eg->source(s));
+			v.eg->take_controls(*P.eg);
+		}
 		std::swap(P.pt, v.pt);
 		std::swap(P.eg, v.eg);
 		std::swap(P.ins, v.ins);

@@ -293,6 +293,23 @@ public:
 		off_cutoff = off_reso = off_atk = off_dec = off_rel = 0;
 		apply_ctl();
 	}
+	// マルチのパートの音色を替えたとき、前の音色が受けた CC（5・65・10・71〜75・126・127）と RPN のベンド幅を引き継ぐ。
+	// 鳴らし方（モノ・ポルタメント・ベンド幅）はどちらもパートの設定で上書きしてあるので、違っていれば CC か RPN で変えたもの
+	void take_controls(const engine &o)
+	{
+		off_cutoff = o.off_cutoff;
+		off_reso = o.off_reso;
+		off_atk = o.off_atk;
+		off_dec = o.off_dec;
+		off_rel = o.off_rel;
+		pan_off = o.pan_off;
+		ptime = o.ptime;
+		porta = o.porta;
+		mono = o.mono;
+		pbup = o.pbup;
+		pbdown = o.pbdown;
+		apply_ctl();
+	}
 
 	// 同時に鳴らすエレメントの数の上限（実機は 128。motif_play では画面で増やせる）
 	void set_polyphony(int n) { polyphony = std::max(1, n); }
