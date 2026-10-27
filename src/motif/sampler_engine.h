@@ -177,6 +177,8 @@ struct engine_options {
 	long seed = -1;          // ランダムパン・ランダムピッチの種（負なら振らない）
 	int pan_offset = 0;      // マルチのパートのパン − 64（エレメントのパンに足す）
 	bool fixed_pan = false;  // マルチのパートの Voice Pan off: エレメントのパンを使わず中央にする
+	// マルチのパートのずらし（37 pp 17・18・23・25・26、パラメーターの目盛りにしたもの）。CC74・71・73・75・72 のずれに足す
+	int part_cutoff = 0, part_reso = 0, part_atk = 0, part_dec = 0, part_rel = 0;
 };
 
 // 区間のサンプルは、同じファイルなら音色（エンジン）をまたいで 1 つを使い回す（マルチで同じ波形のパートが並んでも、メモリを食わない）
@@ -200,7 +202,8 @@ class engine {
 public:
 	using options = engine_options;
 
-	explicit engine(const patch &p, options o = options()) : pt(p), rng(o.seed < 0 ? 0u : unsigned(o.seed)), seed(o.seed), nidx(o.note_index), pan_off(o.pan_offset), fixed_pan(o.fixed_pan)
+	explicit engine(const patch &p, options o = options()) : pt(p), rng(o.seed < 0 ? 0u : unsigned(o.seed)), seed(o.seed), nidx(o.note_index), pan_off(o.pan_offset), fixed_pan(o.fixed_pan),
+		p_cutoff(o.part_cutoff), p_reso(o.part_reso), p_atk(o.part_atk), p_dec(o.part_dec), p_rel(o.part_rel)
 	{
 		std::istringstream ss(pt.ctrlline.count("sets") ? pt.ctrlline.at("sets") : "");
 		std::string t;
@@ -569,6 +572,7 @@ private:
 	int pbup = 66, pbdown = 62;
 	// チャンネルの CC のずれ（値 − 64）: 74 明るさ（カットオフ）・71 レゾナンス・73 アタック・75 ディケイ・72 リリース
 	int off_cutoff = 0, off_reso = 0, off_atk = 0, off_dec = 0, off_rel = 0;
+	int p_cutoff = 0, p_reso = 0, p_atk = 0, p_dec = 0, p_rel = 0;      // マルチのパートのずらし（engine_options）
 	int last_key = -1;                       // いちばん最後に鳴らした鍵（ポルタメントの出どころ）
 	std::vector<int> held_stack;             // モノで押さえている鍵の並び（後が新しい）
 	size_t started = 0;
@@ -726,8 +730,8 @@ private:
 			if (pb != 64)
 				m.cents += pb > 64 ? (pb - 64) / 63.0 * (pbup - 64) * 100.0 : (pb - 64) / 64.0 * (64 - pbdown) * 100.0;
 			// CC74・CC71: カットオフ・レゾナンスの値に足す（頭打ちはフィルターの側で 0〜255・0〜127）
-			m.cutoff += off_cutoff;
-			m.reso += off_reso;
+			m.cutoff += off_cutoff + p_cutoff;
+			m.reso += off_reso + p_reso;
 			voices[vi].cm = m;
 		}
 	}
@@ -915,13 +919,13 @@ private:
 			p.aeg.level[i] = al[i];
 		if (at.empty())
 			p.aeg.time[3] = geti(e.f, "release");
-		// CC73・CC75・CC72 のずれ（アタック・ディケイ 1 と 2・リリース）
-		if (off_atk || off_dec || off_rel) {
+		// CC73・CC75・CC72 のずれ（アタック・ディケイ 1 と 2・リリース）と、マルチのパートのずらし
+		if (off_atk || off_dec || off_rel || p_atk || p_dec || p_rel) {
 			auto cl = [](int v) { return std::max(0, std::min(127, v)); };
-			p.aeg.time[0] = cl(p.aeg.time[0] + off_atk);
-			p.aeg.time[1] = cl(p.aeg.time[1] + off_dec);
-			p.aeg.time[2] = cl(p.aeg.time[2] + off_dec);
-			p.aeg.time[3] = cl(p.aeg.time[3] + off_rel);
+			p.aeg.time[0] = cl(p.aeg.time[0] + off_atk + p_atk);
+			p.aeg.time[1] = cl(p.aeg.time[1] + off_dec + p_dec);
+			p.aeg.time[2] = cl(p.aeg.time[2] + off_dec + p_dec);
+			p.aeg.time[3] = cl(p.aeg.time[3] + off_rel + p_rel);
 		}
 		p.aeg.time_vel_sens = geti(e.f, "aegtv", 64);
 		p.aeg.time_vel_segment = geti(e.f, "aegtvs", 4);

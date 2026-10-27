@@ -9,7 +9,8 @@
 // 音色は画面の糸で読んでから入れ替える（読む間は前の音色が鳴る）。
 // インサーションを掛けるパートは、画面でパートごとに入り切りできる（set_part_ins・sync_ins）。実機の「8 パートまで」は外した。
 // パートの EQ（37 pp 2E〜38）はインサーションのあとで掛ける（swp50_eq::part_eq）。
-// まだ無いもの: パートのフィルターと EG のずらし・デチューン、マスター EQ・マスターエフェクト、
+// パートのカットオフ・レゾナンス・AEG の時間のずらし（37 pp 17・18・23・25・26）は engine_options で足す。
+// まだ無いもの: パートの AEG のサステイン・FEG のずらし（22・27〜2C）・デチューン、マスター EQ・マスターエフェクト、
 // コーラスからリバーブへの送り、パートの出口の割り当て。ベロシティの効き（深さ × 値 / 64 + オフセット − 64）は Data List の説明からで、実機では測っていない。
 #pragma once
 
@@ -386,6 +387,14 @@ public:
 		motif_sampler::engine_options o;
 		o.pan_offset = pan - 64;
 		o.fixed_pan = pc.get("voicepan", 1) == 0;
+		// パートのフィルター・AEG のずらし。ノイズの音色で CC74・71 を細かく動かした音と比べると、パートの 1 目盛りはカットオフで CC の約 1.2 倍
+		// （パラメーターの 2.4 目盛り）、レゾナンスで約 0.8 倍（1.6 目盛り）。AEG の時間は CC73・75・72 と見分けが付かなかったので同じ 2 目盛り
+		// （tools/motif/mr_part_offset.py、2026-10-27。ノイズの揺れで 1 点ごとに ±0.2 倍ほどばらつく）
+		o.part_cutoff = int(std::lround(2.4 * (pc.get("cutoff", 64) - 64)));
+		o.part_reso = int(std::lround(1.6 * (pc.get("reso", 64) - 64)));
+		o.part_atk = 2 * (pc.get("aeg_atk", 64) - 64);
+		o.part_dec = 2 * (pc.get("aeg_dec", 64) - 64);
+		o.part_rel = 2 * (pc.get("aeg_rel", 64) - 64);
 		v.pt = std::move(pt);
 		v.eg = std::make_unique<motif_sampler::engine>(*v.pt, o);
 		v.eg->preload();
