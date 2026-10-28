@@ -40,6 +40,7 @@ struct sample {
 	double stretch = 1.0;         // 切り出しのときの伸び縮み（録った鍵の高さで鳴らすには、1 サンプルあたり 1 / stretch 進む）
 	bool stereo = false;          // 左右が違う（ステレオの波形）。パンは左右を別々の位置に置く
 	bool rom_grid = false;        // 実機が読む元のサンプルの格子に組み直したもの（tools/motif/mr_romgrid.py）。実機と同じ 3 次ラグランジュで読む
+	double start = 0;             // 鳴らし始める位置（元の格子では、録音の頭が 1 + 端数の所に来る）
 
 	void pack()
 	{
@@ -411,7 +412,7 @@ struct voice {
 	void start(const sample &s, const element_params &ep, int n, int v)
 	{
 		smp = &s; p = ep; note = n; velocity = v;
-		pos = 0; step = step_for(s, n, p.coarse, p.fine);
+		pos = s.start; step = step_for(s, n, p.coarse, p.fine);
 		tick = 0;
 		on = true; released = false; done = false; quiet = 0;
 		p.aeg.key = n;
