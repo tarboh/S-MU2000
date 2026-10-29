@@ -562,7 +562,7 @@ struct player {
 					arp_out(evs[e].type, evs[e].a, evs[e].b);
 			}
 			if (cur && use_ins)
-				motif_multi::sync_ins_ctrl(*cur->eg, cur->pt, cur->ins);    // MW などでインサーションのパラメーターを動かす（Dual Rotor の速さ）
+				motif_multi::sync_ins_ctrl(*cur->eg, cur->ins);    // MW などでインサーションのパラメーターを動かす
 			for (int j = 0; j < n; j++) {
 				// 共通の音量まで掛けたドライに、リバーブとコーラスの枠の wet を足し、パートの音量（CC7・CC11）と全体の音量を掛ける
 				double dl = 0, dr = 0;

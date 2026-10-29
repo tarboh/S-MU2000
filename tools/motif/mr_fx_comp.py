@@ -22,6 +22,7 @@ import mr_params
 import mr_ref
 
 LEVELS = (127, 112, 96, 80, 64, 48, 32, 16)
+CC_REST = {16: 64, 17: 64}                  # 中心のあるつまみ（AS1・AS2）は 64 に戻す。ほかの CC は 0
 FS = 44100
 
 
@@ -128,7 +129,7 @@ def main():
             r.param(0x40, 0x05, 0x01, dst >> 7, dst & 0x7F)
             r.param(0x40, 0x05, 0x03, dep)
         for c, _ in {(c, 0) for _, c, _ in ccs}:
-            r.cc(c, 0)
+            r.cc(c, CC_REST.get(c, 0))
         time.sleep(0.3)
         for off, v in sets:
             r.param(0x40, 0x03, off, *v)
@@ -168,7 +169,7 @@ def main():
         try:
             r.el(0, 0x41, 0x16, 0)
             for c, _ in {(c, 0) for _, c, _ in ccs}:
-                r.cc(c, 0)
+                r.cc(c, CC_REST.get(c, 0))
             r.all_off()
             r.mode(3)
         finally:

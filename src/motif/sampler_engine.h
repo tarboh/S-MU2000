@@ -252,17 +252,19 @@ public:
 		apply_ctl();
 	}
 	int source(int src) const { return srcval[std::max(0, std::min(15, src))]; }
-	// インサーションのパラメーターへのずらしのもと（行き先 4〜19 = INS1（A）の P1〜16、20〜35 = INS2（B））: (深さ − 64) × ソース
-	// （ソースは 0〜1、中心のあるものは −1〜1）。値への目盛り（× 4 / 127）は motif_multi::sync_ins_ctrl
-	double ins_offset(int dest) const
+	// インサーションのパラメーターへのずらしのもと（行き先 4〜19 = INS1（A）の P1〜16、20〜35 = INS2（B））: Σ 深さ' × ソース'。
+	// 深さ' = 深さ − 64（±63 は ±64）、ソース' = 値（127 だけ 128）、中心のあるものは 2 × (値 − 64)（±63 は ±64。AS1 の 1 は 0 と同じだけ下がった）。
+	// 値への目盛り（× 値の数 / 4096 を 0 の側へ切り捨て）は motif_fx_rt::insertion_rt::set_ctrl（実機で測った式）
+	int ins_offset(int dest) const
 	{
-		double off = 0;
+		auto ends = [](int x) { return x == 63 ? 64 : x == -63 ? -64 : x; };
+		int off = 0;
 		for (size_t k = 0; k < sets.size() && k < 6; k++) {
 			const cset &c = sets[k];
 			if (c.dest != dest || c.depth == 64 || c.src < 0 || c.src > 15)
 				continue;
 			const int v = srcval[c.src];
-			off += (c.depth - 64) * (bipolar(c.src) ? (v - 64) / 64.0 : v / 127.0);
+			off += ends(c.depth - 64) * (bipolar(c.src) ? 2 * ends(v - 64) : v == 127 ? 128 : v);
 		}
 		return off;
 	}

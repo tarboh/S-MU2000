@@ -4,7 +4,7 @@
 // * たたみ込み（conv_rt）: 頭の 128 タップはそのまま、4096 タップまでは 128 ずつ、その後ろは 4096 ずつに分けた FFT で掛ける。遅れは出ない
 // * リバーブ: 応答（fx/reverb_*.irx、Table 4 の型は reshape で残響の長さを合わせる）は sampler_fx.h の reverb と同じ。絶対値の合計で 1e-6 ぶんの尾は切る
 // * コーラスの枠: コーラスの型（05 系）は chorus と同じ揺れる遅れ、Cross Delay（02 30・02 60）は cross_delay の wet（出口 − 入れた音）
-// * インサーションとコーラスの枠のほかの型（block_rt）: 3 Band EQ・2 Band EQ・Harmonic Enhancer（周波数応答から作ったインパルス応答のたたみ込み）、
+// * インサーションとコーラスの枠のほかの型（block_rt）: 3 Band EQ・2 Band EQ・Harmonic Enhancer（式どおりの IIR。2026-10-30 まではたたみ込み）、
 //   Cross Delay、コンプ、インサーションのコーラス、フランジャー、Ensemble Detune、歪み（09 00・01・10・20・30・31。録った応答 → 頭打ち → LPF）、
 //   LTI（ディレイ・リバーブ系などプリセットの組のまま録った応答、fxlti）、揺れる型（フェイザー・ワウなどの .ltv、Touch Wah の .dyn、
 //   Tremolo・Rotary などの .mod。ltv_rt・mod_rt、オフラインとは少し違う）。インサーションの組（エレメントのスイッチ 0・1・2）とつなぎ方は
@@ -15,7 +15,11 @@
 #include "sampler_fx.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <map>
+#include <mutex>
+#include <string>
 #include <vector>
 
 namespace motif_fx_rt {
@@ -218,6 +222,15 @@ class cross_delay_rt {
 public:
 	void init(const block &b, int tempo)
 	{
+		lr_in.clear();
+		rl_in.clear();
+		set(b, tempo);
+		plr = prl = 0;
+		t = 0;
+	}
+	// 値だけ替える（覚えている音は残す。遅れが今の輪より長くなったときだけ輪を作り直す）
+	void set(const block &b, int tempo)
+	{
 		d1 = std::max<size_t>(1, size_t(std::lround(b.p[1] * 0.1e-3 * FS)));
 		d2 = std::max<size_t>(1, size_t(std::lround(b.p[2] * 0.1e-3 * FS)));
 		if (tempo > 0) {
@@ -235,13 +248,13 @@ public:
 			gd = std::cos(motif_fx::PI / 2 * (v - 1) / 126.0);
 			gw = std::sin(motif_fx::PI / 2 * (v - 1) / 126.0);
 		}
-		size_t sz = 1;
+		size_t sz = size_t(1) << 17;
 		while (sz < std::max(d1, d2) + 2)
 			sz <<= 1;
-		lr_in.assign(sz, 0.0);
-		rl_in.assign(sz, 0.0);
-		plr = prl = 0;
-		t = 0;
+		if (lr_in.size() < sz) {
+			lr_in.assign(sz, 0.0);
+			rl_in.assign(sz, 0.0);
+		}
 	}
 	void tick(double &L, double &R)
 	{
@@ -932,6 +945,17 @@ struct iir2 {
 		const double K = std::tan(motif_fx::PI * fc / FS), nn = 1 / (1 + K / q + K * K);
 		b0 = K * K * nn, b1 = 2 * b0, b2 = b0, a1 = 2 * (K * K - 1) * nn, a2 = (1 - K / q + K * K) * nn;
 	}
+	// Butterworth の 2 次の HPF（s² / (s² + √2 s + 1)、角 fc で前ゆがみ）
+	void hpf(double fc)
+	{
+		const double K = std::tan(motif_fx::PI * fc / FS), nn = 1 / (1 + std::sqrt(2.0) * K + K * K);
+		b0 = nn, b1 = -2 * nn, b2 = nn, a1 = 2 * (K * K - 1) * nn, a2 = (1 - std::sqrt(2.0) * K + K * K) * nn;
+	}
+	// (n0 + n1 z⁻¹ + n2 z⁻²) / (d0 + d1 z⁻¹ + d2 z⁻²)。係数だけ替え、覚えている音（s1・s2）は残す
+	void set(double n0, double n1, double n2, double d0, double d1, double d2)
+	{
+		b0 = n0 / d0, b1 = n1 / d0, b2 = n2 / d0, a1 = d1 / d0, a2 = d2 / d0;
+	}
 	double tick(double x)
 	{
 		const double y = b0 * x + s1;
@@ -941,31 +965,103 @@ struct iir2 {
 	}
 };
 
+// 3 Band EQ・2 Band EQ（eq3・eq2 と同じ式の IIR。2026-10-30 まではその周波数応答から作った 4096 タップのたたみ込み）。
+// set は係数だけ替えるので、鳴っている途中でつまみで値が動いても音が途切れない
+class eq_iir {
+public:
+	void set(const block &b, bool three)
+	{
+		n = 0;
+		auto shelf = [&](bool low, double f0, double g) {
+			const double A = std::pow(10.0, g / 20), K = std::tan(motif_fx::PI * std::min(f0, FS * 0.49) / FS), r = std::sqrt(A);
+			for (int c = 0; c < 2; c++)
+				low ? s[n][c].set(K * r + 1, K * r - 1, 0, K / r + 1, K / r - 1, 0) : s[n][c].set(r + K, K - r, 0, 1 / r + K, K - 1 / r, 0);
+			n++;
+		};
+		if (three) {
+			if (b.p[1] != 64)
+				shelf(true, motif_fx::t3(b.p[6]) * std::sqrt(2.0), b.p[1] - 64);
+			if (b.p[5] != 64)
+				shelf(false, motif_fx::t3(b.p[7]) / std::sqrt(2.0), b.p[5] - 64);
+			const int g = b.p[3] - 64;
+			if (g != 0) {
+				const double A = std::pow(10.0, g / 20.0), w = 2 * motif_fx::PI * motif_fx::t3(b.p[2]) / FS;
+				const double al = std::sin(w) / (2 * std::max(0.1, b.p[4] / 10.0)), c = std::cos(w);
+				double n0 = 1 + al, n2 = 1 - al, d0 = 1 + al, d2 = 1 - al;
+				if (g > 0) {
+					n0 = 1 + al * A; n2 = 1 - al * A;
+				} else {
+					d0 = 1 + al / A; d2 = 1 - al / A;
+				}
+				for (int ch = 0; ch < 2; ch++)
+					s[n][ch].set(n0, -2 * c, n2, d0, -2 * c, d2);
+				n++;
+			}
+		} else
+			for (int band = 0; band < 2; band++) {
+				const int g = b.p[band == 0 ? 2 : 4] - 64;
+				if (g == 0)
+					continue;
+				const double r = std::sqrt(std::pow(10.0, std::abs(g) / 20.0));
+				shelf(band == 0, motif_fx::t3(b.p[band == 0 ? 1 : 3]) * (band == 0 ? r : 1 / r), g);
+			}
+	}
+	void tick(double &L, double &R)
+	{
+		for (int k = 0; k < n; k++) {
+			L = s[k][0].tick(L);
+			R = s[k][1].tick(R);
+		}
+	}
+
+private:
+	int n = 0;
+	iir2 s[3][2];
+};
+
+// エフェクトのパラメーターの値の幅（capture/fx_params.txt。Data List の Effect Parameter List から取ったもの）。型の番号（MSB × 128 + LSB）→ パラメーター 1〜16。
+// Hall 1〜Plate は、コーラス・インサーションの枠では番号 + 100000 の行。読めなければ空（0〜127 として扱う）
+struct prange {
+	int min = 0, max = 127;
+	std::string name;
+};
+using ptable = std::map<int, std::array<prange, 17>>;
+inline const ptable &param_table(const std::string &path)
+{
+	static std::mutex mtx;
+	static std::map<std::string, ptable> cache;
+	std::lock_guard<std::mutex> lk(mtx);
+	auto it = cache.find(path);
+	if (it != cache.end())
+		return it->second;
+	ptable &t = cache[path];
+	if (FILE *f = std::fopen(path.c_str(), "rb")) {
+		char line[512];
+		while (std::fgets(line, sizeof line, f)) {
+			int code = 0, no = 0, lo = 0, hi = 0, n = 0;
+			if (line[0] == '#' || std::sscanf(line, "%d %d %d %d %n", &code, &no, &lo, &hi, &n) < 4 || no < 1 || no > 16)
+				continue;
+			std::string name = line + n;
+			name = name.substr(0, name.find('|'));
+			t[code][no] = {lo, hi, name};
+		}
+		std::fclose(f);
+	}
+	return t;
+}
+
 // Lo-Fi（0D 00）を 1 サンプルずつ（オフラインの lofi と同じ）: 20.5Hz の 1 次の HPF → 2 次の Pre-LPF → 標本化の間引き → スルーレートの制限（語長）→
 // Filter Type の録った応答 → Output Gain → 元の音 cos・wet sin。2026-10-30 まではその場では素通しだった（プリセットの 22 音色）
 class lofi_rt {
 public:
 	void init(const block &b, const std::string &lfdir)
 	{
-		stereo = b.p[15] == 1;
-		k = b.p[1] + 1;
-		const double fc = std::min(motif_fx::t3(b.p[4]), FS * 0.49), q = std::max(1, b.p[6]) / 10.0;
 		for (int c = 0; c < 2; c++) {
 			hp[c] = iir1();
 			hp[c].hpf(20.5);
 			lp[c] = iir2();
-			lp[c].lpf(fc, q);
 			v[c] = prev[c] = acc[c] = held[c] = 0;
 		}
-		slew = 0;
-		if (b.p[2] < 127) {
-			static const double wx[8] = {1, 2, 4, 8, 16, 32, 64, 96}, wy[8] = {0.00209, 0.00222, 0.00248, 0.00300, 0.00405, 0.00614, 0.01279, 0.02606};
-			double ly[8];
-			for (int i = 0; i < 8; i++)
-				ly[i] = std::log(wy[i]);
-			slew = std::exp(motif_fx::interp(wx, ly, 8, b.p[2])) * std::exp2(b.p[7]);
-		}
-		a = b.p[8] ? 0.88 : 0.0;
 		has_h = false;
 		if (b.p[5] >= 1 && b.p[5] <= 5)
 			if (FILE *f = std::fopen((lfdir + "/lofi_type" + std::to_string(b.p[5]) + ".ir").c_str(), "rb")) {
@@ -979,11 +1075,30 @@ public:
 					has_h = true;
 				}
 			}
+		set(b);
+		t = 0;
+	}
+	// 値だけ替える（覚えている音は残す。Filter Type（p5）の応答は init のときのまま）
+	void set(const block &b)
+	{
+		stereo = b.p[15] == 1;
+		k = b.p[1] + 1;
+		const double fc = std::min(motif_fx::t3(b.p[4]), FS * 0.49), q = std::max(1, b.p[6]) / 10.0;
+		for (int c = 0; c < 2; c++)
+			lp[c].lpf(fc, q);
+		slew = 0;
+		if (b.p[2] < 127) {
+			static const double wx[8] = {1, 2, 4, 8, 16, 32, 64, 96}, wy[8] = {0.00209, 0.00222, 0.00248, 0.00300, 0.00405, 0.00614, 0.01279, 0.02606};
+			double ly[8];
+			for (int i = 0; i < 8; i++)
+				ly[i] = std::log(wy[i]);
+			slew = std::exp(motif_fx::interp(wx, ly, 8, b.p[2])) * std::exp2(b.p[7]);
+		}
+		a = b.p[8] ? 0.88 : 0.0;
 		g = std::pow(10.0, (b.p[3] - 6) / 20.0);
 		const int vv = std::max(1, b.p[10]);
 		gd = std::cos(motif_fx::PI / 2 * (vv - 1) / 126.0);
 		gw = std::sin(motif_fx::PI / 2 * (vv - 1) / 126.0);
-		t = 0;
 	}
 	void tick(double &L, double &R)
 	{
@@ -1037,20 +1152,13 @@ class ringmod_rt {
 public:
 	void init(const block &b)
 	{
-		const int vv = std::max(1, b.p[10]);
-		on = vv > 1;
-		gd = std::cos(motif_fx::PI / 2 * (vv - 1) / 126.0);
-		gw = std::sin(motif_fx::PI / 2 * (vv - 1) / 126.0);
-		f0 = motif_fx::TABLE19[std::min(127, b.p[1])] + 1.70 * b.p[2];
-		hz = motif_fx::LFO_HZ[std::min(127, b.p[5])];
-		sine = b.p[3] == 1;
-		depth = b.p[4];
 		for (int c = 0; c < 2; c++) {
 			hp[c] = iir1();
-			hp[c].hpf(motif_fx::t3(b.p[6]));
 			lp[c] = iir1();
-			lp[c].lpf(std::min(motif_fx::t3(b.p[7]), FS * 0.49));
 		}
+		ph0 = 0;
+		t = 0;
+		set(b);
 		has_eq = !(b.p[14] == 64 && b.p[16] == 64);
 		if (has_eq) {
 			block q;
@@ -1060,13 +1168,34 @@ public:
 			eq[1].init(h);
 		}
 		accp = 0;
-		t = 0;
+	}
+	// 値だけ替える（覚えている音と搬送波の位相は残す。EQ（13〜16）は init のときのまま）
+	void set(const block &b)
+	{
+		const int vv = std::max(1, b.p[10]);
+		on = vv > 1;
+		gd = std::cos(motif_fx::PI / 2 * (vv - 1) / 126.0);
+		gw = std::sin(motif_fx::PI / 2 * (vv - 1) / 126.0);
+		f0 = motif_fx::TABLE19[std::min(127, b.p[1])] + 1.70 * b.p[2];
+		const double nhz = motif_fx::LFO_HZ[std::min(127, b.p[5])];
+		ph0 += double(t) / FS * (hz - nhz);       // LFO の位相が飛ばないように（初めは 0 のまま）
+		hz = nhz;
+		sine = b.p[3] == 1;
+		depth = b.p[4];
+		for (int c = 0; c < 2; c++) {
+			hp[c].hpf(motif_fx::t3(b.p[6]));
+			lp[c].lpf(std::min(motif_fx::t3(b.p[7]), FS * 0.49));
+		}
 	}
 	void tick(double &L, double &R)
 	{
-		if (!on)
+		if (!on) {
+			t++;
 			return;
-		const double ph = std::fmod(double(t) / FS * hz, 1.0);
+		}
+		double ph = std::fmod(double(t) / FS * hz + ph0, 1.0);
+		if (ph < 0)
+			ph += 1.0;
 		const double m = sine ? std::sin(2 * motif_fx::PI * ph) : (ph < 0.5 ? 1.0 : -1.0);
 		accp += f0 * std::exp2(0.35 * depth / 64.0 * m);
 		const double car = 1.07 * std::cos(2 * motif_fx::PI * accp / FS);
@@ -1085,7 +1214,7 @@ private:
 	bool on = false, sine = false, has_eq = false;
 	int depth = 0;
 	unsigned long long t = 0;
-	double gd = 1, gw = 0, f0 = 0, hz = 0, accp = 0;
+	double gd = 1, gw = 0, f0 = 0, hz = 0, accp = 0, ph0 = 0;
 	iir1 hp[2], lp[2];
 	conv_rt eq[2];
 };
@@ -1101,6 +1230,23 @@ public:
 		kind = 0;
 		eq_on = false;
 		wah_on = false;
+		blk_ = base_ = b;
+		tempo_ = tempo;
+		ph_off = 0;
+		hz = 0;
+		pc_off[0] = pc_off[1] = pc_hz[0] = pc_hz[1] = 0;
+		for (int i = 1; i <= 16; i++)
+			rng_[i] = prange();
+		if (!fxddir.empty()) {
+			const ptable &pt = param_table(fxddir + "/../fx_params.txt");
+			const int code = b.msb * 128 + b.lsb;
+			auto it = pt.find(code + 100000);
+			if (it == pt.end())
+				it = pt.find(code);
+			if (it != pt.end())
+				for (int i = 1; i <= 16; i++)
+					rng_[i] = it->second[i];
+		}
 		approx_ = !fxddir.empty() && (motif_fx::chorus_type(b) || motif_fx::flanger_type(b)) && has_ltv(b, fxddir + "/../fxltv", tempo);
 		if (b.msb == 0)
 			return;                          // thru
@@ -1108,119 +1254,48 @@ public:
 		ring_r.assign(1 << 16, 0.0);
 		t = 0;
 		stereo_in = b.p[15] == 1;
-		const int v = std::max(1, b.p[10]);
 		if (approx_ && tv.init_ltv(b, fxddir + "/../fxltv", tempo)) {
 			// コーラス系・フランジャーも、録った応答（.ltv）があればオフラインと同じくそれを使う（2026-10-27。それまでは式で回す近似）
 			approx_ = false;
 			kind = 10;
 		} else if (b.is(15, 0) || b.is(15, 1)) {
-			const bool three = b.is(15, 0);
-			const auto h = fir_from([&](double f) { return three ? motif_fx::eq3(b, f) : motif_fx::eq2(b, f); });
-			fl.init(h);
-			fr.init(h);
+			eqf = eq_iir();
 			kind = 1;
+			coeffs(b);
 		} else if (b.is(15, 0x10)) {
-			// Harmonic Enhancer: 1 + g × HPF のあと ±1.0 で頭打ち
-			const double fc = std::min(motif_fx::t3(b.p[1]), FS * 0.49), g = 8.13 * b.p[2] / 64.0 * b.p[3] / 64.0;
-			const auto h = fir_from([&](double f) {
-				const double fa = std::min(std::fabs(f), FS * 0.4999);
-				const cplx s(0, std::tan(motif_fx::PI * fa / FS) / std::tan(motif_fx::PI * fc / FS));
-				return cplx(1.0 + g * (s / (s + 1.0)) * (s * s / (s * s + s * std::sqrt(2.0) + 1.0)));
-			});
-			fl.init(h);
-			fr.init(h);
+			for (int c = 0; c < 2; c++) {
+				en1[c] = iir1();
+				en2[c] = iir2();
+			}
 			kind = 7;
+			coeffs(b);
 		} else if (b.is(2, 0x30) || b.is(2, 0x60)) {
 			cd.init(b, b.is(2, 0x60) ? tempo : 0);
 			kind = 2;
 		} else if (b.is(10, 0) || b.is(10, 8)) {
 			win = int(0.005 * FS);
-			T = b.p[3] - 127;
-			Rr = motif_fx::COMP_RATIO[std::min(7, b.p[4])];
-			ka = std::exp(-1.0 / (1.6 * motif_fx::COMP_ATTACK_MS[std::min(19, b.p[1])] / 1000 * FS));
-			rel = 7.5 / (motif_fx::COMP_RELEASE_MS[std::min(15, b.p[2])] / 1000) / FS;
-			makeup = 40 * std::log10(std::max(1, b.p[5]) / 64.0);
 			sq.assign(win, 0.0);
 			acc = 0;
 			g = 0;
 			kind = 3;
+			coeffs(b);
 		} else if (b.is(5, 0x30)) {
-			// Ensemble Detune（ensemble_detune と同じ）
-			gd = std::cos(motif_fx::PI / 2 * (v - 1) / 126.0);
-			gw = std::sin(motif_fx::PI / 2 * (v - 1) / 126.0);
-			const int cents = b.p[1] - 64;
-			for (int c = 0; c < 2; c++) {
-				const double cc = c == 0 ? -cents : cents;
-				ens_init[c] = motif_fx::MOD_DELAY_MS[std::min(127, b.p[c == 0 ? 2 : 3])] / 1000 * FS;
-				ens_rate[c] = 1 - std::exp2(cc / 1200.0);
-				ens_span[c] = std::fabs(ens_rate[c]) / (1 / 1.485) * FS;
-			}
 			eq_init(b, 11);
 			kind = 6;
+			coeffs(b);
 		} else if (motif_fx::chorus_type(b)) {
-			// インサーションのコーラス（insertion_chorus と同じ）
-			static const double vx[4] = {1, 32, 64, 127}, vy[4] = {0.0, 0.364, 0.838, 1.5};
-			gd = std::cos(motif_fx::PI / 2 * (v - 1) / 126.0);
-			gw = std::sqrt(motif_fx::interp(vx, vy, 4, v));
-			hz = motif_fx::LFO_HZ[std::min(127, b.p[1])];
-			depth = 0.176 * b.p[2] / 1000 * FS;
-			off = motif_fx::MOD_DELAY_MS[std::min(127, b.p[4])] / 1000 * FS;
 			eq_init(b, 6);
 			kind = 4;
+			coeffs(b);
 		} else if (motif_fx::flanger_type(b)) {
-			// フランジャー（flanger と同じ）
-			gd = std::cos(motif_fx::PI / 2 * (v - 1) / 126.0);
-			gw = std::sin(motif_fx::PI / 2 * (v - 1) / 126.0);
-			hz = motif_fx::LFO_HZ[std::min(127, b.p[1])];
-			depth = 0.0914 * b.p[2] / 1000 * FS;
-			off = motif_fx::MOD_DELAY_MS[std::min(127, b.p[4])] / 1000 * FS;
-			fb = (b.p[3] - 64) / 64.0;
-			dph = (b.p[14] - 64) * 3.0 / 360.0;
 			fl_y[0].assign(1 << 16, 0.0);
 			fl_y[1].assign(1 << 16, 0.0);
 			eq_init(b, 6);
 			kind = 5;
+			coeffs(b);
 		} else if (b.is(11, 0) || b.is(11, 1)) {
-			// Pitch Change 1・2（pitch_change と同じ。2 は Fine をセントとして 1 の表を逆に引く）
-			static const double fx[15] = {-50, -10, -3, 0, 3, 5, 6, 7, 8, 10, 15, 20, 30, 40, 50},
-					    fy[15] = {-26.2, -10.79, -5.51, 0.0, 2.48, 5.13, 5.47, 7.88, 7.58, 10.59, 10.22, 10.06, 18.26, 23.77, 26.15};
-			static const double gx[4] = {3, 5, 10, 50}, glo[4] = {2.1, 3.2, 4.6, 13.0}, gsp[4] = {11.4, 12.7, 16.7, 29.8};
-			gd = std::cos(motif_fx::PI / 2 * (v - 1) / 126.0);
-			gw = std::sin(motif_fx::PI / 2 * (v - 1) / 126.0);
-			const int semi = b.p[1] - 64;
-			for (int c = 0; c < 2; c++) {
-				double fine = b.p[c == 0 ? 3 : 4] - 64;
-				if (b.is(11, 1)) {
-					double ys[15], xs[15];
-					int ord[15];
-					for (int i = 0; i < 15; i++)
-						ord[i] = i;
-					std::stable_sort(ord, ord + 15, [](int a2, int b2) { return fy[a2] < fy[b2]; });
-					for (int i = 0; i < 15; i++) {
-						ys[i] = fy[ord[i]];
-						xs[i] = fx[ord[i]];
-					}
-					fine = motif_fx::interp(ys, xs, 15, fine);
-				}
-				const int pan = std::max(1, b.p[c == 0 ? 11 : 13]), lvl = b.p[c == 0 ? 12 : 14];
-				const double cents = 100.0 * semi + motif_fx::interp(fx, fy, 15, fine);
-				pc_rate[c] = 1 - std::exp2(cents / 1200.0);
-				if (semi == 0) {
-					const double af = std::min(50.0, std::max(3.0, std::fabs(fine)));
-					pc_lo[c] = motif_fx::interp(gx, glo, 4, af) / 1000 * FS;
-					pc_span[c] = motif_fx::interp(gx, gsp, 4, af) / 1000 * FS;
-					if (fine == 0)
-						pc_lo[c] = motif_fx::MOD_DELAY_MS[std::min(127, b.p[2])] / 1000 * FS;
-				} else {
-					pc_span[c] = 1280.0;
-					pc_lo[c] = pc_span[c] / 4;
-				}
-				const double a = motif_fx::PI / 2 * (pan - 1) / 126.0, g = lvl / 127.0;
-				pc_gl[c] = g * std::cos(a);
-				pc_gr[c] = g * std::sin(a);
-				pc_hz[c] = std::fabs(pc_rate[c]) * FS / pc_span[c];
-			}
 			kind = 12;
+			coeffs(b);
 		} else if (b.is(12, 0x40) && !fxddir.empty() && wdd_init(b, fxddir)) {
 			kind = 8;                        // Wah+Dist+Dly（wah_dist_delay と同じ）: 歪みの枠に、頭打ちの前のワウと混ぜたあとのこだまを足して回す
 		} else if (motif_fx::dist_type(b) && !fxddir.empty() && dist_init(b, fxddir)) {
@@ -1244,11 +1319,50 @@ public:
 	}
 	bool supported() const { return kind >= 0; }
 	bool thru() const { return kind == 0; }
-	// つまみ（コントロールセット）で動くパラメーター p（1〜16）の今の値。今は Dual Rotor の Speed Control（16）だけ回す
+	// つまみ（コントロールセット）で動いたパラメーター p（1〜16）の値 v を、鳴らしている途中で効かせる（覚えている音は残す）。
+	// 式で回す型（EQ・Enhancer・Cross Delay・コンプ・コーラス・フランジャー・Ensemble Detune・Pitch Change・Lo-Fi・Ring Mod）はどのパラメーターも
+	// （ただし揺れる型の EQ、Lo-Fi の Filter Type、Ring Mod の EQ は init のまま）、歪みは Dry/Wet・Output Level・Drive（AmpSimulator は Edge も）、
+	// Dual Rotor は Speed Control。ほかの録った応答の型（.ltv・.mod・.lti）は、録った組から外れる値を作れないので動かさない
 	void set_param(int p, int v)
 	{
-		if (kind == 11 && md.rotor() && p == 16)
-			md.set_fast(v != 0);
+		if (p < 1 || p > 16 || blk_.p[p] == v)
+			return;
+		blk_.p[p] = v;
+		switch (kind) {
+		case 1: case 3: case 4: case 5: case 6: case 7: case 12:
+			coeffs(blk_);
+			break;
+		case 2:
+			cd.set(blk_, blk_.is(2, 0x60) ? tempo_ : 0);
+			break;
+		case 8:
+			dist_set(p);
+			break;
+		case 11:
+			if (md.rotor() && p == 16)
+				md.set_fast(v != 0);
+			break;
+		case 13:
+			lf.set(blk_);
+			break;
+		case 14:
+			rmod.set(blk_);
+			break;
+		}
+	}
+	// つまみのずらし raw（engine::ins_offset、Σ 深さ' × ソース'）で動いたパラメーター p の値: 音色の値 + raw × 値の数 / 4096 を 0 の側へ切り捨て、
+	// 値の幅に収める。実機で測った（2026-10-30、tools/motif/mr_fx_comp.py --cs --ccat、録音は capture/csscale と rotmw）: Compressor の Output Level
+	// （0〜127）・3 Band EQ の Low Gain（52〜76）・Dual Rotor の Speed Control（0・1）で、MW の深さ +1・+2・+4・+16・+32・+48・+63・−16・−32・−64、
+	// AS1 の深さ +16 の 90 点ほどがどれもこの式どおり（四捨五入や × 4 / 127 では合わない点がある）
+	int ctrl_value(int p, int raw) const
+	{
+		if (p < 1 || p > 16)
+			return 0;
+		if (raw == 0)
+			return base_.p[p];
+		const prange &r = rng_[p];
+		const long long n = r.max - r.min + 1;
+		return std::max(r.min, std::min(r.max, base_.p[p] + int(raw * n / 4096)));
 	}
 	bool approx() const { return approx_; }
 	// この枠の出口の遅れ（サンプル。歪みだけ DIST_PRE）
@@ -1267,12 +1381,11 @@ public:
 		const size_t mask = ring_l.size() - 1;
 		switch (kind) {
 		case 1:
-			L = fl.tick(L);
-			R = fr.tick(R);
+			eqf.tick(L, R);
 			break;
 		case 7:
-			L = std::max(-1.0, std::min(1.0, fl.tick(L)));
-			R = std::max(-1.0, std::min(1.0, fr.tick(R)));
+			L = std::max(-1.0, std::min(1.0, L + eng * en2[0].tick(en1[0].tick(L))));
+			R = std::max(-1.0, std::min(1.0, R + eng * en2[1].tick(en1[1].tick(R))));
 			break;
 		case 2:
 			cd.tick(L, R);
@@ -1295,7 +1408,10 @@ public:
 		}
 		case 4: {
 			push(L, R);
-			const double ph = std::fmod(double(t) * hz / FS, 1.0), tri = ph < 0.5 ? 2 * ph : 2 - 2 * ph;
+			double ph = std::fmod(double(t) * hz / FS + ph_off, 1.0);
+			if (ph < 0)
+				ph += 1.0;
+			const double tri = ph < 0.5 ? 2 * ph : 2 - 2 * ph;
 			double o[2] = {0, 0};
 			for (int c = 0; c < 2; c++) {
 				const double pos = double(t) - (off + depth * (c == 0 ? tri : 1 - tri));
@@ -1313,7 +1429,7 @@ public:
 			double w[2];
 			for (int c = 0; c < 2; c++) {
 				const double ph0 = c == 0 ? 0.0 : dph;
-				double ph = std::fmod(double(t) * hz / FS + ph0, 1.0);
+				double ph = std::fmod(double(t) * hz / FS + ph0 + ph_off, 1.0);
 				if (ph < 0)
 					ph += 1.0;
 				const double pos = double(t) - (off + depth * (ph < 0.5 ? 2 * ph : 2 - 2 * ph));
@@ -1413,7 +1529,10 @@ public:
 				if (std::fabs(rate) < 1e-9)
 					y = at0(ring_l, double(t) - lo);
 				else {
-					const double sw = std::fmod(double(t) * pc_hz[c] / FS + (c == 0 ? 0.0 : 0.5), 1.0), s1 = rate > 0 ? sw : 1 - sw;
+					double sw = std::fmod(double(t) * pc_hz[c] / FS + (c == 0 ? 0.0 : 0.5) + pc_off[c], 1.0);
+					if (sw < 0)
+						sw += 1.0;
+					const double s1 = rate > 0 ? sw : 1 - sw;
 					const double d1 = lo + span * s1, d2 = std::max(0.0, rate > 0 ? lo + span * (s1 - 1) : lo + span * (s1 + 1));
 					const double u = std::min(1.0, std::max(0.0, (sw - 0.75) / 0.25));
 					y = (1 - u) * at0(ring_l, double(t) - d1) + u * at0(ring_l, double(t) - d2);
@@ -1451,6 +1570,152 @@ private:
 	mod_rt md;
 	lofi_rt lf;
 	ringmod_rt rmod;
+	block blk_, base_;                        // 今の値（つまみで動いたあと）と、init のときの値
+	int tempo_ = 0;
+	prange rng_[17];
+	eq_iir eqf;
+	iir1 en1[2];
+	iir2 en2[2];
+	double eng = 0, ph_off = 0, pc_off[2] = {0, 0};
+	double og0 = 1, dk0 = 1, dp_file = 2, dist_bh = 0, dist_sgn = 1;
+	bool per_set_ = false;
+
+	// 揺れの速さを替えても位相が飛ばないように（初めは ph_off = 0 のまま、オフラインと同じ）
+	void set_hz(double nh)
+	{
+		ph_off += double(t) / FS * (hz - nh);
+		hz = nh;
+	}
+	// 式で回す型の値（init と set_param から。覚えている音には触らない）
+	void coeffs(const block &b)
+	{
+		const int v = std::max(1, b.p[10]);
+		switch (kind) {
+		case 1:
+			eqf.set(b, b.is(15, 0));
+			break;
+		case 7: {
+			// Harmonic Enhancer: 1 + g × HPF（1 次 × Butterworth の 2 次、角 fc）のあと ±1.0 で頭打ち
+			const double fc = std::min(motif_fx::t3(b.p[1]), FS * 0.49);
+			for (int c = 0; c < 2; c++) {
+				en1[c].hpf(fc);
+				en2[c].hpf(fc);
+			}
+			eng = 8.13 * b.p[2] / 64.0 * b.p[3] / 64.0;
+			break;
+		}
+		case 3:
+			T = b.p[3] - 127;
+			Rr = motif_fx::COMP_RATIO[std::min(7, b.p[4])];
+			ka = std::exp(-1.0 / (1.6 * motif_fx::COMP_ATTACK_MS[std::min(19, b.p[1])] / 1000 * FS));
+			rel = 7.5 / (motif_fx::COMP_RELEASE_MS[std::min(15, b.p[2])] / 1000) / FS;
+			makeup = 40 * std::log10(std::max(1, b.p[5]) / 64.0);
+			break;
+		case 6: {
+			// Ensemble Detune（ensemble_detune と同じ）
+			gd = std::cos(motif_fx::PI / 2 * (v - 1) / 126.0);
+			gw = std::sin(motif_fx::PI / 2 * (v - 1) / 126.0);
+			const int cents = b.p[1] - 64;
+			for (int c = 0; c < 2; c++) {
+				const double cc = c == 0 ? -cents : cents;
+				ens_init[c] = motif_fx::MOD_DELAY_MS[std::min(127, b.p[c == 0 ? 2 : 3])] / 1000 * FS;
+				ens_rate[c] = 1 - std::exp2(cc / 1200.0);
+				ens_span[c] = std::fabs(ens_rate[c]) / (1 / 1.485) * FS;
+			}
+			break;
+		}
+		case 4: {
+			// インサーションのコーラス（insertion_chorus と同じ）
+			static const double vx[4] = {1, 32, 64, 127}, vy[4] = {0.0, 0.364, 0.838, 1.5};
+			gd = std::cos(motif_fx::PI / 2 * (v - 1) / 126.0);
+			gw = std::sqrt(motif_fx::interp(vx, vy, 4, v));
+			set_hz(motif_fx::LFO_HZ[std::min(127, b.p[1])]);
+			depth = 0.176 * b.p[2] / 1000 * FS;
+			off = motif_fx::MOD_DELAY_MS[std::min(127, b.p[4])] / 1000 * FS;
+			break;
+		}
+		case 5:
+			// フランジャー（flanger と同じ）
+			gd = std::cos(motif_fx::PI / 2 * (v - 1) / 126.0);
+			gw = std::sin(motif_fx::PI / 2 * (v - 1) / 126.0);
+			set_hz(motif_fx::LFO_HZ[std::min(127, b.p[1])]);
+			depth = 0.0914 * b.p[2] / 1000 * FS;
+			off = motif_fx::MOD_DELAY_MS[std::min(127, b.p[4])] / 1000 * FS;
+			fb = (b.p[3] - 64) / 64.0;
+			dph = (b.p[14] - 64) * 3.0 / 360.0;
+			break;
+		case 12: {
+			// Pitch Change 1・2（pitch_change と同じ。2 は Fine をセントとして 1 の表を逆に引く）
+			static const double fx[15] = {-50, -10, -3, 0, 3, 5, 6, 7, 8, 10, 15, 20, 30, 40, 50},
+					    fy[15] = {-26.2, -10.79, -5.51, 0.0, 2.48, 5.13, 5.47, 7.88, 7.58, 10.59, 10.22, 10.06, 18.26, 23.77, 26.15};
+			static const double gx[4] = {3, 5, 10, 50}, glo[4] = {2.1, 3.2, 4.6, 13.0}, gsp[4] = {11.4, 12.7, 16.7, 29.8};
+			gd = std::cos(motif_fx::PI / 2 * (v - 1) / 126.0);
+			gw = std::sin(motif_fx::PI / 2 * (v - 1) / 126.0);
+			const int semi = b.p[1] - 64;
+			for (int c = 0; c < 2; c++) {
+				double fine = b.p[c == 0 ? 3 : 4] - 64;
+				if (b.is(11, 1)) {
+					double ys[15], xs[15];
+					int ord[15];
+					for (int i = 0; i < 15; i++)
+						ord[i] = i;
+					std::stable_sort(ord, ord + 15, [](int a2, int b2) { return fy[a2] < fy[b2]; });
+					for (int i = 0; i < 15; i++) {
+						ys[i] = fy[ord[i]];
+						xs[i] = fx[ord[i]];
+					}
+					fine = motif_fx::interp(ys, xs, 15, fine);
+				}
+				const int pan = std::max(1, b.p[c == 0 ? 11 : 13]), lvl = b.p[c == 0 ? 12 : 14];
+				const double cents = 100.0 * semi + motif_fx::interp(fx, fy, 15, fine);
+				pc_rate[c] = 1 - std::exp2(cents / 1200.0);
+				if (semi == 0) {
+					const double af = std::min(50.0, std::max(3.0, std::fabs(fine)));
+					pc_lo[c] = motif_fx::interp(gx, glo, 4, af) / 1000 * FS;
+					pc_span[c] = motif_fx::interp(gx, gsp, 4, af) / 1000 * FS;
+					if (fine == 0)
+						pc_lo[c] = motif_fx::MOD_DELAY_MS[std::min(127, b.p[2])] / 1000 * FS;
+				} else {
+					pc_span[c] = 1280.0;
+					pc_lo[c] = pc_span[c] / 4;
+				}
+				const double a = motif_fx::PI / 2 * (pan - 1) / 126.0, g = lvl / 127.0;
+				pc_gl[c] = g * std::cos(a);
+				pc_gr[c] = g * std::sin(a);
+				const double nh = std::fabs(pc_rate[c]) * FS / pc_span[c];
+				pc_off[c] += double(t) / FS * (pc_hz[c] - nh);     // 揺れの位相が飛ばないように（初めは 0 のまま）
+				pc_hz[c] = nh;
+			}
+			break;
+		}
+		}
+	}
+	// 歪みの枠でつまみが動かしたパラメーター（名前で見る）。Output Level は (値 / init の値)²（40·log10、実機で確かめた曲線）、
+	// Drive は init の値からの drive_gain_db の差（録った組から外れるので近似）。AmpSimulator を既定の応答で回しているときは頭打ちの形も替える
+	void dist_set(int p)
+	{
+		const std::string &nm = rng_[p].name;
+		const int v = blk_.p[p], v0 = base_.p[p];
+		const bool amp = blk_.is(9, 48) && !per_set_;
+		if (nm == "Dry / Wet Balance") {
+			const double ang = motif_fx::PI / 2 * (std::max(1, v) - 1) / 126.0;
+			gdry = dist_sgn * std::cos(ang);
+			gwet = std::sin(ang);
+		} else if (nm == "Output Level")
+			og = og0 * motif_fx::dist_level_gain(v, v0);
+		else if (nm == "Drive") {
+			dk = dk0 * std::pow(10.0, (motif_fx::drive_gain_db(v) - motif_fx::drive_gain_db(v0)) / 20);
+			if (amp) {
+				dc = motif_fx::drive_clip(v);
+				dp = v >= 15 ? motif_fx::edge_p(blk_.p[11]) : dp_file;
+			}
+		} else if (nm == "Edge" && amp && blk_.p[1] >= 15)
+			dp = motif_fx::edge_p(v);
+		else
+			return;
+		dbs = dist_bh * dc;
+		db0 = dbs / std::pow(1 + std::pow(std::fabs(dbs / dc), dp), 1 / dp);
+	}
 
 	// lti と同じ: プリセットの組のまま録った応答（fxlti/<名前>.lti、左→左・左→右・右→左・右→右）。Dry/Wet 1 は素通し
 	bool lti_init(const block &b, const std::string &ltidir, int tempo)
@@ -1506,7 +1771,13 @@ private:
 		gwet = std::sin(ang);
 		fl.init(std::vector<double>(ir.L.begin(), ir.L.end()));
 		fr.init(std::vector<double>(ir.R.begin(), ir.R.end()));
-		dbs = std::atof(ir.head.count("b") ? ir.head.at("b").c_str() : "0") * dc;
+		dist_bh = std::atof(ir.head.count("b") ? ir.head.at("b").c_str() : "0");
+		dbs = dist_bh * dc;
+		dist_sgn = 1;
+		dp_file = dp;
+		per_set_ = true;
+		og0 = og;
+		dk0 = dk;
 		db0 = dbs / std::pow(1 + std::pow(std::fabs(dbs / dc), dp), 1 / dp);
 		std::vector<double> h(DIST_PRE, 0.0);
 		if (ir.post.empty())
@@ -1591,8 +1862,14 @@ private:
 		for (size_t i = 0; i < ir.L.size(); i++)
 			if (std::fabs(ir.L[i]) > std::fabs(ir.L[pk]))
 				pk = i;
-		gdry = (ir.L.empty() || ir.L[pk] >= 0 ? 1.0 : -1.0) * std::cos(ang);
+		dist_sgn = ir.L.empty() || ir.L[pk] >= 0 ? 1.0 : -1.0;
+		gdry = dist_sgn * std::cos(ang);
 		gwet = std::sin(ang);
+		dp_file = std::atof(ir.head["p"].c_str());
+		dist_bh = std::atof(ir.head["b"].c_str());
+		per_set_ = per_set;
+		og0 = og;
+		dk0 = dk;
 		fl.init(std::vector<double>(ir.L.begin(), ir.L.end()));
 		fr.init(std::vector<double>(ir.R.begin(), ir.R.end()));
 		dbs = std::atof(ir.head["b"].c_str()) * dc;
@@ -1820,6 +2097,13 @@ public:
 			return;
 		last_[which][p] = v;
 		(which ? Bk : A).set_param(p, v);
+	}
+	// つまみのずらし raw（engine::ins_offset）を A・B のパラメーター p の値にして渡す（block_rt::ctrl_value）
+	void set_ctrl(int which, int p, int raw)
+	{
+		if (which < 0 || which > 1)
+			return;
+		set_param(which, p, (which ? Bk : A).ctrl_value(p, raw));
 	}
 	bool approx() const { return A.approx() || Bk.approx(); }
 	bool recorded() const { return A.recorded() || Bk.recorded(); }
