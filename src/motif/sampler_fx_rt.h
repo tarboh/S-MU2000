@@ -905,6 +905,191 @@ private:
 	}
 };
 
+// 双一次変換の 1 次・2 次のフィルター（オフラインの filter_freq に渡す式と同じ応答）
+struct iir1 {
+	double b0 = 1, b1 = 0, a1 = 0, x1 = 0, y1 = 0;
+	void hpf(double fc)
+	{
+		const double K = std::tan(motif_fx::PI * fc / FS);
+		b0 = 1 / (1 + K), b1 = -b0, a1 = (K - 1) / (K + 1);
+	}
+	void lpf(double fc)
+	{
+		const double K = std::tan(motif_fx::PI * fc / FS);
+		b0 = K / (1 + K), b1 = b0, a1 = (K - 1) / (K + 1);
+	}
+	double tick(double x)
+	{
+		const double y = b0 * x + b1 * x1 - a1 * y1;
+		x1 = x, y1 = y;
+		return y;
+	}
+};
+struct iir2 {
+	double b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0, s1 = 0, s2 = 0;
+	void lpf(double fc, double q)
+	{
+		const double K = std::tan(motif_fx::PI * fc / FS), nn = 1 / (1 + K / q + K * K);
+		b0 = K * K * nn, b1 = 2 * b0, b2 = b0, a1 = 2 * (K * K - 1) * nn, a2 = (1 - K / q + K * K) * nn;
+	}
+	double tick(double x)
+	{
+		const double y = b0 * x + s1;
+		s1 = b1 * x - a1 * y + s2;
+		s2 = b2 * x - a2 * y;
+		return y;
+	}
+};
+
+// Lo-Fi（0D 00）を 1 サンプルずつ（オフラインの lofi と同じ）: 20.5Hz の 1 次の HPF → 2 次の Pre-LPF → 標本化の間引き → スルーレートの制限（語長）→
+// Filter Type の録った応答 → Output Gain → 元の音 cos・wet sin。2026-10-30 まではその場では素通しだった（プリセットの 22 音色）
+class lofi_rt {
+public:
+	void init(const block &b, const std::string &lfdir)
+	{
+		stereo = b.p[15] == 1;
+		k = b.p[1] + 1;
+		const double fc = std::min(motif_fx::t3(b.p[4]), FS * 0.49), q = std::max(1, b.p[6]) / 10.0;
+		for (int c = 0; c < 2; c++) {
+			hp[c] = iir1();
+			hp[c].hpf(20.5);
+			lp[c] = iir2();
+			lp[c].lpf(fc, q);
+			v[c] = prev[c] = acc[c] = held[c] = 0;
+		}
+		slew = 0;
+		if (b.p[2] < 127) {
+			static const double wx[8] = {1, 2, 4, 8, 16, 32, 64, 96}, wy[8] = {0.00209, 0.00222, 0.00248, 0.00300, 0.00405, 0.00614, 0.01279, 0.02606};
+			double ly[8];
+			for (int i = 0; i < 8; i++)
+				ly[i] = std::log(wy[i]);
+			slew = std::exp(motif_fx::interp(wx, ly, 8, b.p[2])) * std::exp2(b.p[7]);
+		}
+		a = b.p[8] ? 0.88 : 0.0;
+		has_h = false;
+		if (b.p[5] >= 1 && b.p[5] <= 5)
+			if (FILE *f = std::fopen((lfdir + "/lofi_type" + std::to_string(b.p[5]) + ".ir").c_str(), "rb")) {
+				std::vector<float> raw(4096);
+				const size_t m = std::fread(raw.data(), sizeof(float), raw.size(), f);
+				std::fclose(f);
+				std::vector<double> h(raw.begin(), raw.begin() + long(m));
+				if (!h.empty()) {
+					fir[0].init(h);
+					fir[1].init(h);
+					has_h = true;
+				}
+			}
+		g = std::pow(10.0, (b.p[3] - 6) / 20.0);
+		const int vv = std::max(1, b.p[10]);
+		gd = std::cos(motif_fx::PI / 2 * (vv - 1) / 126.0);
+		gw = std::sin(motif_fx::PI / 2 * (vv - 1) / 126.0);
+		t = 0;
+	}
+	void tick(double &L, double &R)
+	{
+		const double xs[2] = {stereo ? L : (L + R) / 2, stereo ? R : (L + R) / 2};
+		double o[2];
+		for (int c = 0; c < 2; c++) {
+			double y = lp[c].tick(hp[c].tick(xs[c]));
+			if (k > 1) {
+				if (t % k == 0)
+					held[c] = y;
+				y = held[c];
+			}
+			if (slew > 0) {
+				double xi = y;
+				if (a) {
+					const double e = (xi - (t ? a * prev[c] : 0.0)) / (1 - a);
+					prev[c] = xi;
+					xi = e;
+				}
+				const double d = xi - v[c];
+				v[c] += d > slew ? slew : (d < -slew ? -slew : d);
+				if (a) {
+					acc[c] = (1 - a) * v[c] + a * acc[c];
+					y = acc[c];
+				} else
+					y = v[c];
+			}
+			if (has_h)
+				y = fir[c].tick(y);
+			o[c] = y * g;
+		}
+		L = gd * L + gw * o[0];
+		R = gd * R + gw * o[1];
+		t++;
+	}
+
+private:
+	bool stereo = false, has_h = false;
+	int k = 1;
+	unsigned long long t = 0;
+	double slew = 0, a = 0, g = 1, gd = 1, gw = 0;
+	double v[2] = {}, prev[2] = {}, acc[2] = {}, held[2] = {};
+	iir1 hp[2];
+	iir2 lp[2];
+	conv_rt fir[2];
+};
+
+// Ring Modulator（0F 70）を 1 サンプルずつ（オフラインの ring_mod と同じ）: 1 次の HPF・LPF → 搬送波（表 19 + 1.70Hz × Fine、LFO で 2^(±0.35 × 深さ / 64)）を掛ける →
+// EQ（13〜16）→ 元の音 cos・wet sin。2026-10-30 まではその場では素通しだった（プリセットの 17 音色）
+class ringmod_rt {
+public:
+	void init(const block &b)
+	{
+		const int vv = std::max(1, b.p[10]);
+		on = vv > 1;
+		gd = std::cos(motif_fx::PI / 2 * (vv - 1) / 126.0);
+		gw = std::sin(motif_fx::PI / 2 * (vv - 1) / 126.0);
+		f0 = motif_fx::TABLE19[std::min(127, b.p[1])] + 1.70 * b.p[2];
+		hz = motif_fx::LFO_HZ[std::min(127, b.p[5])];
+		sine = b.p[3] == 1;
+		depth = b.p[4];
+		for (int c = 0; c < 2; c++) {
+			hp[c] = iir1();
+			hp[c].hpf(motif_fx::t3(b.p[6]));
+			lp[c] = iir1();
+			lp[c].lpf(std::min(motif_fx::t3(b.p[7]), FS * 0.49));
+		}
+		has_eq = !(b.p[14] == 64 && b.p[16] == 64);
+		if (has_eq) {
+			block q;
+			q.p[1] = b.p[13], q.p[2] = b.p[14], q.p[3] = b.p[15], q.p[4] = b.p[16];
+			const auto h = fir_from([q](double f) { return motif_fx::eq2(q, f); });
+			eq[0].init(h);
+			eq[1].init(h);
+		}
+		accp = 0;
+		t = 0;
+	}
+	void tick(double &L, double &R)
+	{
+		if (!on)
+			return;
+		const double ph = std::fmod(double(t) / FS * hz, 1.0);
+		const double m = sine ? std::sin(2 * motif_fx::PI * ph) : (ph < 0.5 ? 1.0 : -1.0);
+		accp += f0 * std::exp2(0.35 * depth / 64.0 * m);
+		const double car = 1.07 * std::cos(2 * motif_fx::PI * accp / FS);
+		double o[2];
+		for (int c = 0; c < 2; c++) {
+			o[c] = lp[c].tick(hp[c].tick(c == 0 ? L : R)) * car;
+			if (has_eq)
+				o[c] = eq[c].tick(o[c]);
+		}
+		L = gd * L + gw * o[0];
+		R = gd * R + gw * o[1];
+		t++;
+	}
+
+private:
+	bool on = false, sine = false, has_eq = false;
+	int depth = 0;
+	unsigned long long t = 0;
+	double gd = 1, gw = 0, f0 = 0, hz = 0, accp = 0;
+	iir1 hp[2], lp[2];
+	conv_rt eq[2];
+};
+
 // エフェクトの 1 つのブロック（インサーションの A・B、コーラスの枠のほかの型）を 1 サンプルずつ。入れた左右 → 出口の左右（その場で書き換える）。
 // 回せる型: 3 Band EQ・2 Band EQ（0F 00・0F 01）、Harmonic Enhancer（0F 10）、Cross Delay（02 30・02 60）、コンプ（0A 00・0A 08）、
 // インサーションのコーラス（05 00 系）、フランジャー（06 00・06 01）、Ensemble Detune（05 30）、Pitch Change 1・2（0B 00・01）。ほかは素通し（supported() が偽）
@@ -1048,6 +1233,12 @@ public:
 			kind = 10;
 		} else if (motif_fx::mod_type(b) && !fxddir.empty() && md.init(b, fxddir + "/../fxmod", tempo)) {
 			kind = 11;
+		} else if (b.is(13, 0)) {
+			lf.init(b, fxddir + "/../fxlf");
+			kind = 13;
+		} else if (b.is(15, 0x70)) {
+			rmod.init(b);
+			kind = 14;
 		} else
 			kind = -1;                       // まだ回せない型（素通し）
 	}
@@ -1176,6 +1367,12 @@ public:
 		case 11:
 			md.tick(L, R);
 			break;
+		case 13:
+			lf.tick(L, R);
+			break;
+		case 14:
+			rmod.tick(L, R);
+			break;
 		case 9: {
 			// LTI（lti と同じ）: 左右から左右への 4 本の録った応答
 			if (lti_thru)
@@ -1252,6 +1449,8 @@ private:
 	bool lti_thru = false;
 	ltv_rt tv;
 	mod_rt md;
+	lofi_rt lf;
+	ringmod_rt rmod;
 
 	// lti と同じ: プリセットの組のまま録った応答（fxlti/<名前>.lti、左→左・左→右・右→左・右→右）。Dry/Wet 1 は素通し
 	bool lti_init(const block &b, const std::string &ltidir, int tempo)

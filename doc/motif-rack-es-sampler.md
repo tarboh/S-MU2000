@@ -1248,6 +1248,14 @@ Data List の並び: 01 Delay Time（0.1ms、14 ビット）・02 帰り・03 De
   1 周が録音に収まらない遅い LFO（0.04〜0.08Hz、11 組）は、録音の後ろ 3/4 を往復する。直したあと、同じ測り方で 8〜16 秒も 5.7〜6.3dB
 * オフライン（`ltvfx`・`modfx`）もその場（`ltv_rt`・`mod_rt`）も同じ。8 秒より短い音は前と同じ（ボイスの試験の 2 音色でビット単位で同じ）
 
+### その場のエフェクトで素通しだった Lo-Fi・Ring Mod（2026-10-30。`sampler_fx_rt.h` の `lofi_rt`・`ringmod_rt`）
+
+プリセットのインサーション（エレメントが通るもの 1,636 か所）を、その場の部品（`block_rt`）で作って数えると、素通しになる型が残っていた:
+Lo-Fi 22 音色、Ring Mod 17、Dynamic Ring Mod 6（ほかに Slice・Tempo 系・Ambience は数えた道具のテンポが 120 決め打ちだったため。音色のテンポでは回る）。
+Lo-Fi と Ring Mod はオフラインの式（`lofi`・`ring_mod`）があったので、1 サンプルずつに移した（`filter_freq` に渡していた式は双一次変換の 1 次・2 次なので
+同じ係数の IIR、Filter Type の応答と EQ はたたみ込み）。雑音を 3 秒通してオフラインと比べると、Lo-Fi の 12 組で −121〜−300dB、Ring Mod の 10 組で −95〜−300dB。
+Dynamic Ring Mod はオフラインにも式が無い（3 音色は Dry/Wet 1）
+
 ### ロータリースピーカー（Dual Rotary Speaker 1〜3、2026-10-30。`tools/motif/mr_fx_rotary.py`、`sampler_fx.h` の `rot_file`・`rotor_motion`、録音は `capture/fxmod`）
 
 オルガンの 36 音色（PRE1 095〜127・PRE2 000〜014 など）が Dual Rotary Speaker（08 70〜72）を使う。前は組のまま録った 8 秒（.mod）を鳴らしていて、
