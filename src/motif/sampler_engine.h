@@ -252,6 +252,28 @@ public:
 		apply_ctl();
 	}
 	int source(int src) const { return srcval[std::max(0, std::min(15, src))]; }
+	// インサーションのパラメーターへのずらし（行き先 4〜19 = INS1（A）の P1〜16、20〜35 = INS2（B））。値の目盛りのまま (深さ − 64) × ソース
+	// （ソースは 0〜1、中心のあるものは −1〜1）。実機の目盛りはまだ測っていない（Speed Control は 0・1 なので、どちらへ切り替わるかだけ効く）
+	double ins_offset(int dest) const
+	{
+		double off = 0;
+		for (size_t k = 0; k < sets.size() && k < 6; k++) {
+			const cset &c = sets[k];
+			if (c.dest != dest || c.depth == 64 || c.src < 0 || c.src > 15)
+				continue;
+			const int v = srcval[c.src];
+			off += (c.depth - 64) * (bipolar(c.src) ? (v - 64) / 64.0 : v / 127.0);
+		}
+		return off;
+	}
+	bool has_ins_route() const
+	{
+		for (size_t k = 0; k < sets.size() && k < 6; k++)
+			if (sets[k].dest >= 4 && sets[k].dest <= 35 && sets[k].depth != 64)
+				return true;
+		return false;
+	}
+
 
 	// 共通の音量（0〜127）は 40·log10(値 / 127) dB（コントロールセットの Volume のずれ voff を足してから）
 	double volume_gain(double voff = 0) const

@@ -952,6 +952,7 @@ inline cplx mod_eq(const block &b, double f, bool &has)
 
 struct mod_file {
 	int rate = 1000, frames = 0, period = 0;
+	double perf = 0;          // 繰り返す周期（loop_period。読んだあとで型から決める）
 	double indb = 0;
 	std::vector<float> raw;
 };
@@ -971,20 +972,178 @@ inline bool load_mod(const std::string &path, mod_file &m)
 	m.raw.resize(size_t(m.frames) * 8);
 	m.frames = int(std::fread(m.raw.data(), sizeof(float) * 8, size_t(m.frames), f));
 	std::fclose(f);
+	m.perf = m.period;
 	return m.frames >= 2;
 }
+
+// ---- 録った並び（.ltv の枠・.mod の 1ms ごと）を、録音の長さ（8 秒）より長く鳴らすときの繰り返し ----
+// LFO の速さ（p1、表 1 の 0〜39.7Hz）で揺れる型の LFO の周波数（Hz）。それ以外の型（テンポで決まる型・揺れない型）は 0
+inline double lfo_hz(const block &b)
+{
+	static const int codes[] = {640, 641, 642, 648, 649, 656, 657, 658, 664, 672, 768, 769, 776, 784, 896, 904, 1024, 1040, 1041, 1104, 1105,
+	                            1106, 1107, 1536, 1537, 1538};
+	const int c = b.msb * 128 + b.lsb;
+	for (int k : codes)
+		if (k == c)
+			return LFO_HZ[std::max(0, std::min(127, b.p[1]))];
+	return 0;
+}
+// 繰り返す周期（並びの数、小数）。LFO の速さで決まる型は、その周期（録音の中に 1 周が収まるとき）。ほかは録ったときに自己相関で見つけた周期 per。
+// 前は per だけで、遅い LFO（周期 4 秒より長い）は 8 秒の録音で 2 周を見つけられず per = 0 になり、8 秒を過ぎると最後の枠で揺れが止まっていた
+// （.ltv の 270 組のうち 135 組。Chorus 1〜5・Celeste 1〜4 の 62 組など）。per は枠（23ms）の整数なので、繰り返しのたびに LFO の位置も少し跳んでいた
+inline double loop_period(const block &b, double rate, int per, int frames)
+{
+	const double hz = lfo_hz(b);
+	if (hz > 0) {
+		const double p = rate / hz;
+		if (p <= frames - 2)
+			return p;
+		return -1;                           // 1 周が録音に収まらない遅い LFO（0.04〜0.08Hz、11 組）: 行ったり来たり
+	}
+	return per;
+}
+// 並びの位置 u（並びの数、小数）を、録音の終わりより後は最後の 1 周の繰り返しへ（周期が負なら往復、0 なら最後で止める）
+inline double loop_index(double u, double perf, int frames)
+{
+	const double last = frames - 1;
+	if (u < last)
+		return u;
+	if (perf > 0)
+		return (last - perf) + std::fmod(u - (last - perf), perf);
+	if (perf < 0) {
+		// 録音の後ろ 3/4 を往復する（頭の 1/4 は鳴り始めの形が混ざるので使わない）
+		const double a = last / 4, span = last - a;
+		const double v = std::fmod(u - last, 2 * span);
+		return v < span ? last - v : a + (v - span);
+	}
+	return last;
+}
+
+// ---- ロータリースピーカー（Dual Rotary Speaker 1〜3、08 70〜72）: 回る位置で読む形（tools/motif/mr_fx_rotary.py、fxmod/<名前>.rot） ----
+// 帯（1kHz で分けた低い・高い）ごと・左右ごとの出口は「ローターの位置で決まる成分 + ホーンの位置で決まる成分」の和で、それぞれ A × 入口(t − d)。
+// 形は Speed Control の slow・fast の定常の録音（正弦波 220Hz・2093Hz を 8 秒）を、2 つの速さの周期関数（倍音 16 本）の和で最小二乗に解いたもの
+// （00_120 の組で残り −44〜−48dB。1 つの周期で畳むと −23dB で、帯ごとに両方の回転が混ざっている）。速さは録音で詰めた値（表 1 の 0.997〜1.0015 倍）。
+// 録った 8 秒を繰り返す前の作り（.mod）は、ホーンをローターの周期で繰り返していて、8 秒を過ぎると周期ごとに揺れが途切れていた
+struct rot_file {
+	int nb = 0;
+	double hz[2][2] = {};                    // [遅い・速い][ローター・ホーン]
+	std::vector<float> raw;                  // [帯][速さ][左右][成分][A・d][nb]
+	const float *tab(int bd, int sp, int ch, int comp, int q) const
+	{
+		return raw.data() + ((((size_t(bd) * 2 + size_t(sp)) * 2 + size_t(ch)) * 2 + size_t(comp)) * 2 + size_t(q)) * size_t(nb);
+	}
+};
+
+inline bool load_rot(const std::string &path, rot_file &r)
+{
+	FILE *f = std::fopen(path.c_str(), "rb");
+	if (!f)
+		return false;
+	char head[256];
+	if (!std::fgets(head, sizeof head, f) ||
+	    std::sscanf(head, "ROT nb=%d rotor_slow=%lf horn_slow=%lf rotor_fast=%lf horn_fast=%lf", &r.nb, &r.hz[0][0], &r.hz[0][1], &r.hz[1][0], &r.hz[1][1]) != 5 ||
+	    r.nb <= 0) {
+		std::fclose(f);
+		return false;
+	}
+	r.raw.resize(size_t(r.nb) * 32);
+	const size_t got = std::fread(r.raw.data(), sizeof(float), r.raw.size(), f);
+	std::fclose(f);
+	return got == r.raw.size();
+}
+
+// 遅い ↔ 速いの移り変わりの時間（秒、全幅）。Slow-Fast Time of Rotor（p5）・Horn（p6）の値 / 10 秒。上りも下りも同じ
+// （15 組の切り替えの録音で、坂の中ほど（遅いと速いの相乗平均）を過ぎた時刻から読んだ: ローター 25・50・62 で 2.5・5.2・6.0 秒、
+// ホーン 9・13・27・33 で 0.9〜1.4・1.3・2.7・3.3 秒）
+inline double rot_ramp_seconds(int v, bool horn, bool up)
+{
+	(void)horn;
+	(void)up;
+	return std::max(0.01, v / 10.0);
+}
+
+// ローターとホーンの回る速さと位置。速さは周波数の対数でまっすぐに、遅い ↔ 速いの全幅を rot_ramp_seconds で動く
+// （00_120 の組: ローター 0.88 ↔ 6.04Hz が上りも下りも 5 秒前後、ホーン 1.01 ↔ 6.71Hz が上り 0.8・下り 1.4 秒。切り替えの録音を窓ごとに読んだもの）
+struct rotor_motion {
+	double ph[2] = {0, 0}, lf[2] = {0, 0}, ls[2] = {0, 0}, lfast[2] = {0, 0}, rate_up[2] = {0, 0}, rate_dn[2] = {0, 0};
+	bool fast = false;
+	void init(const rot_file &r, const block &b)
+	{
+		fast = b.p[16] != 0;
+		for (int c = 0; c < 2; c++) {
+			ls[c] = std::log(std::max(1e-3, r.hz[0][c]));
+			lfast[c] = std::log(std::max(1e-3, r.hz[1][c]));
+			lf[c] = fast ? lfast[c] : ls[c];
+			const double span = std::fabs(lfast[c] - ls[c]);
+			rate_up[c] = span / (std::max(1e-3, rot_ramp_seconds(b.p[5 + c], c == 1, true)) * FS);
+			rate_dn[c] = span / (std::max(1e-3, rot_ramp_seconds(b.p[5 + c], c == 1, false)) * FS);
+			ph[c] = 0;
+		}
+	}
+	void step()
+	{
+		for (int c = 0; c < 2; c++) {
+			if (fast)
+				lf[c] = std::min(lfast[c], lf[c] + rate_up[c]);
+			else
+				lf[c] = std::max(ls[c], lf[c] - rate_dn[c]);
+			ph[c] += std::exp(lf[c]) / FS;
+			if (ph[c] >= 1)
+				ph[c] -= 1;
+		}
+	}
+	double weight(int c) const { return lfast[c] == ls[c] ? 0.0 : std::max(0.0, std::min(1.0, (lf[c] - ls[c]) / (lfast[c] - ls[c]))); }
+};
+
+// 帯 bd・左右 ch の、ローター・ホーンの成分の A と d（サンプル）。遅いと速いの形を、それぞれの回転の速さの重みで混ぜる
+inline void rot_taps(const rot_file &r, const rotor_motion &m, int bd, int ch, double A[2], double d[2])
+{
+	for (int comp = 0; comp < 2; comp++) {
+		const double u = m.ph[comp] * r.nb;
+		const int i = int(u) % r.nb, j = (i + 1) % r.nb;
+		const double fr = u - std::floor(u), w = m.weight(comp);
+		double v[2];
+		for (int q = 0; q < 2; q++) {
+			const float *s = r.tab(bd, 0, ch, comp, q), *f = r.tab(bd, 1, ch, comp, q);
+			const double vs = s[i] + (s[j] - s[i]) * fr, vf = f[i] + (f[j] - f[i]) * fr;
+			v[q] = vs + (vf - vs) * w;
+		}
+		A[comp] = v[0];
+		d[comp] = v[1];
+	}
+}
+
+// 形の中の遅れの最小（サンプル。負なら先読みが要る）
+inline double rot_dmin(const rot_file &r)
+{
+	double m = 0;
+	for (int bd = 0; bd < 2; bd++)
+		for (int sp = 0; sp < 2; sp++)
+			for (int ch = 0; ch < 2; ch++)
+				for (int comp = 0; comp < 2; comp++) {
+					const float *d = r.tab(bd, sp, ch, comp, 1);
+					for (int i = 0; i < r.nb; i++)
+						m = std::min(m, double(d[i]));
+				}
+	return m;
+}
+
+// Dual Rotor の形の名前（Speed Control を slow にした組）
+inline std::string rot_key(const block &b)
+{
+	std::string k = "t" + std::to_string(b.msb) + "_" + std::to_string(b.lsb);
+	for (int i = 1; i <= 16; i++)
+		k += "_" + std::to_string(i == 16 ? 0 : b.p[i]);
+	return k + "_0";
+}
+inline bool rot_type(const block &b) { return b.msb == 8 && b.lsb >= 0x70 && b.lsb <= 0x72; }
 
 // 揺れる型の芯: 1kHz で分けた 2 つの帯に、録った A(t)・d(t) を掛ける。nrm は帯ごとの周波数の形の大きさ（220Hz・2093Hz での値）で A を割る
 inline void mod_core(const buf xb2[2][2], const mod_file &m, const double nrm[2][2], buf out[2])
 {
 	const size_t n = xb2[0][0].size();
 	auto series = [&](int col, double tt) {
-		const double mm = m.frames;
-		double u = tt / FS * m.rate;
-		if (m.period > 0 && u >= mm - 1)
-			u = (mm - 1 - m.period) + std::fmod(u - (mm - 1 - m.period), double(m.period));
-		else if (u > mm - 1)
-			u = mm - 1;
+		const double u = loop_index(tt / FS * m.rate, m.perf, m.frames);
 		const int i = int(u);
 		const double fr = u - i;
 		const float a0 = m.raw[size_t(i) * 8 + col], a1 = m.raw[size_t(std::min(i + 1, m.frames - 1)) * 8 + col];
@@ -1007,6 +1166,33 @@ inline void mod_core(const buf xb2[2][2], const mod_file &m, const double nrm[2]
 			}
 }
 
+// Dual Rotor の芯（オフライン）: ローターとホーンの位置を速さから積み上げ、帯・左右ごとに 2 つの成分の A × 入口(t − d) を足す
+inline void rot_core(const buf xb2[2][2], const rot_file &r, const block &b, const double nrm[2][2], buf out[2])
+{
+	const size_t n = xb2[0][0].size();
+	out[0].assign(n, 0.0);
+	out[1].assign(n, 0.0);
+	rotor_motion m;
+	m.init(r, b);
+	for (size_t t = 0; t < n; t++) {
+		for (int bd = 0; bd < 2; bd++)
+			for (int ch = 0; ch < 2; ch++) {
+				double A[2], d[2];
+				rot_taps(r, m, bd, ch, A, d);
+				const buf &xb = xb2[ch][bd];
+				for (int c = 0; c < 2; c++) {
+					const double pos = double(t) - d[c];
+					if (pos < 0 || pos >= double(n - 1))
+						continue;
+					const size_t k0 = size_t(pos);
+					const double fr = pos - double(k0);
+					out[ch][t] += A[c] / nrm[bd][ch] * (xb[k0] + (xb[k0 + 1] - xb[k0]) * fr);
+				}
+			}
+		m.step();
+	}
+}
+
 inline bool modfx(buf &L, buf &R, const block &b, const std::string &moddir, int tempo)
 {
 	std::string k = "t" + std::to_string(b.msb) + "_" + std::to_string(b.lsb);
@@ -1014,7 +1200,12 @@ inline bool modfx(buf &L, buf &R, const block &b, const std::string &moddir, int
 		k += "_" + std::to_string(b.p[i]);
 	k += "_" + std::to_string(b.is(14, 0x50) ? tempo : 0);
 	mod_file m100;
-	if (!load_mod(moddir + "/" + k + ".mod", m100))
+	// Dual Rotor は、回る位置で読む形（.rot）があればそれ（Speed Control の slow・fast の両方の形を持つ）
+	rot_file rot;
+	const bool use_rot = rot_type(b) && load_rot(moddir + "/" + rot_key(b) + ".rot", rot);
+	if (use_rot)
+		k = rot_key(b);
+	else if (!load_mod(moddir + "/" + k + ".mod", m100))
 		return false;
 	const size_t n = L.size();
 	// 左右を別々に通す（Rotary・Dual Rotor はスピーカーへ足して送る形なので左右を足す）
@@ -1068,8 +1259,10 @@ inline bool modfx(buf &L, buf &R, const block &b, const std::string &moddir, int
 	buf out[2];
 	// 歪みを中に持つ Rotary（08 51〜53・61〜63）は音量 100・25 で録った 2 つを、入口の包絡（50ms の RMS）で混ぜる
 	mod_file m25;
-	const bool lv = b.msb == 8 && ((b.lsb >= 0x51 && b.lsb <= 0x53) || (b.lsb >= 0x61 && b.lsb <= 0x63)) &&
+	const bool lv = !use_rot && b.msb == 8 && ((b.lsb >= 0x51 && b.lsb <= 0x53) || (b.lsb >= 0x61 && b.lsb <= 0x63)) &&
 			load_mod(moddir + "/" + k + "_L25.mod", m25) && m25.indb != m100.indb;
+	m100.perf = loop_period(b, m100.rate, m100.period, m100.frames);
+	m25.perf = loop_period(b, m25.rate, m25.period, m25.frames);
 	if (lv) {
 		buf o100[2], o25[2];
 		mod_core(xb2, m100, nrm, o100);
@@ -1092,7 +1285,9 @@ inline bool modfx(buf &L, buf &R, const block &b, const std::string &moddir, int
 			for (int ch = 0; ch < 2; ch++)
 				out[ch][i] = (1 - u) * olo[ch][i] + u * ohi[ch][i];
 		}
-	} else
+	} else if (use_rot)
+		rot_core(xb2, rot, b, nrm, out);
+	else
 		mod_core(xb2, m100, nrm, out);
 	L = out[0];
 	R = out[1];
@@ -1156,11 +1351,9 @@ inline bool ltvfx(buf &L, buf &R, const block &b, const std::string &ltvdir, int
 	buf out[2] = {buf(n + 3 * NW, 0.0), buf(n + 3 * NW, 0.0)}, norm(n + 3 * NW, 0.0);
 	const int nf = 1 + int((x.size() - NW) / HOP);
 	std::vector<cplx> X(NW), Y(NW);
+	const double perf = loop_period(b, double(FS) / HOP, per, F);
 	for (int i = 0; i < nf; i++) {
-		int j = i;
-		if (i >= F && per > 0)
-			j = (F - 1 - per) + (i - (F - 1 - per)) % per;
-		j = std::min(j, F - 1);
+		const int j = std::min(F - 1, int(std::lround(loop_index(i, perf, F))));
 		for (int ch = 0; ch < 2; ch++) {
 			for (int q = 0; q < NW; q++)
 				X[q] = xs2[ch][size_t(i) * HOP + q] * w[q];

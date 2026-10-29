@@ -439,6 +439,7 @@ public:
 		std::fclose(f);
 		if (F < 1 || NW % tv_conv::B || HOP % tv_conv::B)
 			return false;
+		perf = motif_fx::loop_period(b, double(FS) / HOP, per, F);
 		dyn = false;
 		stereo = !b.is(15, 0x78) && !(motif_fx::chorus_type(b) && b.p[15] == 0);
 		setup();
@@ -463,6 +464,7 @@ public:
 	}
 	bool init_dyn(const block &b, const std::string &dyndir)
 	{
+		perf = 0;
 		std::string k = "t" + std::to_string(b.msb) + "_" + std::to_string(b.lsb);
 		for (int i = 1; i <= 16; i++)
 			k += "_" + std::to_string(b.p[i]);
@@ -563,6 +565,7 @@ public:
 
 private:
 	int NW = 4096, HOP = 1024, F = 0, per = 0, NB = 2049, D = 0;
+	double perf = 0;                         // 繰り返す周期（枠、小数。motif_fx::loop_period）
 	bool dyn = false, stereo = true;
 	std::vector<float> raw;
 	std::vector<double> win2, acw;
@@ -654,10 +657,7 @@ private:
 			for (auto &s : slot) {
 				if (s.i >= 0)
 					continue;
-				long j = i;
-				if (i >= F && per > 0)
-					j = (F - 1 - per) + (i - (F - 1 - per)) % per;
-				j = std::min<long>(j, F - 1);
+				const long j = std::min<long>(F - 1, std::lround(motif_fx::loop_index(double(i), perf, F)));
 				std::vector<cplx> H(NB);
 				std::vector<double> h[2];
 				for (int c = 0; c < 2; c++) {
@@ -718,7 +718,13 @@ public:
 		for (int i = 1; i <= 16; i++)
 			k += "_" + std::to_string(b.p[i]);
 		k += "_" + std::to_string(b.is(14, 0x50) ? tempo : 0);
-		if (!motif_fx::load_mod(moddir + "/" + k + ".mod", m100))
+		// Dual Rotor は、回る位置で読む形（.rot）があればそれ（Speed Control の切り替えと、速さの坂も回す）
+		use_rot = motif_fx::rot_type(b) && motif_fx::load_rot(moddir + "/" + motif_fx::rot_key(b) + ".rot", rot);
+		if (use_rot) {
+			k = motif_fx::rot_key(b);
+			rm.init(rot, b);
+			m100 = motif_fx::mod_file();
+		} else if (!motif_fx::load_mod(moddir + "/" + k + ".mod", m100))
 			return false;
 		stereo = !(b.msb == 8 && b.lsb >= 0x50 && b.lsb <= 0x72);
 		std::vector<float> eqm;
@@ -750,8 +756,10 @@ public:
 				nrm[1][ch] = std::max(1e-3, std::abs(shape(440.0 * std::exp2(27 / 12.0), ch)));
 				sh[ch].init(fir_from([&](double f) { return shape(f, ch); }, 4096, PRE));
 			}
-		lv = b.msb == 8 && ((b.lsb >= 0x51 && b.lsb <= 0x53) || (b.lsb >= 0x61 && b.lsb <= 0x63)) &&
+		lv = !use_rot && b.msb == 8 && ((b.lsb >= 0x51 && b.lsb <= 0x53) || (b.lsb >= 0x61 && b.lsb <= 0x63)) &&
 		     motif_fx::load_mod(moddir + "/" + k + "_L25.mod", m25) && m25.indb != m100.indb;
+		m100.perf = motif_fx::loop_period(b, m100.rate, m100.period, m100.frames);
+		m25.perf = motif_fx::loop_period(b, m25.rate, m25.period, m25.frames);
 		// 1kHz で分ける 2 次のバターワース（双一次変換）
 		const double K = std::tan(motif_fx::PI * 1000.0 / FS), nn = 1 / (1 + std::sqrt(2.0) * K + K * K);
 		lpb[0] = K * K * nn, lpb[1] = 2 * K * K * nn, lpb[2] = K * K * nn;
@@ -769,10 +777,15 @@ public:
 			for (int i = 0; i < m->frames; i++)
 				for (int c = 1; c < 8; c += 2)
 					dmin = std::min(dmin, double(m->raw[size_t(i) * 8 + c]));
+		if (use_rot)
+			dmin = std::min(dmin, motif_fx::rot_dmin(rot));
 		D = size_t(std::ceil(-dmin)) + (dmin < 0 ? 1 : 0);
 		return true;
 	}
 	int latency() const { return int(D) + (has_shape ? int(PRE) : 0); }
+	bool rotor() const { return use_rot; }
+	// Speed Control（p16）の切り替え（つまみからのずらしを足した値で）。速さは坂で移る
+	void set_fast(bool f) { rm.fast = f; }
 
 	void tick(double &L, double &R)
 	{
@@ -787,7 +800,10 @@ public:
 				ring[ch * 2 + bd][t & mask] = v;
 			}
 		double o[2];
-		core(m100, o);
+		if (use_rot)
+			rot_core(o);
+		else
+			core(m100, o);
 		if (lv) {
 			const double mo = (xs[0] + xs[1]) / 2;
 			const size_t w = env.size(), ei = t % w;
@@ -815,7 +831,9 @@ public:
 
 private:
 	motif_fx::mod_file m100, m25;
-	bool stereo = true, has_shape = false, lv = false;
+	motif_fx::rot_file rot;
+	motif_fx::rotor_motion rm;
+	bool stereo = true, has_shape = false, lv = false, use_rot = false;
 	double nrm[2][2] = {{1, 1}, {1, 1}};
 	conv_rt sh[2];
 	double lpb[3] = {}, hpb[3] = {}, a1 = 0, a2 = 0;
@@ -834,16 +852,36 @@ private:
 	}
 	double series(const motif_fx::mod_file &m, int col) const
 	{
-		const double mm = m.frames;
-		double u = (double(t) - double(D)) / FS * m.rate;
-		if (m.period > 0 && u >= mm - 1)
-			u = (mm - 1 - m.period) + std::fmod(u - (mm - 1 - m.period), double(m.period));
-		else if (u > mm - 1)
-			u = mm - 1;
+		const double u = motif_fx::loop_index((double(t) - double(D)) / FS * m.rate, m.perf, m.frames);
 		const int i = int(u);
 		const double fr = u - i;
 		const float a0 = m.raw[size_t(i) * 8 + col], a1v = m.raw[size_t(std::min(i + 1, m.frames - 1)) * 8 + col];
 		return a0 + (a1v - a0) * fr;
+	}
+	// Dual Rotor（rot_core と同じ）: 帯・左右ごとに、ローターとホーンの成分の A × 入口(τ − d)。位置は回している時刻で進める
+	void rot_core(double o[2])
+	{
+		const size_t mask = ring[0].size() - 1;
+		o[0] = o[1] = 0;
+		if (t < D)
+			return;
+		const size_t tau = t - D;
+		for (int bd = 0; bd < 2; bd++)
+			for (int ch = 0; ch < 2; ch++) {
+				double A[2], d[2];
+				motif_fx::rot_taps(rot, rm, bd, ch, A, d);
+				const std::vector<double> &xb = ring[ch * 2 + bd];
+				for (int c = 0; c < 2; c++) {
+					const double pos = double(tau) - d[c];
+					if (pos < 0)
+						continue;
+					const size_t k0 = size_t(pos);
+					const double fr = pos - double(k0);
+					const double v0 = xb[k0 & mask], v = k0 + 1 <= t ? v0 + (xb[(k0 + 1) & mask] - v0) * fr : v0;
+					o[ch] += A[c] / nrm[bd][ch] * v;
+				}
+			}
+		rm.step();
 	}
 	void core(const motif_fx::mod_file &m, double o[2]) const
 	{
@@ -1015,6 +1053,12 @@ public:
 	}
 	bool supported() const { return kind >= 0; }
 	bool thru() const { return kind == 0; }
+	// つまみ（コントロールセット）で動くパラメーター p（1〜16）の今の値。今は Dual Rotor の Speed Control（16）だけ回す
+	void set_param(int p, int v)
+	{
+		if (kind == 11 && md.rotor() && p == 16)
+			md.set_fast(v != 0);
+	}
 	bool approx() const { return approx_; }
 	// この枠の出口の遅れ（サンプル。歪みだけ DIST_PRE）
 	int latency() const { return kind == 8 ? int(DIST_PRE) : kind == 10 ? tv.latency() : kind == 11 ? md.latency() : 0; }
@@ -1543,6 +1587,9 @@ public:
 		A.init(a, tempo, fxddir);
 		Bk.init(b, tempo, fxddir);
 		con = connect;
+		for (auto &w : last_)
+			for (int &v : w)
+				v = -1;
 		const int la = A.latency(), lb = Bk.latency();
 		if (con == 1) {
 			lat = la + lb;
@@ -1567,6 +1614,14 @@ public:
 		}
 	}
 	bool supported() const { return A.supported() && Bk.supported(); }
+	// which: 0 = A、1 = B のパラメーター p（1〜16）をつまみで動かした値（前と同じなら何もしない）
+	void set_param(int which, int p, int v)
+	{
+		if (which < 0 || which > 1 || p < 1 || p > 16 || last_[which][p] == v)
+			return;
+		last_[which][p] = v;
+		(which ? Bk : A).set_param(p, v);
+	}
 	bool approx() const { return A.approx() || Bk.approx(); }
 	bool recorded() const { return A.recorded() || Bk.recorded(); }
 	const block_rt &block_a() const { return A; }
@@ -1623,6 +1678,7 @@ private:
 private:
 	block_rt A, Bk;
 	int con = 0, lat = 0;
+	int last_[2][17] = {};
 	delay2 d0, d_in, da, db;
 };
 

@@ -389,6 +389,24 @@ inline bool config_from_bulk(const std::map<std::array<int, 3>, std::vector<unsi
 	return true;
 }
 
+// つまみ（コントロールセット）で動くインサーションのパラメーターを、描く前に渡す（鳴らす糸で、mtx の中）。値 = 音色の値 + engine::ins_offset。
+// 今これで回るのは Dual Rotor の Speed Control（MW で slow ↔ fast。オルガンの 36 音色）だけ（block_rt::set_param）
+inline void sync_ins_ctrl(const motif_sampler::engine &eg, const motif_sampler::patch &pt, motif_fx_rt::insertion_rt &ins)
+{
+	if (!eg.has_ins_route())
+		return;
+	for (int w = 0; w < 2; w++) {
+		auto it = pt.fxline.find(w ? "insb" : "insa");
+		if (it == pt.fxline.end())
+			continue;
+		const motif_fx::block b = motif_fx::parse_block(it->second);
+		for (int p = 1; p <= 16; p++) {
+			const double off = eg.ins_offset((w ? 20 : 4) + p - 1);
+			ins.set_param(w, p, std::max(0, int(std::lround(b.p[p] + off))));
+		}
+	}
+}
+
 struct part {
 	part_cfg cfg;
 	std::unique_ptr<motif_sampler::patch> pt;
@@ -1141,6 +1159,8 @@ private:
 			if (l[j] != 0.0f || r[j] != 0.0f || g0[j] != 0.0f || g1[j] != 0.0f || g2[j] != 0.0f || h0[j] != 0.0f || h1[j] != 0.0f || h2[j] != 0.0f)
 				in_silent = false;
 		const bool ins_idle = in_silent && P.ins_quiet >= INS_IDLE_SAMPLES;
+		if (P.has_ins && P.ins && P.pt)
+			sync_ins_ctrl(*P.eg, *P.pt, *P.ins);
 		double ins_peak = 0;
 		for (int j = 0; j < n; j++) {
 			double dl, dr, il = 0, ir = 0;

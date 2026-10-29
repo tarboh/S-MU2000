@@ -81,9 +81,20 @@ def main():
     r = mr_ref.Ref(mr_ref.opt(a, "--midi", "MOTIF-RACK ES-1"), mr_ref.opt(a, "--rec", "../../build/rec.exe"), mr_ref.opt(a, "--dev", "0"), d)
     mi = mr_midi.MidiIn(mr_ref.opt(a, "--midi-in", "MOTIF-RACK ES-1"))
 
-    def take(name, hold=1.0):
+    # --at 3:p16=1,8:p16=0 … --long の wet の途中で、鳴らし始めから t 秒にインサーションのパラメーターを替える（ロータリーの速さの切り替えなど）
+    ats = []
+    for s in (mr_ref.opt(a, "--at", "") or "").split(","):
+        if s:
+            t, kv = s.split(":")
+            k, v = kv.split("=")
+            ats.append((float(t), 0x02 + 2 * (int(k[1:]) - 1), int(v)))
+
+    def take(name, hold=1.0, at=()):
         if not os.path.exists(os.path.join(d, name + ".wav")):
-            r.record(name, 0.3 + hold + 0.3, [(0.3, lambda: r.note_on(key, 100)), (0.3 + hold, lambda: r.note_off(key))])
+            ev = [(0.3, lambda: r.note_on(key, 100)), (0.3 + hold, lambda: r.note_off(key))]
+            for t, off, v in at:
+                ev.append((0.3 + t, lambda off=off, v=v: r.param(0x40, 0x03, off, v >> 7, v & 0x7F)))
+            r.record(name, 0.3 + hold + 0.3, sorted(ev, key=lambda e: e[0]))
 
     try:
         r.all_off()
@@ -116,7 +127,7 @@ def main():
             take("cs%s_long_dry" % tag, float(longs))
             r.el(0, 0x41, 0x16, 1)
             time.sleep(0.05)
-            take("cs%s_long_wet" % tag, float(longs))
+            take("cs%s_long_wet" % tag, float(longs), ats)
             return
         for L in (() if "--step-only" in a else LEVELS):
             r.el(0, 0x41, 0x20, L)
