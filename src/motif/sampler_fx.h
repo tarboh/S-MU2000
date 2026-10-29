@@ -477,6 +477,37 @@ inline double edge_p(double e)
 
 inline bool dist_type(const block &b) { return b.is(9, 48) || b.is(9, 49) || b.is(9, 0) || b.is(9, 16) || b.is(9, 1) || b.is(9, 32); }
 
+// 歪みの組のまま録った応答（fxds/<名前>.dsx）の名前。Dry/Wet は 127、V-Distortion の Delay Mix は 0 にそろえる（どちらもあとで掛ける）。
+// lev >= 0 なら Output Level（p5）をその値にした名前
+inline std::string dist_set_key(const block &b, int lev = -1)
+{
+	std::string k = "t" + std::to_string(b.msb) + "_" + std::to_string(b.lsb);
+	for (int i = 1; i <= 16; i++)
+		k += "_" + std::to_string(i == 10 ? 127 : (i == 11 && b.is(9, 16)) ? 0 : (i == 5 && lev >= 0) ? lev : b.p[i]);
+	return k;
+}
+
+// 組のまま録った応答を探す。その組が無くて、Output Level だけ違う組があれば（近い値から）それを使い、その組の Output Level を lev_ref に返す。
+// Output Level は頭打ちのあとの大きさなので、録った組に (p5 / lev_ref)² を掛ければよい（Amp Simulator・Compressor で測った 40·log10 と同じ形。
+// Output Level を 1 つ動かすと既定値の組に替わり、KilrWhammy（01_068 の B）で 10dB 跳ねていた）
+inline stereo_ir load_dist_set(const block &b, const std::string &fxddir, int &lev_ref)
+{
+	lev_ref = b.p[5];
+	stereo_ir ir = load_ir(fxddir + "/../fxds/" + dist_set_key(b) + ".dsx");
+	for (int d = 1; d <= 127 && !ir.ok; d++)
+		for (int lev : {b.p[5] - d, b.p[5] + d}) {
+			if (lev < 0 || lev > 127 || ir.ok)
+				continue;
+			ir = load_ir(fxddir + "/../fxds/" + dist_set_key(b, lev) + ".dsx");
+			if (ir.ok)
+				lev_ref = lev;
+		}
+	return ir;
+}
+
+// Output Level の比（組の録音の値 lev_ref に対して）
+inline double dist_level_gain(int lev, int lev_ref) { return lev_ref == lev ? 1.0 : std::pow(double(std::max(0, lev)) / std::max(1, lev_ref), 2); }
+
 // V-Distortion の中のディレイ（遅れ・帰り・大きさを 01_049・01_068 で確かめた）: 帰りの線（遅れ p8 × 0.1ms、帰り (p9 − 64) / 64、戻りに 1 次の LPF (1 − p12 / 10)²）から、
 // 左は p6・右は p7（× 0.1ms）で取り出し、Delay Mix（p11 / 95）で足す。掛かるのは Dry/Wet で混ぜたあとの音（元の音のこだまも出る。
 // Dry/Wet 1 の GM の Mute・21 の SomeHair で、歪みの側だけに掛けると離したあとが実機より 15〜19dB 小さく、混ぜたあとなら 2〜3dB。2026-10-27）
@@ -524,11 +555,9 @@ inline void distortion(buf &L, buf &R, const block &b, const std::string &fxddir
 	// プリセットの組のまま録ったもの（tools/motif/mr_fx_dist_sets.py、fxds/<名前>.dsx）があれば、それをそのまま使う
 	bool per_set = false;
 	stereo_ir ir;
+	int lev_ref = b.p[5];
 	if (!b.is(9, 48)) {      // Amp Simulator は式のまま（組のまま録ったものより 3 音色で少し合った）
-		std::string k = "t" + std::to_string(b.msb) + "_" + std::to_string(b.lsb);
-		for (int i = 1; i <= 16; i++)
-			k += "_" + std::to_string(i == 10 ? 127 : (i == 11 && b.is(9, 16)) ? 0 : b.p[i]);
-		ir = load_ir(fxddir + "/../fxds/" + k + ".dsx");
+		ir = load_dist_set(b, fxddir, lev_ref);
 		per_set = ir.ok;
 	}
 	if (!per_set) {
@@ -550,7 +579,7 @@ inline void distortion(buf &L, buf &R, const block &b, const std::string &fxddir
 	if ((b.is(9, 48) || b.is(9, 49)) && b.p[3] > 0 && !per_set)
 		fc = t3(b.p[3]);
 	const double k = per_set ? 1.0 : std::pow(10.0, (drive_gain_db(b.p[1]) - drive_gain_db(drive_s)) / 20);
-	double og = 1.0;
+	double og = per_set ? dist_level_gain(b.p[5], lev_ref) : 1.0;
 	if (b.is(9, 48) && !per_set)
 		og = std::pow(10.0, 40 * std::log10(std::max(1, b.p[4]) / 80.0) / 20);
 	const double ang = PI / 2 * (std::max(1, b.p[10]) - 1) / 126.0;  // Dry/Wet: 元の音 cos・wet sin（Dry/Wet 20・64 で確かめた）

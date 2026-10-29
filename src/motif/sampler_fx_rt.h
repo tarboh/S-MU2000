@@ -1315,11 +1315,9 @@ private:
 		}
 		bool per_set = false;
 		motif_fx::stereo_ir ir;
+		int lev_ref = b.p[5];
 		if (!b.is(9, 48)) {
-			std::string k = "t" + std::to_string(b.msb) + "_" + std::to_string(b.lsb);
-			for (int i = 1; i <= 16; i++)
-				k += "_" + std::to_string(i == 10 ? 127 : (i == 11 && b.is(9, 16)) ? 0 : b.p[i]);
-			ir = motif_fx::load_ir(fxddir + "/../fxds/" + k + ".dsx");
+			ir = motif_fx::load_dist_set(b, fxddir, lev_ref);
 			per_set = ir.ok;
 		}
 		if (!per_set) {
@@ -1342,7 +1340,7 @@ private:
 		if ((b.is(9, 48) || b.is(9, 49)) && b.p[3] > 0 && !per_set)
 			fc = motif_fx::t3(b.p[3]);
 		dk = per_set ? 1.0 : std::pow(10.0, (motif_fx::drive_gain_db(b.p[1]) - motif_fx::drive_gain_db(drive_s)) / 20);
-		og = 1.0;
+		og = per_set ? motif_fx::dist_level_gain(b.p[5], lev_ref) : 1.0;
 		if (b.is(9, 48) && !per_set)
 			og = std::pow(10.0, 40 * std::log10(std::max(1, b.p[4]) / 80.0) / 20);
 		const double ang = motif_fx::PI / 2 * (std::max(1, b.p[10]) - 1) / 126.0;
