@@ -645,6 +645,39 @@ std::unique_ptr<motif_multi::multi> load_multi(const std::string &file, const fs
 	return M;
 }
 
+// ボイスのインサーションとリバーブ・コーラスの枠（リバーブ・コーラスは送り 127 で作る）
+struct voice_fx {
+	motif_fx_rt::insertion_rt ins;
+	motif_fx_rt::reverb_rt rev;
+	motif_fx_rt::chorus_rt cho;
+	std::string ins_name, rev_name, cho_name;
+};
+
+// パッチの fx 行から作る（応答は capture の置き場の fx/・fxd/。パッチの置き場 dir の 1 つ上）
+void build_voice_fx(const motif_sampler::kv &fx, const std::string &dir, voice_fx &F)
+{
+	using motif_sampler::geti;
+	const std::string cap = dir + "..";
+	auto get = [&](const char *k) { auto it = fx.find(k); return it == fx.end() ? motif_fx::block() : motif_fx::parse_block(it->second); };
+	const motif_fx::block rv = get("reverb"), ch = get("chorus");
+	char t[96];
+	const motif_fx::block ia = get("insa"), ib = get("insb");
+	F.ins.init(ia, ib, geti(fx, "connect"), geti(fx, "tempo", 120), cap + "/fxd");
+	auto state = [](const motif_fx_rt::block_rt &b) { return b.thru() ? "" : !b.supported() ? "（素通し）" : b.approx() ? "（近似）" : ""; };
+	std::snprintf(t, sizeof t, "A %02X %02X%s・B %02X %02X%s・つなぎ %d", ia.msb, ia.lsb, state(F.ins.block_a()), ib.msb, ib.lsb, state(F.ins.block_b()),
+	              geti(fx, "connect"));
+	F.ins_name = t;
+	motif_fx::block rv127 = rv, ch127 = ch;
+	rv127.send = ch127.send = 127;
+	F.rev.init(rv127, cap + "/fx", geti(fx, "chorev"));
+	std::snprintf(t, sizeof t, "%02X %02X", rv.msb, rv.lsb);
+	F.rev_name = F.rev.active() ? t : std::string(t) + "（応答が無い）";
+	F.cho.init(ch127, geti(fx, "tempo", 120), cap + "/fxd");
+	F.cho.delay_start(F.ins.latency());     // インサーションの遅れ（歪み）の分、コーラスの枠の揺れの時計も遅らせる
+	std::snprintf(t, sizeof t, "%02X %02X", ch.msb, ch.lsb);
+	F.cho_name = F.cho.active() ? (F.cho.approx() ? std::string(t) + "（近似）" : std::string(t)) : std::string(t) + "（この型はまだ）";
+}
+
 std::unique_ptr<loaded> load_voice(const voice_entry &v)
 {
 	auto L = std::make_unique<loaded>();
@@ -657,29 +690,116 @@ std::unique_ptr<loaded> load_voice(const voice_entry &v)
 	L->label = v.bank + ":" + std::to_string(v.number) + " " + v.name;
 	L->ins_rev = motif_sampler::geti(L->pt.fxline, "insrev") / 127.0;
 	L->ins_cho = motif_sampler::geti(L->pt.fxline, "inscho") / 127.0;
-	// リバーブとコーラスの枠（応答は capture の置き場の fx/・fxd/。パッチの置き場の 1 つ上）
-	const std::string cap = L->pt.dir + "..";
 	auto get = [&](const char *k) { auto it = L->pt.fxline.find(k); return it == L->pt.fxline.end() ? motif_fx::block() : motif_fx::parse_block(it->second); };
-	const motif_fx::block rv = get("reverb"), ch = get("chorus");
-	char t[96];
-	const motif_fx::block ia = get("insa"), ib = get("insb");
-	L->ins.init(ia, ib, motif_sampler::geti(L->pt.fxline, "connect"), motif_sampler::geti(L->pt.fxline, "tempo", 120), cap + "/fxd");
-	auto state = [](const motif_fx_rt::block_rt &b) { return b.thru() ? "" : !b.supported() ? "（素通し）" : b.approx() ? "（近似）" : ""; };
-	std::snprintf(t, sizeof t, "A %02X %02X%s・B %02X %02X%s・つなぎ %d", ia.msb, ia.lsb, state(L->ins.block_a()), ib.msb, ib.lsb, state(L->ins.block_b()),
-	              motif_sampler::geti(L->pt.fxline, "connect"));
-	L->ins_name = t;
-	L->rev_send = rv.send;
-	L->cho_send = ch.send;
-	motif_fx::block rv127 = rv, ch127 = ch;
-	rv127.send = ch127.send = 127;
-	L->rev.init(rv127, cap + "/fx", motif_sampler::geti(L->pt.fxline, "chorev"));
-	std::snprintf(t, sizeof t, "%02X %02X", rv.msb, rv.lsb);
-	L->rev_name = L->rev.active() ? t : std::string(t) + "（応答が無い）";
-	L->cho.init(ch127, motif_sampler::geti(L->pt.fxline, "tempo", 120), cap + "/fxd");
-	L->cho.delay_start(L->ins.latency());     // インサーションの遅れ（歪み）の分、コーラスの枠の揺れの時計も遅らせる
-	std::snprintf(t, sizeof t, "%02X %02X", ch.msb, ch.lsb);
-	L->cho_name = L->cho.active() ? (L->cho.approx() ? std::string(t) + "（近似）" : std::string(t)) : std::string(t) + "（この型はまだ）";
+	L->rev_send = get("reverb").send;
+	L->cho_send = get("chorus").send;
+	voice_fx F;
+	build_voice_fx(L->pt.fxline, L->pt.dir, F);
+	std::swap(L->ins, F.ins);
+	std::swap(L->rev, F.rev);
+	std::swap(L->cho, F.cho);
+	L->ins_name = F.ins_name;
+	L->rev_name = F.rev_name;
+	L->cho_name = F.cho_name;
 	return L;
+}
+
+// 画面でボイスのエフェクトの値を替えたとき: パッチの fx 行を書き換えて、インサーション・リバーブ・コーラスを作り直す
+// （作るのは鍵の外、入れ替えは中。key は fx 行の名前（insa・insb・reverb・chorus・connect）。送りは画面の送りのつまみのまま）
+void set_voice_fx(player &P, const std::string &key, const std::string &value)
+{
+	loaded &L = *P.cur;
+	motif_sampler::kv fx;
+	{
+		std::lock_guard<std::mutex> lk(P.mtx);
+		L.pt.fxline[key] = value;
+		fx = L.pt.fxline;
+	}
+	voice_fx F;
+	build_voice_fx(fx, L.pt.dir, F);
+	std::lock_guard<std::mutex> lk(P.mtx);
+	std::swap(L.ins, F.ins);
+	std::swap(L.rev, F.rev);
+	std::swap(L.cho, F.cho);
+	L.ins_name = F.ins_name;
+	L.rev_name = F.rev_name;
+	L.cho_name = F.cho_name;
+}
+
+// エフェクトの型の名前（「MSB LSB 名前」。一覧に無い型は番号だけ）
+std::string fx_type_label(const std::vector<motif_multi::ins_type> &types, int code)
+{
+	char b[96];
+	for (auto &t : types)
+		if (t.code == code) {
+			std::snprintf(b, sizeof b, "%02X %02X %s", code >> 7, code & 0x7F, t.name.c_str());
+			return b;
+		}
+	std::snprintf(b, sizeof b, "%02X %02X", code >> 7, code & 0x7F);
+	return b;
+}
+
+// 「型,値,値,…」を数の並びに
+std::vector<int> fx_values(const std::string &s)
+{
+	std::vector<int> v;
+	for (const char *c = s.c_str(); *c;) {
+		v.push_back(std::atoi(c));
+		while (*c && *c != ',')
+			c++;
+		if (*c)
+			c++;
+	}
+	return v;
+}
+
+// エフェクトのパラメーターのつまみ（v は 型, パラメーター 1〜16 [, Return, …]）。reverb はリバーブの枠（Hall 1〜Plate の名前の引き方が違う）。
+// つまみを離したとき・初期値に戻したときに true（マルチとボイスで同じ）
+bool fx_param_sliders(std::vector<int> &v, bool reverb, const std::map<int, std::vector<motif_multi::fx_param>> &fx_params,
+                      const std::vector<motif_multi::ins_type> &ins_types)
+{
+	const int code = v[0];
+	ImGui::Text("%s", fx_type_label(ins_types, code).c_str());
+	// Hall 1〜Plate は、コーラス・インサーションの枠ではパラメーターが違う（型の番号 + 100000 で引く）
+	auto pit = !reverb && fx_params.count(code + 100000) ? fx_params.find(code + 100000) : fx_params.find(code);
+	bool commit = false;
+	ImGui::PushItemWidth(220);
+	for (int k = 1; k <= 16 && k < int(v.size()); k++) {
+		const motif_multi::fx_param *pd = nullptr;
+		if (pit != fx_params.end())
+			for (auto &q : pit->second)
+				if (q.no == k)
+					pd = &q;
+		if (pit != fx_params.end() && !pd)
+			continue;                       // その型で使わない番号
+		const int lo = pd ? pd->min : 0, hi = pd ? pd->max : (v[k] > 127 ? 16383 : 127);
+		char lab[96];
+		std::snprintf(lab, sizeof lab, "%02d %s##fxp%d", k, pd ? pd->name.c_str() : "", k);
+		ImGui::SliderInt(lab, &v[k], lo, hi);
+		commit |= ImGui::IsItemDeactivatedAfterEdit();
+		if (pd && !pd->range.empty() && ImGui::IsItemHovered())
+			ImGui::SetTooltip("%s", pd->range.c_str());
+		if (k % 2 == 1)
+			ImGui::SameLine(0, 30);
+	}
+	ImGui::NewLine();
+	if (v.size() > 17) {
+		ImGui::SliderInt("Return##fxret", &v[17], 0, 127);
+		commit |= ImGui::IsItemDeactivatedAfterEdit();
+	}
+	ImGui::PopItemWidth();
+	if (ImGui::Button("初期値に戻す##fxdef")) {
+		for (auto &t : ins_types)
+			if (t.code == code) {
+				std::vector<int> d = fx_values(std::to_string(code) + "," + t.params);
+				for (size_t k = 17; k < v.size(); k++)
+					d.push_back(v[k]);
+				v = d;
+				commit = true;
+			}
+	}
+	ImGui::TextDisabled("つまみを離すと効く。名前と範囲は Data List の Effect Parameter List（無い型は番号だけ）");
+	return commit;
 }
 
 void write_wav16(const std::string &path, const std::vector<s16> &pcm)
@@ -987,6 +1107,7 @@ int main(int argc, char **argv)
 			selftest_seq = argv[++i];      // 試験: MIDI のメッセージ（16 進、; で区切る）を 0.1 秒おきに流す
 		else if (a == "--fxparam" && i + 1 < argc) {
 			// --fxparam パート:対象（0 A・1 B・2 リバーブ・3 コーラス）:番号（1〜16、17 は Return）:値。画面のつまみと同じ道で
+			// （ボイスの --selftest ではパートは使わず、音色のインサーション・リバーブ・コーラス）
 			int x = 0, y = 0, z = 0, w = 0;
 			if (std::sscanf(argv[++i], "%d:%d:%d:%d", &x, &y, &z, &w) == 4)
 				selftest_fxparam.push_back({x - 1, y, z, w});
@@ -1186,6 +1307,22 @@ int main(int argc, char **argv)
 		pl->cur = load_voice(list[std::min<size_t>(selftest_voice, list.size() - 1)]);
 		if (!pl->cur)
 			return 1;
+		for (auto &x : selftest_fxparam) {
+			// ボイス: --fxparam のパートは使わない。画面のつまみと同じ道（set_voice_fx）で
+			static const char *keys[] = {"insa", "insb", "reverb", "chorus"};
+			if (x[1] < 0 || x[1] > 3)
+				continue;
+			auto it = pl->cur->pt.fxline.find(keys[x[1]]);
+			std::vector<int> v = fx_values(it == pl->cur->pt.fxline.end() ? std::string() : it->second);
+			if (x[2] >= 1 && x[2] < int(v.size())) {
+				std::printf("%s の %d: %d → %d\n", keys[x[1]], x[2], v[size_t(x[2])], x[3]);
+				v[size_t(x[2])] = x[3];
+				std::string s;
+				for (size_t k = 0; k < v.size(); k++)
+					s += (k ? "," : "") + std::to_string(v[k]);
+				set_voice_fx(*pl, keys[x[1]], s);
+			}
+		}
 		if (selftest_arp) {
 			// 音色のアルペジオの設定で、スイッチだけ入れる
 			motif_arp::settings as = motif_arp::settings_from(pl->cur->pt.arpline);
@@ -1728,17 +1865,7 @@ int main(int argc, char **argv)
 						ImGui::EndCombo();
 					}
 					motif_multi::part &IP = *M.parts[size_t(ins_part)];
-					auto type_label = [&](int code) {
-						for (auto &t : ins_types)
-							if (t.code == code) {
-								char b[64];
-								std::snprintf(b, sizeof b, "%02X %02X %s", code >> 7, code & 0x7F, t.name.c_str());
-								return std::string(b);
-							}
-						char b[32];
-						std::snprintf(b, sizeof b, "%02X %02X", code >> 7, code & 0x7F);
-						return std::string(b);
-					};
+					auto type_label = [&](int code) { return fx_type_label(ins_types, code); };
 					for (int ab = 0; ab < 2; ab++) {
 						ImGui::SameLine(0, 20);
 						const int code = M.ins_code(ins_part, ab);
@@ -1782,58 +1909,8 @@ int main(int argc, char **argv)
 					}
 					if (fx_edit.empty())
 						ImGui::TextDisabled("（このパートには音色が無い）");
-					else {
-						const int code = fx_edit[0];
-						ImGui::Text("%s", type_label(code).c_str());
-						// Hall 1〜Plate は、コーラス・インサーションの枠ではパラメーターが違う（型の番号 + 100000 で引く）
-						auto pit = fx_target != 2 && fx_params.count(code + 100000) ? fx_params.find(code + 100000) : fx_params.find(code);
-						bool commit = false;
-						ImGui::PushItemWidth(220);
-						for (int k = 1; k <= 16 && k < int(fx_edit.size()); k++) {
-							const motif_multi::fx_param *pd = nullptr;
-							if (pit != fx_params.end())
-								for (auto &q : pit->second)
-									if (q.no == k)
-										pd = &q;
-							if (pit != fx_params.end() && !pd)
-								continue;                       // その型で使わない番号
-							const int lo = pd ? pd->min : 0, hi = pd ? pd->max : (fx_edit[k] > 127 ? 16383 : 127);
-							char lab[96];
-							std::snprintf(lab, sizeof lab, "%02d %s##fxp%d", k, pd ? pd->name.c_str() : "", k);
-							ImGui::SliderInt(lab, &fx_edit[k], lo, hi);
-							commit |= ImGui::IsItemDeactivatedAfterEdit();
-							if (pd && !pd->range.empty() && ImGui::IsItemHovered())
-								ImGui::SetTooltip("%s", pd->range.c_str());
-							if (k % 2 == 1)
-								ImGui::SameLine(0, 30);
-						}
-						ImGui::NewLine();
-						if (fx_target >= 2 && fx_edit.size() > 17) {
-							ImGui::SliderInt("Return##fxret", &fx_edit[17], 0, 127);
-							commit |= ImGui::IsItemDeactivatedAfterEdit();
-						}
-						ImGui::PopItemWidth();
-						if (ImGui::Button("初期値に戻す##fxdef")) {
-							for (auto &t : ins_types)
-								if (t.code == code) {
-									std::vector<int> v{code};
-									for (const char *c = t.params.c_str(); *c;) {
-										v.push_back(std::atoi(c));
-										while (*c && *c != ',')
-											c++;
-										if (*c)
-											c++;
-									}
-									for (size_t k = 17; k < fx_edit.size(); k++)
-										v.push_back(fx_edit[k]);
-									fx_edit = v;
-									commit = true;
-								}
-						}
-						if (commit)
-							M.set_block_values(pl->mtx, ins_part, fx_target, fx_edit);
-						ImGui::TextDisabled("つまみを離すと効く。名前と範囲は Data List の Effect Parameter List（無い型は番号だけ）");
-					}
+					else if (fx_param_sliders(fx_edit, fx_target == 2, fx_params, ins_types))
+						M.set_block_values(pl->mtx, ins_part, fx_target, fx_edit);
 				}
 			}
 		} else
@@ -2001,6 +2078,68 @@ int main(int argc, char **argv)
 			ImGui::Checkbox(("リバーブ（" + pl->cur->rev_name + "）").c_str(), &pl->use_rev);
 			ImGui::SameLine(0, 30);
 			ImGui::Checkbox(("コーラスの枠（" + pl->cur->cho_name + "）").c_str(), &pl->use_cho);
+			// エフェクトのパラメーター: 音色のインサーション A・B（型とつなぎ方も）と、リバーブ・コーラスの枠。マルチの画面と同じつまみ。
+			// 音色の fx 行を書き換えるので、音色を替えると、その音色のものに戻る
+			if (!shot.empty())
+				ImGui::SetNextItemOpen(true, ImGuiCond_Once);     // 試験の絵では開いておく
+			if (ImGui::CollapsingHeader("エフェクトのパラメーター##vfx")) {
+				ImGui::PushID("vfx");
+				loaded &L = *pl->cur;
+				static int vt = 0;
+				ImGui::RadioButton("インサーション A", &vt, 0);
+				ImGui::SameLine();
+				ImGui::RadioButton("インサーション B", &vt, 1);
+				ImGui::SameLine();
+				ImGui::RadioButton("リバーブ", &vt, 2);
+				ImGui::SameLine();
+				ImGui::RadioButton("コーラス", &vt, 3);
+				static const char *keys[] = {"insa", "insb", "reverb", "chorus"};
+				auto value = [&](const char *k) {
+					std::lock_guard<std::mutex> lk(pl->mtx);
+					auto it = L.pt.fxline.find(k);
+					return it == L.pt.fxline.end() ? std::string() : it->second;
+				};
+				if (!ins_types.empty()) {
+					// インサーションの型（A・B）とつなぎ方
+					for (int ab = 0; ab < 2; ab++) {
+						if (ab)
+							ImGui::SameLine(0, 20);
+						const std::vector<int> v = fx_values(value(keys[ab]));
+						const int code = v.empty() ? 0 : v[0];
+						ImGui::SetNextItemWidth(220);
+						if (ImGui::BeginCombo(ab ? "B##vinsb" : "A##vinsa", fx_type_label(ins_types, code).c_str())) {
+							for (auto &t : ins_types)
+								if (ImGui::Selectable((fx_type_label(ins_types, t.code) + "##vt" + std::to_string(ab) + "_" + std::to_string(t.code)).c_str(), t.code == code))
+									set_voice_fx(*pl, keys[ab], std::to_string(t.code) + "," + t.params);
+							ImGui::EndCombo();
+						}
+					}
+					ImGui::SameLine(0, 20);
+					static const char *conns[] = {"並列", "A→B", "B→A"};
+					int con = std::min(2, std::max(0, std::atoi(value("connect").c_str())));
+					ImGui::SetNextItemWidth(90);
+					if (ImGui::Combo("つなぎ方##vinscon", &con, conns, 3))
+						set_voice_fx(*pl, "connect", std::to_string(con));
+				}
+				static std::vector<int> ve;
+				static int ve_key = -1;
+				static const loaded *ve_cur = nullptr;
+				const std::vector<int> cur = fx_values(value(keys[vt]));
+				if (ve_key != vt || ve_cur != &L || ve.size() != cur.size() || (!ImGui::IsAnyItemActive() && ve != cur)) {
+					ve = cur;
+					ve_key = vt;
+					ve_cur = &L;
+				}
+				if (ve.empty())
+					ImGui::TextDisabled("（この音色にはこの枠の設定が無い）");
+				else if (fx_param_sliders(ve, vt == 2, fx_params, ins_types)) {
+					std::string s;
+					for (size_t k = 0; k < ve.size(); k++)
+						s += (k ? "," : "") + std::to_string(ve[k]);
+					set_voice_fx(*pl, keys[vt], s);
+				}
+				ImGui::PopID();
+			}
 		}
 		// アルペジオ
 		ImGui::SeparatorText("アルペジオ");
