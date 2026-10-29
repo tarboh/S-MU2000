@@ -89,11 +89,23 @@ def main():
             k, v = kv.split("=")
             ats.append((float(t), 0x02 + 2 * (int(k[1:]) - 1), int(v)))
 
+    # --ccat 5:1=4,10:1=8 … --long の wet の途中で、鳴らし始めから t 秒に CC を送る（コントロールセットの目盛りを見る）
+    ccs = []
+    for s in (mr_ref.opt(a, "--ccat", "") or "").split(","):
+        if s:
+            t, kv = s.split(":")
+            k, v = kv.split("=")
+            ccs.append((float(t), int(k), int(v)))
+    # --cs ソース:行き先:深さ … 雛形の音色のコントロールセット 1（40 05 00、5 バイト: ソース・行き先の上下・深さ・0）。行き先 4〜19 は INS1（A）の P1〜16
+    cs = mr_ref.opt(a, "--cs")
+
     def take(name, hold=1.0, at=()):
         if not os.path.exists(os.path.join(d, name + ".wav")):
             ev = [(0.3, lambda: r.note_on(key, 100)), (0.3 + hold, lambda: r.note_off(key))]
             for t, off, v in at:
                 ev.append((0.3 + t, lambda off=off, v=v: r.param(0x40, 0x03, off, v >> 7, v & 0x7F)))
+            for t, c, v in ccs:
+                ev.append((0.3 + t, lambda c=c, v=v: r.cc(c, v)))
             r.record(name, 0.3 + hold + 0.3, sorted(ev, key=lambda e: e[0]))
 
     try:
@@ -110,6 +122,13 @@ def main():
         for e in range(4):
             r.el(e, 0x41, 0x16, 0)
         r.param(0x40, 0x03, 0x00, *itype)           # 型（既定は Compressor）
+        if cs:
+            src, dst, dep = (int(x) for x in cs.split(":"))
+            r.param(0x40, 0x05, 0x00, src)
+            r.param(0x40, 0x05, 0x01, dst >> 7, dst & 0x7F)
+            r.param(0x40, 0x05, 0x03, dep)
+        for c, _ in {(c, 0) for _, c, _ in ccs}:
+            r.cc(c, 0)
         time.sleep(0.3)
         for off, v in sets:
             r.param(0x40, 0x03, off, *v)
@@ -148,6 +167,8 @@ def main():
     finally:
         try:
             r.el(0, 0x41, 0x16, 0)
+            for c, _ in {(c, 0) for _, c, _ in ccs}:
+                r.cc(c, 0)
             r.all_off()
             r.mode(3)
         finally:

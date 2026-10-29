@@ -389,8 +389,11 @@ inline bool config_from_bulk(const std::map<std::array<int, 3>, std::vector<unsi
 	return true;
 }
 
-// つまみ（コントロールセット）で動くインサーションのパラメーターを、描く前に渡す（鳴らす糸で、mtx の中）。値 = 音色の値 + engine::ins_offset。
-// 今これで回るのは Dual Rotor の Speed Control（MW で slow ↔ fast。オルガンの 36 音色）だけ（block_rt::set_param）
+// つまみ（コントロールセット）で動くインサーションのパラメーターを、描く前に渡す（鳴らす糸で、mtx の中）。
+// 値 = 音色の値 + (深さ − 64) × ソース × 4 / 127（engine::ins_offset に 4 / 127 を掛けたもの）を四捨五入。実機の Dual Rotor の Speed Control（0・1）で、
+// 正弦波の雛形にコントロールセット MW → INS1-P16 を入れて MW を 64〜127 で振ると、深さ +63 は 64 で fast、+29 は 64 と 72 の間、+1 は切り替わらない、
+// −16（音色は fast）は 120 と 127 の間で slow になった（2026-10-30、`tools/motif/mr_fx_comp.py --cs --ccat`、録音は capture/rotmw）。この式でどれも合う。
+// 今これで回るのは Dual Rotor の Speed Control（MW で slow ↔ fast。オルガンの 36 音色）だけ（block_rt::set_param）。値の幅の広いパラメーターの目盛りは測っていない
 inline void sync_ins_ctrl(const motif_sampler::engine &eg, const motif_sampler::patch &pt, motif_fx_rt::insertion_rt &ins)
 {
 	if (!eg.has_ins_route())
@@ -401,8 +404,8 @@ inline void sync_ins_ctrl(const motif_sampler::engine &eg, const motif_sampler::
 			continue;
 		const motif_fx::block b = motif_fx::parse_block(it->second);
 		for (int p = 1; p <= 16; p++) {
-			const double off = eg.ins_offset((w ? 20 : 4) + p - 1);
-			ins.set_param(w, p, std::max(0, int(std::lround(b.p[p] + off))));
+			const double off = eg.ins_offset((w ? 20 : 4) + p - 1) * 4.0 / 127.0;
+			ins.set_param(w, p, std::max(0, int(std::floor(b.p[p] + off + 0.5))));
 		}
 	}
 }

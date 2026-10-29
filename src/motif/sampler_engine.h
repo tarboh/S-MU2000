@@ -252,8 +252,8 @@ public:
 		apply_ctl();
 	}
 	int source(int src) const { return srcval[std::max(0, std::min(15, src))]; }
-	// インサーションのパラメーターへのずらし（行き先 4〜19 = INS1（A）の P1〜16、20〜35 = INS2（B））。値の目盛りのまま (深さ − 64) × ソース
-	// （ソースは 0〜1、中心のあるものは −1〜1）。実機の目盛りはまだ測っていない（Speed Control は 0・1 なので、どちらへ切り替わるかだけ効く）
+	// インサーションのパラメーターへのずらしのもと（行き先 4〜19 = INS1（A）の P1〜16、20〜35 = INS2（B））: (深さ − 64) × ソース
+	// （ソースは 0〜1、中心のあるものは −1〜1）。値への目盛り（× 4 / 127）は motif_multi::sync_ins_ctrl
 	double ins_offset(int dest) const
 	{
 		double off = 0;
