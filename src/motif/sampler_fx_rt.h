@@ -470,11 +470,38 @@ public:
 			for (auto &H : tmp)
 				hs.push_back(H.data());
 			find_lead(hs);
+			// 元の音の遅れ: 枠の応答を平均した（揺れの線は打ち消し合う）インパルス応答の山（型によって 0、または 200 サンプルほど）
+			std::vector<double> m(NW, 0.0);
+			for (const cplx *H : hs) {
+				const std::vector<double> h = ir(H, true);
+				for (int i = 0; i < NW; i++)
+					m[i] += h[i];
+			}
+			int pk = 0;
+			for (int i = 0; i < NW; i++)
+				if (std::fabs(m[i]) > std::fabs(m[pk]))
+					pk = i;
+			dry_lag = pk > NW / 2 ? pk - NW : pk;
 		}
 		for (auto &s : slot)
 			s.i = -1;
+		ma = mat = 1;
+		rate = 1;
+		i_last = -1;
+		phi_last = 0;
 		return true;
 	}
+	// つまみで Dry/Wet が動いたとき: 録った応答の出口に掛ける倍率（元の音を足し引きする分は block_rt が delayed_in に掛けて足す）
+	void set_scale(double a) { mat = a; }
+	// 出口のうち元の音にあたる入口（録った応答の中の元の音の遅れ dry_lag も入れて。左右、mono の型は左右を足して半分）
+	double delayed_in(int c) const
+	{
+		const long q = long(cv.time()) - 1 - D - dry_lag;
+		return q >= 0 ? cv.history(c)[size_t(q) & (cv.history(c).size() - 1)] : 0.0;
+	}
+	// つまみで LFO Speed が動いたとき: 録った枠を進める速さ（録った組の速さとの比）
+	void set_rate(double r) { rate = std::max(0.0, r); }
+	bool is_dyn() const { return dyn; }
 	bool init_dyn(const block &b, const std::string &dyndir)
 	{
 		perf = 0;
@@ -570,6 +597,10 @@ public:
 				y[0] /= ws;
 				y[1] /= ws;
 			}
+			ma += (mat - ma) * 0.005;
+			if (ma != 1)
+				for (int c = 0; c < 2; c++)
+					y[c] *= ma;
 		}
 		cv.next();
 		L = y[0];
@@ -580,6 +611,10 @@ private:
 	int NW = 4096, HOP = 1024, F = 0, per = 0, NB = 2049, D = 0;
 	double perf = 0;                         // 繰り返す周期（枠、小数。motif_fx::loop_period）
 	bool dyn = false, stereo = true;
+	double ma = 1, mat = 1;                  // Dry/Wet のつまみ: 今と目指す倍率
+	double rate = 1, phi_last = 0;          // LFO Speed のつまみ: 枠を進める速さと、枠 i_last の録った枠の位置
+	long i_last = -1;
+	int dry_lag = 0;                        // 録った応答の中の元の音の遅れ（サンプル）
 	std::vector<float> raw;
 	std::vector<double> win2, acw;
 	tv_conv cv;
@@ -670,7 +705,7 @@ private:
 			for (auto &s : slot) {
 				if (s.i >= 0)
 					continue;
-				const long j = std::min<long>(F - 1, std::lround(motif_fx::loop_index(double(i), perf, F)));
+				const long j = std::min<long>(F - 1, std::lround(motif_fx::loop_index(phi(i), perf, F)));
 				std::vector<cplx> H(NB);
 				std::vector<double> h[2];
 				for (int c = 0; c < 2; c++) {
@@ -688,6 +723,17 @@ private:
 			if (s.i >= 0)
 				for (int c = 0; c < 2; c++)
 					cv.tail(s.f, c, s.tl[c]);
+	}
+	// 出口の枠 i で読む録った枠の位置（小数）。速さを替えるまでは i のまま
+	double phi(long i)
+	{
+		if (i_last < 0) {
+			i_last = i;
+			phi_last = double(i);
+		}
+		phi_last += double(i - i_last) * rate;
+		i_last = i;
+		return phi_last;
 	}
 	void start_dyn()
 	{
@@ -736,6 +782,10 @@ public:
 		if (use_rot) {
 			k = motif_fx::rot_key(b);
 			rm.init(rot, b);
+			motif_fx::rot_balance(b.p[9], bal0);
+			bal0[0] = std::max(bal0[0], 0.05);
+			bal0[1] = std::max(bal0[1], 0.05);
+			bg[0] = bg[1] = bgt[0] = bgt[1] = 1;
 			m100 = motif_fx::mod_file();
 		} else if (!motif_fx::load_mod(moddir + "/" + k + ".mod", m100))
 			return false;
@@ -763,21 +813,68 @@ public:
 		for (int bd = 0; bd < 2; bd++)
 			for (int ch = 0; ch < 2; ch++)
 				nrm[bd][ch] = 1;
+		// Dual Rotor で録った形があれば、形の時間平均（rot_avg）で割る（modfx と同じ）
+		const bool rot_norm = use_rot && !eqm.empty();
+		motif_fx::rot_avg ra;
+		if (rot_norm)
+			ra.make(rot);
 		if (has_shape)
 			for (int ch = 0; ch < 2; ch++) {
-				nrm[0][ch] = std::max(1e-3, std::abs(shape(220.0, ch)));
-				nrm[1][ch] = std::max(1e-3, std::abs(shape(440.0 * std::exp2(27 / 12.0), ch)));
-				sh[ch].init(fir_from([&](double f) { return shape(f, ch); }, 4096, PRE));
+				if (!rot_norm) {
+					nrm[0][ch] = std::max(1e-3, std::abs(shape(220.0, ch)));
+					nrm[1][ch] = std::max(1e-3, std::abs(shape(440.0 * std::exp2(27 / 12.0), ch)));
+				}
+				sh[ch].init(fir_from([&](double f) { return rot_norm ? shape(f, ch) / ra.at(ch, f) : shape(f, ch); }, 4096, PRE));
 			}
 		lv = !use_rot && b.msb == 8 && ((b.lsb >= 0x51 && b.lsb <= 0x53) || (b.lsb >= 0x61 && b.lsb <= 0x63)) &&
 		     motif_fx::load_mod(moddir + "/" + k + "_L25.mod", m25) && m25.indb != m100.indb;
 		m100.perf = motif_fx::loop_period(b, m100.rate, m100.period, m100.frames);
+		// 揺れの深さ（Tremolo の AM Depth・Auto Pan・Auto Pan 2 の L/R Depth、p2）を替えて録った組（tools/motif/mr_fx_mod.py record --var）。つまみで深さが動いたら両隣を混ぜる
+		gv.clear();
+		gm.clear();
+		gsel = -1;
+		rate_on = false;
+		rt_ = 1;
+		tpos = 0;
+		if (!use_rot && b.msb == 8 && (b.lsb == 0x00 || b.lsb == 0x10 || b.lsb == 0x11)) {
+			std::vector<std::pair<int, motif_fx::mod_file>> g = {{b.p[2], m100}};
+			for (int val : {0, 32, 64, 96, 127}) {
+				if (val == b.p[2])
+					continue;
+				block v2 = b;
+				v2.p[2] = val;
+				std::string k2 = "t" + std::to_string(v2.msb) + "_" + std::to_string(v2.lsb);
+				for (int i = 1; i <= 16; i++)
+					k2 += "_" + std::to_string(v2.p[i]);
+				motif_fx::mod_file m;
+				if (motif_fx::load_mod(moddir + "/" + k2 + "_0.mod", m)) {
+					m.perf = motif_fx::loop_period(v2, m.rate, m.period, m.frames);
+					g.emplace_back(val, std::move(m));
+				}
+			}
+			std::sort(g.begin(), g.end(), [](const auto &x, const auto &y) { return x.first < y.first; });
+			for (auto &e : g) {
+				gv.push_back(e.first);
+				gm.push_back(std::move(e.second));
+			}
+			gbase = b.p[2];
+			if (gv.size() < 2) {
+				gv.clear();
+				gm.clear();
+			}
+		}
 		m25.perf = motif_fx::loop_period(b, m25.rate, m25.period, m25.frames);
-		// 1kHz で分ける 2 次のバターワース（双一次変換）
-		const double K = std::tan(motif_fx::PI * 1000.0 / FS), nn = 1 / (1 + std::sqrt(2.0) * K + K * K);
-		lpb[0] = K * K * nn, lpb[1] = 2 * K * K * nn, lpb[2] = K * K * nn;
-		hpb[0] = nn, hpb[1] = -2 * nn, hpb[2] = nn;
-		a1 = 2 * (K * K - 1) * nn, a2 = (1 - std::sqrt(2.0) * K + K * K) * nn;
+		// 2 つの帯に分ける 2 次のバターワース（双一次変換）。1kHz、Dual Rotor は motif_fx::rot_band と同じ 600Hz・400Hz
+		auto bw = [](double fc, bool low, double c[5]) {
+			const double K = std::tan(motif_fx::PI * fc / FS), nn = 1 / (1 + std::sqrt(2.0) * K + K * K);
+			if (low)
+				c[0] = K * K * nn, c[1] = 2 * K * K * nn, c[2] = K * K * nn;
+			else
+				c[0] = nn, c[1] = -2 * nn, c[2] = nn;
+			c[3] = 2 * (K * K - 1) * nn, c[4] = (1 - std::sqrt(2.0) * K + K * K) * nn;
+		};
+		bw(use_rot ? motif_fx::ROT_LP_HZ : 1000.0, true, bc[0]);
+		bw(use_rot ? motif_fx::ROT_HP_HZ : 1000.0, false, bc[1]);
 		for (auto &r : ring)
 			r.assign(1 << 15, 0.0);
 		for (auto &s : st)
@@ -786,7 +883,10 @@ public:
 		esum = 0;
 		t = 0;
 		double dmin = 0;
-		for (const motif_fx::mod_file *m : {&m100, &m25})
+		std::vector<const motif_fx::mod_file *> all = {&m100, &m25};
+		for (auto &m : gm)
+			all.push_back(&m);
+		for (const motif_fx::mod_file *m : all)
 			for (int i = 0; i < m->frames; i++)
 				for (int c = 1; c < 8; c += 2)
 					dmin = std::min(dmin, double(m->raw[size_t(i) * 8 + c]));
@@ -799,6 +899,39 @@ public:
 	bool rotor() const { return use_rot; }
 	// Speed Control（p16）の切り替え（つまみからのずらしを足した値で）。速さは坂で移る
 	void set_fast(bool f) { rm.fast = f; }
+	// Low/High Balance（p9）: 帯ごとの倍率を、録った組の値からの比で（5ms ほどでなめらかに移す）
+	// LFO Speed（p1）: 録った並びを読む速さ（録った組の速さとの比）
+	void set_rate(double r)
+	{
+		if (!rate_on) {
+			tpos = t >= D ? (double(t) - double(D)) / FS : 0.0;
+			rate_on = true;
+		}
+		rt_ = std::max(0.0, r);
+	}
+	// 揺れの深さ（p2）: 録った深さの両隣の組を混ぜる（録った組の値なら元の組だけ）
+	void set_depth(int v)
+	{
+		if (gv.empty())
+			return;
+		if (v == gbase) {
+			gsel = -1;
+			return;
+		}
+		size_t lo = 0;
+		while (lo + 2 < gv.size() && gv[lo + 1] <= v)
+			lo++;
+		const double u = std::max(0.0, std::min(1.0, double(v - gv[lo]) / double(gv[lo + 1] - gv[lo])));
+		gsel = int(lo);
+		gw_ = u;
+	}
+	void set_balance(int v)
+	{
+		double g[2];
+		motif_fx::rot_balance(v, g);
+		bgt[0] = g[0] / bal0[0];
+		bgt[1] = g[1] / bal0[1];
+	}
 
 	void tick(double &L, double &R)
 	{
@@ -809,14 +942,14 @@ public:
 			for (int bd = 0; bd < 2; bd++) {
 				double v = xs[ch];
 				for (int s = 0; s < 2; s++)
-					v = biquad(bd == 0 ? lpb : hpb, st[(ch * 2 + bd) * 2 + s], v);
+					v = biquad(bc[bd], st[(ch * 2 + bd) * 2 + s], v);
 				ring[ch * 2 + bd][t & mask] = v;
 			}
 		double o[2];
 		if (use_rot)
 			rot_core(o);
 		else
-			core(m100, o);
+			gsel < 0 ? core(m100, o) : core_mix(o);
 		if (lv) {
 			const double mo = (xs[0] + xs[1]) / 2;
 			const size_t w = env.size(), ei = t % w;
@@ -839,17 +972,26 @@ public:
 		}
 		L = o[0];
 		R = o[1];
+		if (rate_on && t >= D)
+			tpos += rt_ / FS;
 		t++;
 	}
 
 private:
 	motif_fx::mod_file m100, m25;
+	bool rate_on = false;                    // LFO Speed をつまみで替えたか（替えるまでは時刻から読む）
+	double rt_ = 1, tpos = 0;                // 読む速さと、読んでいる位置（録った秒）
 	motif_fx::rot_file rot;
 	motif_fx::rotor_motion rm;
 	bool stereo = true, has_shape = false, lv = false, use_rot = false;
 	double nrm[2][2] = {{1, 1}, {1, 1}};
+	double bal0[2] = {1, 1}, bg[2] = {1, 1}, bgt[2] = {1, 1};   // Low/High Balance: 録った組の倍率・今の比・目指す比
+	std::vector<int> gv;                     // 揺れの深さを替えて録った組の深さ（小さい順、元の組も入る）
+	std::vector<motif_fx::mod_file> gm;      // その組
+	int gsel = -1, gbase = 0;                // 混ぜる両隣の小さいほう（−1 なら元の組だけ）・元の組の深さ
+	double gw_ = 0;
 	conv_rt sh[2];
-	double lpb[3] = {}, hpb[3] = {}, a1 = 0, a2 = 0;
+	double bc[2][5] = {};                    // 帯（低い・高い）ごとの 2 次の係数（b0 b1 b2 a1 a2）
 	double st[8][2] = {};
 	std::vector<double> ring[4], env;
 	double esum = 0;
@@ -859,13 +1001,13 @@ private:
 	{
 		// 転置直接形 II
 		const double y = b[0] * x + s[0];
-		s[0] = b[1] * x - a1 * y + s[1];
-		s[1] = b[2] * x - a2 * y;
+		s[0] = b[1] * x - b[3] * y + s[1];
+		s[1] = b[2] * x - b[4] * y;
 		return y;
 	}
 	double series(const motif_fx::mod_file &m, int col) const
 	{
-		const double u = motif_fx::loop_index((double(t) - double(D)) / FS * m.rate, m.perf, m.frames);
+		const double u = motif_fx::loop_index((rate_on ? tpos : (double(t) - double(D)) / FS) * m.rate, m.perf, m.frames);
 		const int i = int(u);
 		const double fr = u - i;
 		const float a0 = m.raw[size_t(i) * 8 + col], a1v = m.raw[size_t(std::min(i + 1, m.frames - 1)) * 8 + col];
@@ -880,9 +1022,13 @@ private:
 			return;
 		const size_t tau = t - D;
 		for (int bd = 0; bd < 2; bd++)
+			bg[bd] += (bgt[bd] - bg[bd]) * 0.005;
+		for (int bd = 0; bd < 2; bd++)
 			for (int ch = 0; ch < 2; ch++) {
 				double A[2], d[2];
 				motif_fx::rot_taps(rot, rm, bd, ch, A, d);
+				A[0] *= bg[bd];
+				A[1] *= bg[bd];
 				const std::vector<double> &xb = ring[ch * 2 + bd];
 				for (int c = 0; c < 2; c++) {
 					const double pos = double(tau) - d[c];
@@ -895,6 +1041,30 @@ private:
 				}
 			}
 		rm.step();
+	}
+	// 深さの両隣の組（gm[gsel]・gm[gsel + 1]）の A・d を gw_ で混ぜて回す
+	void core_mix(double o[2]) const
+	{
+		const size_t mask = ring[0].size() - 1;
+		o[0] = o[1] = 0;
+		if (t < D)
+			return;
+		const size_t tau = t - D;
+		const motif_fx::mod_file &m0 = gm[size_t(gsel)], &m1 = gm[size_t(gsel) + 1];
+		for (int bd = 0; bd < 2; bd++)
+			for (int ch = 0; ch < 2; ch++) {
+				const int ca = bd * 4 + ch * 2;
+				const double A = ((1 - gw_) * series(m0, ca) + gw_ * series(m1, ca)) / nrm[bd][ch];
+				const double d = (1 - gw_) * series(m0, ca + 1) + gw_ * series(m1, ca + 1);
+				const double pos = double(tau) - d;
+				if (pos < 0)
+					continue;
+				const size_t k0 = size_t(pos);
+				const double fr = pos - double(k0);
+				const std::vector<double> &xb = ring[ch * 2 + bd];
+				const double v0 = xb[k0 & mask], v = k0 + 1 <= t ? v0 + (xb[(k0 + 1) & mask] - v0) * fr : v0;
+				o[ch] += A * v;
+			}
 	}
 	void core(const motif_fx::mod_file &m, double o[2]) const
 	{
@@ -1235,6 +1405,8 @@ public:
 		ph_off = 0;
 		hz = 0;
 		pc_off[0] = pc_off[1] = pc_hz[0] = pc_hz[1] = 0;
+		dryeq_on = false;
+		mixb = mixbt = 0;
 		for (int i = 1; i <= 16; i++)
 			rng_[i] = prange();
 		if (!fxddir.empty()) {
@@ -1321,8 +1493,9 @@ public:
 	bool thru() const { return kind == 0; }
 	// つまみ（コントロールセット）で動いたパラメーター p（1〜16）の値 v を、鳴らしている途中で効かせる（覚えている音は残す）。
 	// 式で回す型（EQ・Enhancer・Cross Delay・コンプ・コーラス・フランジャー・Ensemble Detune・Pitch Change・Lo-Fi・Ring Mod）はどのパラメーターも
-	// （ただし揺れる型の EQ、Lo-Fi の Filter Type、Ring Mod の EQ は init のまま）、歪みは Dry/Wet・Output Level・Drive（AmpSimulator は Edge も）、
-	// Dual Rotor は Speed Control。ほかの録った応答の型（.ltv・.mod・.lti）は、録った組から外れる値を作れないので動かさない
+	// （ただし揺れる型の EQ、Lo-Fi の Filter Type、Ring Mod の EQ は init のまま）、歪みは Dry/Wet・Output Level・Drive（AmpSimulator は Edge も）。
+	// 録った応答の型: Dual Rotor は Speed Control と Low/High Balance、.ltv は Dry/Wet と LFO Speed、.mod は LFO Speed と揺れの深さ（深さを替えて録った組があるとき）。
+	// ほか（.lti、Dual Rotor の Drive など）は動かさない
 	void set_param(int p, int v)
 	{
 		if (p < 1 || p > 16 || blk_.p[p] == v)
@@ -1338,9 +1511,19 @@ public:
 		case 8:
 			dist_set(p);
 			break;
+		case 10:
+			if (!tv.is_dyn())
+				ltv_set(p);
+			break;
 		case 11:
 			if (md.rotor() && p == 16)
 				md.set_fast(v != 0);
+			if (md.rotor() && p == 9)
+				md.set_balance(v);
+			if (!md.rotor() && p == 2)
+				md.set_depth(v);
+			if (!md.rotor() && rng_[p].name == "LFO Speed" && motif_fx::LFO_HZ[std::min(127, base_.p[p])] > 0)
+				md.set_rate(motif_fx::LFO_HZ[std::min(127, v)] / motif_fx::LFO_HZ[std::min(127, base_.p[p])]);
 			break;
 		case 13:
 			lf.set(blk_);
@@ -1479,6 +1662,13 @@ public:
 		}
 		case 10:
 			tv.tick(L, R);
+			mixb += (mixbt - mixb) * 0.005;
+			if (mixb != 0) {
+				double dl = tv.delayed_in(0), dr = tv.delayed_in(1);
+				dryeq.tick(dl, dr);
+				L += mixb * dl;
+				R += mixb * dr;
+			}
 			break;
 		case 11:
 			md.tick(L, R);
@@ -1568,6 +1758,9 @@ private:
 	bool lti_thru = false;
 	ltv_rt tv;
 	mod_rt md;
+	eq_iir dryeq;                            // .ltv の Dry/Wet で足し引きする元の音に掛ける型の EQ
+	bool dryeq_on = false;
+	double mixb = 0, mixbt = 0;              // その倍率（今・目指す）
 	lofi_rt lf;
 	ringmod_rt rmod;
 	block blk_, base_;                        // 今の値（つまみで動いたあと）と、init のときの値
@@ -1692,6 +1885,50 @@ private:
 	}
 	// 歪みの枠でつまみが動かしたパラメーター（名前で見る）。Output Level は (値 / init の値)²（40·log10、実機で確かめた曲線）、
 	// Drive は init の値からの drive_gain_db の差（録った組から外れるので近似）。AmpSimulator を既定の応答で回しているときは頭打ちの形も替える
+	// 録った応答（.ltv）で回す型: Dry/Wet は録った H を元の音と揺れの線に分けて混ぜ直し（H × a に、型の EQ を掛けた元の音を b だけ足す。
+	// 録った組の値が 1 なら揺れの線が無いので動かさない）、LFO Speed は録った枠を進める速さを LFO_HZ の比に
+	void ltv_set(int p)
+	{
+		const std::string &nm = rng_[p].name;
+		const int v = blk_.p[p], v0 = base_.p[p];
+		if (nm == "Dry / Wet Balance" || nm == "Dry/Wet Balance") {
+			double gd, gw, gd0, gw0;
+			mix_law(v, gd, gw);
+			mix_law(v0, gd0, gw0);
+			if (gw0 < 1e-3)
+				return;
+			if (!dryeq_on) {
+				// 元の音の側にも、型の EQ（混ぜたあとに掛かる）を掛ける
+				block q;
+				for (int i = 1; i <= 16; i++) {
+					const std::string &n = rng_[i].name;
+					const int k = n == "EQ Low Frequency" ? 1 : n == "EQ Low Gain" ? 2 : n == "EQ High Frequency" ? 3 : n == "EQ High Gain" ? 4 : 0;
+					if (k)
+						q.p[k] = blk_.p[i];
+				}
+				if (q.p[2] == 0)
+					q.p[2] = 64;
+				if (q.p[4] == 0)
+					q.p[4] = 64;
+				dryeq.set(q, false);
+				dryeq_on = true;
+			}
+			tv.set_scale(gw / gw0);
+			mixbt = gd - gw / gw0 * gd0;
+		} else if (nm == "LFO Speed") {
+			const double h0 = motif_fx::LFO_HZ[std::min(127, v0)];
+			if (h0 > 0)
+				tv.set_rate(motif_fx::LFO_HZ[std::min(127, v)] / h0);
+		}
+	}
+	// Dry/Wet の倍率: 元の音 cos・揺れの線 sin（角 π/2 × (v − 1) / 126）。Chorus 1（02_039 の組）を Dry/Wet 1・32・64・96・127 で録り、
+	// 元の音の倍率（wet と dry の遅れ 0 の相関）と残りのパワーを読んだ: 元の音 1.10 × cos、揺れの線 1.35〜1.38 × sin（1.10 は EQ の高い棚）
+	static void mix_law(int v, double &gd, double &gw)
+	{
+		v = std::max(1, std::min(127, v));
+		gd = std::cos(motif_fx::PI / 2 * (v - 1) / 126.0);
+		gw = std::sin(motif_fx::PI / 2 * (v - 1) / 126.0);
+	}
 	void dist_set(int p)
 	{
 		const std::string &nm = rng_[p].name;

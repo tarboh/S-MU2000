@@ -53,9 +53,49 @@ def needed():
     return sets
 
 
-def record(only):
-    os.makedirs(OUT, exist_ok=True)
+# つまみ（コントロールセット）が揺れの深さを動かす組は、深さを DEPTH_GRID に替えた組も録る（record --var・analyze --var）。
+# 芯は録った組の値の両隣の 2 つを、深さで混ぜる。揺れの LFO は鍵を押しても始めに戻らないので、替えた組の揺れの位相は、元の組（深さ 0 なら深さ 127 の組）にそろえる
+DEPTH = {(8, 0x00): 2, (8, 0x10): 2, (8, 0x11): 2}     # Tremolo の AM Depth、Auto Pan・Auto Pan 2 の L/R Depth
+DEPTH_GRID = (0, 64, 127)                  # 00_028 の組で 0・32・64・96・127 を録り、A がほぼ深さにまっすぐだったので、残りは 3 点
+
+
+def variants():
+    """{替えた組の名前: (ins, tempo, [元の組の名前])}。プリセットの音色でつまみが深さを動かす組だけ"""
+    import re
+    out = {}
     for k, (ins, tempo, voices) in needed().items():
+        t = (ins["type"] >> 7, ins["type"] & 0x7F)
+        p = DEPTH.get(t)
+        if not p:
+            continue
+        routed = False
+        for v in voices:
+            f = os.path.join(CAP, "patches_all", v + ".patch")
+            if not os.path.exists(f):
+                continue
+            s = open(f, encoding="utf-8", errors="replace").read()
+            m = re.search(r"^ctrl sets=(\S+)", s, re.M)
+            for cs in (m.group(1).split(",") if m else []):
+                src, dst, dep = map(int, cs.split(":"))
+                if dep != 64 and dst in (4 + p - 1, 20 + p - 1):
+                    w = "insa" if dst < 20 else "insb"
+                    mm = re.search(r"\b%s=(\d+)" % w, s)
+                    routed |= bool(mm) and int(mm.group(1)) == ins["type"]
+        if not routed:
+            continue
+        for val in (0, 32, 64, 96, 127):              # DEPTH_GRID の外でも、もう録ってある深さは使う（芯はこの 5 つを探す）
+            if val != ins["param%d" % p]:
+                v2 = dict(ins)
+                v2["param%d" % p] = val
+                k2 = key_of(v2, tempo)
+                if val in DEPTH_GRID or os.path.exists(os.path.join(OUT, "cs%s_k%d_long_wet.wav" % (k2, KEYS[-1][0]))):
+                    out[k2] = (v2, tempo, [k])
+    return out
+
+
+def record(only, var=False):
+    os.makedirs(OUT, exist_ok=True)
+    for k, (ins, tempo, voices) in (variants() if var else needed()).items():
         if only and k not in only:
             continue
         t = (ins["type"] >> 7, ins["type"] & 0x7F)
@@ -68,7 +108,7 @@ def record(only):
                 cmd = [sys.executable, os.path.join(HERE, "mr_fx_comp.py"), "--dir", OUT, "--type", "%d:%d" % t, "--key", str(key),
                        "--set", st, "--tag", tag, "--long", "8", "--level", str(lv)]
                 subprocess.run(cmd, check=True, cwd=HERE, stdout=subprocess.DEVNULL)
-        if not os.path.exists(os.path.join(OUT, "cs%s_noise_long_wet.wav" % k)):
+        if not var and not os.path.exists(os.path.join(OUT, "cs%s_noise_long_wet.wav" % k)):
             # 周波数の形（EQ・アンプの色・帯の分け方）を、ノイズの時間平均の応答で取る
             subprocess.run([sys.executable, os.path.join(HERE, "mr_fx_comp.py"), "--dir", OUT, "--type", "%d:%d" % t, "--key", "60", "--wave", "705",
                             "--set", st, "--tag", k + "_noise", "--long", "4", "--level", "100"], check=True, cwd=HERE, stdout=subprocess.DEVNULL)
@@ -192,6 +232,57 @@ def analyze():
             print("%s（%s）: 周期 %d ms・低い帯 A 左 %.2f〜%.2f 右 %.2f〜%.2f・d 左 %.1f〜%.1f・高い帯 A 左 %.2f〜%.2f・d 左 %.1f〜%.1f サンプル" % (
                 k + suf, ",".join(voices), P, lo[0][200:].min(), lo[0][200:].max(), lo[2][200:].min(), lo[2][200:].max(),
                 lo[1][200:].min(), lo[1][200:].max(), hi[0][200:].min(), hi[0][200:].max(), hi[1][200:].min(), hi[1][200:].max()), flush=True)
+
+
+def analyze_var():
+    """替えた組の .mod を作る。揺れの位相は、元の組（深さ 0 なら深さ 127 の組）の A に、周期の中でずらしていちばん重なる所でそろえる"""
+    base_sets = needed()
+    groups = {}
+    for k2, (ins2, tempo, base) in variants().items():
+        groups.setdefault(base[0], []).append(k2)
+
+    def cols_of(key):
+        bases = [os.path.join(OUT, "cs%s_k%d" % (key, kk)) for kk, _ in KEYS]
+        if not all(os.path.exists(b + "_long_wet.wav") for b in bases):
+            return None
+        bands = [read_pair(b, f0) for b, (_, f0) in zip(bases, KEYS)]
+        n = min(len(x) for band in bands for x in band)
+        return [x[:n] for band in bands for x in band], bases
+
+    for k, ks in groups.items():
+        ins, tempo, voices = base_sets[k]
+        p = DEPTH[(ins["type"] >> 7, ins["type"] & 0x7F)]
+        ref_key = k if ins["param%d" % p] > 0 else next((x for x in ks if x.split("_")[1 + p] == "127"), None)
+        ref = cols_of(ref_key) if ref_key else None
+        for k2 in ks:
+            got = cols_of(k2)
+            if got is None:
+                continue
+            cols, bases = got
+            P = period_of(cols[0]) or period_of(cols[2])
+            lag = 0
+            if ref is not None and k2 != ref_key and 0 < P < 4000:
+                a0, a1 = 1000, 6000
+                best = -1e9
+                for L in range(0, P):
+                    q = sum(np.corrcoef(ref[0][c][a0:a1], cols[c][a0 + L:a1 + L])[0, 1] for c in (0, 2, 4, 6) if np.std(cols[c][a0:a1]) > 1e-6)
+                    if q > best:
+                        best, lag = q, L
+                cols = [x[lag:] for x in cols]
+            # d は録るたびに一定の量ずれる（音の頭の見つけ方と、A が 0 になる所の位相の半周期の取り違え。深さ 0・32〜109・127 で −23・−1.8・+100 サンプルなど）。
+            # 揺れの中の d の動きは小さい（0.01〜0.16 サンプル）ので、中央値を元の組の .mod にそろえる（つまみを動かし始めても遅れが跳ばない）
+            bm = os.path.join(OUT, k + ".mod")
+            if os.path.exists(bm):
+                with open(bm, "rb") as f:
+                    f.readline()
+                    b = np.frombuffer(f.read(), dtype="<f4").reshape(-1, 8)
+                for c in (1, 3, 5, 7):
+                    cols[c] = cols[c] - np.median(cols[c][1000:]) + np.median(b[1000:, c])
+            with open(os.path.join(OUT, k2 + ".mod"), "wb") as f:
+                f.write(("MOD rate=%d frames=%d period=%d indb=%.2f\n" % (RATE, len(cols[0]), P, dry_db(bases[0]))).encode("ascii"))
+                f.write(np.stack(cols, axis=1).astype("<f4").tobytes())
+            print("%s（%s の深さ %s）: 周期 %d ms・ずらし %d ms・低い帯 A 左 %.2f〜%.2f 右 %.2f〜%.2f" % (
+                k2, k, k2.split("_")[1 + p], P, lag, cols[0][200:].min(), cols[0][200:].max(), cols[2][200:].min(), cols[2][200:].max()), flush=True)
 
 
 def split(x):
@@ -331,9 +422,14 @@ def main():
             print(k, ",".join(voices))
         print("%d 組" % len(s))
     elif cmd == "record":
-        record(set(a[a.index("--only") + 1].split(",")) if "--only" in a else None)
+        record(set(a[a.index("--only") + 1].split(",")) if "--only" in a else None, "--var" in a)
     elif cmd == "analyze":
-        analyze()
+        analyze_var() if "--var" in a else analyze()
+    elif cmd == "listvar":
+        s = variants()
+        for k, (ins, tempo, base) in s.items():
+            print(k, base[0])
+        print("%d 組" % len(s))
 
 
 if __name__ == "__main__":

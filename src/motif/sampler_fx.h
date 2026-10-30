@@ -1062,6 +1062,15 @@ inline double rot_ramp_seconds(int v, bool horn, bool up)
 	return std::max(0.01, v / 10.0);
 }
 
+// Low/High Balance（p9）: ローター（低い帯）cos・ホーン（高い帯）sin、角 π/2 × (v − 1) / 126。00_120 の組で p9 を 1〜127 の 11 段に替えたノイズの録音で、
+// 帯ごとの大きさ（ローターは 300Hz より下、ホーンは 800Hz より上で平ら）がどの段も 0.2dB 以内（2026-10-30、capture/rotpar）
+inline void rot_balance(int v, double g[2])
+{
+	const double a = PI / 2 * (std::max(1, std::min(127, v)) - 1) / 126.0;
+	g[0] = std::max(0.01, std::cos(a));      // 端でも、もう一方の帯の漏れ（実機で −31〜−40dB）は残る
+	g[1] = std::max(0.02, std::sin(a));
+}
+
 // ローターとホーンの回る速さと位置。速さは周波数の対数でまっすぐに、遅い ↔ 速いの全幅を rot_ramp_seconds で動く
 // （00_120 の組: ローター 0.88 ↔ 6.04Hz が上りも下りも 5 秒前後、ホーン 1.01 ↔ 6.71Hz が上り 0.8・下り 1.4 秒。切り替えの録音を窓ごとに読んだもの）
 struct rotor_motion {
@@ -1127,6 +1136,62 @@ inline double rot_dmin(const rot_file &r)
 				}
 	return m;
 }
+
+// Dual Rotor の帯の分け方: 低い帯は 600Hz の LPF、高い帯は 400Hz の HPF（どちらも 2 次のバターワースを 2 回、双一次変換）。
+// 実機のローターとホーンの受け持ち（Low/High Balance を 1・127 にした録音で、ローターは 500Hz で −6.8dB・1kHz で −20dB、ホーンは 400Hz で −2.8dB・
+// 200Hz で −16.5dB）に寄せた。Balance を 10 段に替えた録音との差（1/3 オクターブ、16〜112）は、1kHz で分けたとき 3.3dB、これで 0.95dB（2026-10-30）
+static const double ROT_LP_HZ = 600, ROT_HP_HZ = 400;
+inline cplx rot_band(double f, bool low)
+{
+	const double fc = low ? ROT_LP_HZ : ROT_HP_HZ;
+	const cplx s(0, std::tan(PI * std::min(f, FS * 0.4999) / FS) / std::tan(PI * fc / FS));
+	const cplx den = s * s + std::sqrt(2.0) * s + 1.0;
+	const cplx h = low ? 1.0 / den : s * s / den;
+	return h * h;
+}
+
+// 形（遅いほう）の、周波数 f での時間平均の大きさ: ローターとホーンの位置を 16 × 16 の格子で回し、帯の応答 × Σ A·e^(−jωd) の 2 乗平均の根。
+// 周波数の形（.modeq、録ったノイズの時間平均）をこれで割れば、形を掛けた出口の平均がどの周波数でも録音と同じになる
+// （前は 220Hz・2093Hz の値で割っていて、ほかの周波数ではローターとホーンの成分の重なり方が変わり、組によって高い帯が 5dB 大きかった）
+inline double rot_avg_mag(const rot_file &r, int ch, double f)
+{
+	const cplx bl = rot_band(f, true), bh = rot_band(f, false);
+	const double w = 2 * PI * f / FS;
+	double acc = 0;
+	for (int i = 0; i < 16; i++)
+		for (int j = 0; j < 16; j++) {
+			const int pos[2] = {i * r.nb / 16, j * r.nb / 16};
+			cplx g = 0;
+			for (int bd = 0; bd < 2; bd++) {
+				cplx s = 0;
+				for (int c = 0; c < 2; c++)
+					s += double(r.tab(bd, 0, ch, c, 0)[pos[c]]) * std::polar(1.0, -w * r.tab(bd, 0, ch, c, 1)[pos[c]]);
+				g += (bd == 0 ? bl : bh) * s;
+			}
+			acc += std::norm(g);
+		}
+	return std::sqrt(acc / 256);
+}
+
+// rot_avg_mag を 1/12 オクターブおき（20Hz〜20kHz）に作っておき、対数の周波数で補間して引く
+struct rot_avg {
+	std::vector<double> m[2];
+	void make(const rot_file &r)
+	{
+		for (int ch = 0; ch < 2; ch++) {
+			m[ch].clear();
+			for (int k = 0; k <= 120; k++)
+				m[ch].push_back(std::max(1e-6, rot_avg_mag(r, ch, 20.0 * std::exp2(k / 12.0))));
+		}
+	}
+	double at(int ch, double f) const
+	{
+		const double x = std::max(0.0, std::min(119.999, 12 * std::log2(std::max(f, 20.0) / 20.0)));
+		const int i = int(x);
+		const double fr = x - i;
+		return m[ch][i] + (m[ch][i + 1] - m[ch][i]) * fr;
+	}
+};
 
 // Dual Rotor の形の名前（Speed Control を slow にした組）
 inline std::string rot_key(const block &b)
@@ -1241,14 +1306,21 @@ inline bool modfx(buf &L, buf &R, const block &b, const std::string &moddir, int
 		return mod_eq(b, fq, h);
 	};
 	double nrm[2][2] = {{1, 1}, {1, 1}};
-	if (has_shape)
+	// Dual Rotor で録った形（.modeq）があれば、形の時間平均（rot_avg）で割る。ほかは 220Hz・2093Hz の値で A を割る
+	rot_avg ra;
+	const bool rot_norm = use_rot && !eqm.empty();
+	if (rot_norm)
+		ra.make(rot);
+	else if (has_shape)
 		for (int ch = 0; ch < 2; ch++) {
 			nrm[0][ch] = std::max(1e-3, std::abs(shape(220.0, ch)));
 			nrm[1][ch] = std::max(1e-3, std::abs(shape(440.0 * std::exp2(27 / 12.0), ch)));
 		}
-	// 1kHz で 2 つに分ける（2 次のバターワースを 2 回）
+	// 2 つの帯に分ける（2 次のバターワースを 2 回。1kHz、Dual Rotor は rot_band）
 	auto band = [&](const buf &x, bool low) {
-		return filter_freq(x, n, [low](double fq) {
+		return filter_freq(x, n, [low, use_rot](double fq) {
+			if (use_rot)
+				return rot_band(fq, low);
 			const cplx s(0, std::tan(PI * std::min(fq, FS * 0.4999) / FS) / std::tan(PI * 1000.0 / FS));
 			const cplx den = s * s + std::sqrt(2.0) * s + 1.0;
 			const cplx h = low ? 1.0 / den : s * s / den;
@@ -1292,8 +1364,8 @@ inline bool modfx(buf &L, buf &R, const block &b, const std::string &moddir, int
 	L = out[0];
 	R = out[1];
 	if (has_shape) {
-		L = filter_freq(L, n, [&](double fq) { return shape(fq, 0); });
-		R = filter_freq(R, n, [&](double fq) { return shape(fq, 1); });
+		L = filter_freq(L, n, [&](double fq) { return rot_norm ? shape(fq, 0) / ra.at(0, fq) : shape(fq, 0); });
+		R = filter_freq(R, n, [&](double fq) { return rot_norm ? shape(fq, 1) / ra.at(1, fq) : shape(fq, 1); });
 	}
 	return true;
 }

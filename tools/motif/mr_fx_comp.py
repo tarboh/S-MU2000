@@ -7,7 +7,7 @@
   step   : AEG を「127 で 0.79 秒（アタックの値 64、高さ 127 → 127）、そのあと時間 0 で 64 へ」にして wet（cs<tag>_step.wav）。
            鳴り始めの効き方（アタック）と、下がったあとの戻り方（リリース）を見る
 --type でほかのインサーションの型（MSB:LSB）、--key で鳴らす鍵を変えられる（歪み系の静的な曲線に使う）。
---wave 波形（既定 704 = 正弦波、705 = ノイズ）。--long 秒 は、音量 --level（既定 100）で dry と wet を 1 本ずつ長く録るだけ（cs<tag>_long_dry/wet.wav）。
+--wave 波形（既定 704 = 正弦波、705 = ノイズ）。--chord 鍵,鍵,… でまとめて鳴らす。--long 秒 は、音量 --level（既定 100）で dry と wet を 1 本ずつ長く録るだけ（cs<tag>_long_dry/wet.wav）。
 --analyze で読むだけ（入力 = dry の音量、出力 = wet の音量、どちらも 0.5〜0.9 秒の RMS、dBFS）。
 送るのはパラメーターチェンジ・ダンプの要求・ノートだけ（保存しない）。終わったらマルチへ戻す。"""
 import json
@@ -100,9 +100,12 @@ def main():
     # --cs ソース:行き先:深さ … 雛形の音色のコントロールセット 1（40 05 00、5 バイト: ソース・行き先の上下・深さ・0）。行き先 4〜19 は INS1（A）の P1〜16
     cs = mr_ref.opt(a, "--cs")
 
+    # --chord 57,64,69 … 鍵 --key の代わりに、まとめて鳴らす（入口を大きくして歪みを見る）
+    keys = [int(k) for k in mr_ref.opt(a, "--chord", str(key)).split(",")]
+
     def take(name, hold=1.0, at=()):
         if not os.path.exists(os.path.join(d, name + ".wav")):
-            ev = [(0.3, lambda: r.note_on(key, 100)), (0.3 + hold, lambda: r.note_off(key))]
+            ev = [(0.3, lambda k=k: r.note_on(k, 100)) for k in keys] + [(0.3 + hold, lambda k=k: r.note_off(k)) for k in keys]
             for t, off, v in at:
                 ev.append((0.3 + t, lambda off=off, v=v: r.param(0x40, 0x03, off, v >> 7, v & 0x7F)))
             for t, c, v in ccs:
