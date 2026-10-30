@@ -135,7 +135,7 @@ struct player {
 	motif_multi::pedals ped;                 // ボイスモードのサステイン・ソステヌート（マルチはパートごと）
 	int rpn_msb = 127, rpn_lsb = 127;
 	int cc7 = 127, cc11 = 127;
-	float master = 0.8f;
+	float master = 1.0f;                     // 全体の音量。1.0 で実機の録音（デジタル出力）と同じ大きさ（前の初期値 0.8 は −1.9dB 小さかった）
 	bool use_ins = true, use_rev = true, use_cho = true;
 	std::atomic<float> peak{0};
 	std::atomic<int> voices{0};
@@ -1174,7 +1174,7 @@ int main(int argc, char **argv)
 	if (!shot.empty())
 		pl->master = 0.0f;       // 撮るだけのときは音を出さない
 	if (!selftest.empty()) {
-		// 画面を出さずに、音の糸と同じ道で和音を鳴らして書く。全体の音量は 1.0（画面の初期値 0.8 = −1.9dB のままだと、実機の録音より小さく出る）
+		// 画面を出さずに、音の糸と同じ道で和音を鳴らして書く。全体の音量は 1.0（実機の録音と同じ大きさ）
 		pl->master = 1.0f;
 		if (list.empty()) {
 			std::fprintf(stderr, "パッチが見つからない: %s\n", dir.string().c_str());
