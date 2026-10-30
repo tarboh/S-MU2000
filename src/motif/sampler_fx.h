@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <array>
 #include <map>
 #include <string>
 #include <vector>
@@ -1385,6 +1386,34 @@ inline bool ltv_type(const block &b)
 	return false;
 }
 
+// .ltv の揺れの線の直し（2026-10-30）: 録った応答は、枠ごとに均すので LFO で動く遅れの成分（揺れの線）が実機より小さく出る
+// （コーラス・セレステ・フランジャーで 1.3〜1.8 倍、フェイザー・ワウはほぼ 1）。組ごとに実機の録音と芯の出口を比べ、
+// 揺れの線（元の音と相関しない残り）の比 g と、元の音の倍率の差 c を fxltv/wetgain.txt に置いた。出口 = g × H + c × 元の音（録った応答の中の遅れで）。
+// オフライン（下の ltvfx）は、その場で回す芯（sampler_fx_rt.h）より揺れの線が 1.2〜1.3 倍大きく出るので、g・c を別に測ってある（offline）
+inline bool ltv_wetgain(const std::string &ltvdir, const std::string &key, double &g, double &c, bool offline)
+{
+	static std::map<std::string, std::map<std::string, std::array<double, 4>>> cache;
+	auto it = cache.find(ltvdir);
+	if (it == cache.end()) {
+		std::map<std::string, std::array<double, 4>> m;
+		if (FILE *f = std::fopen((ltvdir + "/wetgain.txt").c_str(), "r")) {
+			char line[256], k[200];
+			std::array<double, 4> a;
+			while (std::fgets(line, sizeof line, f))
+				if (line[0] != '#' && std::sscanf(line, "%199s %lf %lf %lf %lf", k, &a[0], &a[1], &a[2], &a[3]) == 5)
+					m[k] = a;
+			std::fclose(f);
+		}
+		it = cache.emplace(ltvdir, std::move(m)).first;
+	}
+	auto w = it->second.find(key);
+	if (w == it->second.end())
+		return false;
+	g = w->second[offline ? 2 : 0];
+	c = w->second[offline ? 3 : 1];
+	return true;
+}
+
 inline bool ltvfx(buf &L, buf &R, const block &b, const std::string &ltvdir, int tempo)
 {
 	std::string k = "t" + std::to_string(b.msb) + "_" + std::to_string(b.lsb);
@@ -1444,10 +1473,31 @@ inline bool ltvfx(buf &L, buf &R, const block &b, const std::string &ltvdir, int
 		for (int q = 0; q < NW; q++)
 			norm[size_t(i) * HOP + q] += w[q] * w[q];
 	}
+	double wg = 1, wc = 0;
+	int lag = 0;
+	if (ltv_wetgain(ltvdir, k, wg, wc, true)) {
+		// 元の音の遅れ: 枠の応答を平均した（揺れの線は打ち消し合う）インパルス応答の山。芯（ltv_rt）と同じく 16 枠ほどを左右で
+		std::vector<cplx> M(NW, cplx(0, 0));
+		for (int j = 0; j < F; j += std::max(1, F / 16))
+			for (int ch = 0; ch < 2; ch++) {
+				const float *h = &raw[((size_t(j) * 2 + ch) * NB) * 2];
+				for (int q = 0; q < NB; q++)
+					M[q] += cplx(h[q * 2], h[q * 2 + 1]);
+			}
+		for (int q = 1; q < NW / 2; q++)
+			M[NW - q] = std::conj(M[q]);
+		fft(M, true);
+		int pk = 0;
+		for (int i = 0; i < NW; i++)
+			if (std::fabs(M[i].real()) > std::fabs(M[pk].real()))
+				pk = i;
+		lag = pk > NW / 2 ? pk - NW : pk;
+	}
 	for (size_t t = 0; t < n; t++) {
 		const double nn = norm[NW + t] > 1e-9 ? norm[NW + t] : 1.0;
-		L[t] = out[0][NW + t] / nn;
-		R[t] = out[1][NW + t] / nn;
+		const long q = long(NW + t) - lag;
+		L[t] = wg * out[0][NW + t] / nn + wc * (q >= 0 && size_t(q) < xs2[0].size() ? xs2[0][q] : 0.0);
+		R[t] = wg * out[1][NW + t] / nn + wc * (q >= 0 && size_t(q) < xs2[1].size() ? xs2[1][q] : 0.0);
 	}
 	return true;
 }

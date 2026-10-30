@@ -86,12 +86,14 @@ int main(int argc, char **argv)
 		}
 		const double rr = mr > 0 ? er / mr : 0, rc = mc > 0 ? ec / mc : 0, ri = irt.recorded() ? (ss > 0 ? std::sqrt(se / ss) : 0) : mi > 0 ? ei / mi : 0;
 		// 近似（オフラインは録った応答の STFT、こちらは式）は数に入れない
-		// 録った応答をその場の形に直した型（.ltv・.dyn・.mod）は STFT と違うので、差は二乗平均の比で見て 0.7 まで
-		// （ノイズで Vintage Wah 0.13、Phaser 0.03、Rotary 0.01）。中に間引きや雑音のある Lo-Fi 系（0D xx）は時間ごとの応答で表せず、
+		// 録った応答をその場の形に直した型（.ltv・.dyn・.mod）は STFT と違うので、差は二乗平均の比で見て 0.9 まで
+		// （ノイズで Vintage Wah 0.13、Phaser 0.03、Rotary 0.01）。.ltv の揺れの線の直し（2026-10-30、wetgain.txt）で、コーラス系は
+		// どちらの形も揺れの線を実機の大きさまで持ち上げた。揺れの線は形ごとに位相が違うので、差は 0.3 前後から 0.5 前後に増え、
+		// いちばん大きい Voice Ld（0509）で 0.83（それまで 0.7）。中に間引きや雑音のある Lo-Fi 系（0D xx）は時間ごとの応答で表せず、
 		// オフラインとも合わない（Lo-Res はノイズで 0.65、音程のある音で 5dB 大きい）ので数に入れない
 		const bool lofi = irt.recorded() && (ia.msb == 13 || ib.msb == 13);
 		const bool ins_ok = irt.supported() && !irt.approx() && !lofi, cho_ok = cok && !crt.approx();
-		const bool bad = (rok && rr > 2e-4) || (cho_ok && rc > 1e-6) || (!cok && mc > 0 && ch.send) || (ins_ok && ri > (irt.recorded() ? 0.7 : irt.latency() ? 1e-2 : 1e-4));
+		const bool bad = (rok && rr > 2e-4) || (cho_ok && rc > 1e-6) || (!cok && mc > 0 && ch.send) || (ins_ok && ri > (irt.recorded() ? 0.9 : irt.latency() ? 1e-2 : 1e-4));
 		fails += bad;
 		std::printf("%s %s: インサーション %02X%02X→%02X%02X つなぎ %d %s（差 %.1e）・リバーブ %02X%02X %s（差 %.1e）・コーラスの枠 %02X%02X %s（差 %.1e）\n",
 		            bad ? "失敗" : "ok", pt.name.c_str(), ia.msb, ia.lsb, ib.msb, ib.lsb, connect,

@@ -439,6 +439,7 @@ public:
 		FILE *f = std::fopen((ltvdir + "/" + k + ".ltv").c_str(), "rb");
 		if (!f)
 			return false;
+		key = k;
 		char head[160];
 		if (!std::fgets(head, sizeof head, f)) {
 			std::fclose(f);
@@ -492,7 +493,13 @@ public:
 		return true;
 	}
 	// つまみで Dry/Wet が動いたとき: 録った応答の出口に掛ける倍率（元の音を足し引きする分は block_rt が delayed_in に掛けて足す）
-	void set_scale(double a) { mat = a; }
+	void set_scale(double a, bool now = false)
+	{
+		mat = a;
+		if (now)
+			ma = a;
+	}
+	const std::string &name() const { return key; }
 	// 出口のうち元の音にあたる入口（録った応答の中の元の音の遅れ dry_lag も入れて。左右、mono の型は左右を足して半分）
 	double delayed_in(int c) const
 	{
@@ -615,6 +622,7 @@ private:
 	double rate = 1, phi_last = 0;          // LFO Speed のつまみ: 枠を進める速さと、枠 i_last の録った枠の位置
 	long i_last = -1;
 	int dry_lag = 0;                        // 録った応答の中の元の音の遅れ（サンプル）
+	std::string key;                        // 読んだ .ltv の名前（拡張子なし）
 	std::vector<float> raw;
 	std::vector<double> win2, acw;
 	tv_conv cv;
@@ -1407,6 +1415,8 @@ public:
 		pc_off[0] = pc_off[1] = pc_hz[0] = pc_hz[1] = 0;
 		dryeq_on = false;
 		mixb = mixbt = 0;
+		wg_ = 1;
+		wc_ = mixc = mixct = 0;
 		for (int i = 1; i <= 16; i++)
 			rng_[i] = prange();
 		if (!fxddir.empty()) {
@@ -1430,6 +1440,7 @@ public:
 			// コーラス系・フランジャーも、録った応答（.ltv）があればオフラインと同じくそれを使う（2026-10-27。それまでは式で回す近似）
 			approx_ = false;
 			kind = 10;
+			ltv_wet(fxddir + "/../fxltv");
 		} else if (b.is(15, 0) || b.is(15, 1)) {
 			eqf = eq_iir();
 			kind = 1;
@@ -1478,6 +1489,7 @@ public:
 			kind = 10;
 		} else if (motif_fx::ltv_type(b) && !fxddir.empty() && tv.init_ltv(b, fxddir + "/../fxltv", tempo)) {
 			kind = 10;
+			ltv_wet(fxddir + "/../fxltv");
 		} else if (motif_fx::mod_type(b) && !fxddir.empty() && md.init(b, fxddir + "/../fxmod", tempo)) {
 			kind = 11;
 		} else if (b.is(13, 0)) {
@@ -1663,11 +1675,16 @@ public:
 		case 10:
 			tv.tick(L, R);
 			mixb += (mixbt - mixb) * 0.005;
-			if (mixb != 0) {
+			mixc += (mixct - mixc) * 0.005;
+			if (mixb != 0 || mixc != 0) {
 				double dl = tv.delayed_in(0), dr = tv.delayed_in(1);
-				dryeq.tick(dl, dr);
-				L += mixb * dl;
-				R += mixb * dr;
+				L += mixc * dl;
+				R += mixc * dr;
+				if (mixb != 0) {
+					dryeq.tick(dl, dr);
+					L += mixb * dl;
+					R += mixb * dr;
+				}
 			}
 			break;
 		case 11:
@@ -1761,6 +1778,8 @@ private:
 	eq_iir dryeq;                            // .ltv の Dry/Wet で足し引きする元の音に掛ける型の EQ
 	bool dryeq_on = false;
 	double mixb = 0, mixbt = 0;              // その倍率（今・目指す）
+	double wg_ = 1, wc_ = 0;                 // .ltv の揺れの線の直し: 出口 = wg_ × H + wc_ × 元の音（wetgain.txt）
+	double mixc = 0, mixct = 0;              // 元の音（EQ なし）を足し引きする倍率（今・目指す）
 	lofi_rt lf;
 	ringmod_rt rmod;
 	block blk_, base_;                        // 今の値（つまみで動いたあと）と、init のときの値
@@ -1913,13 +1932,24 @@ private:
 				dryeq.set(q, false);
 				dryeq_on = true;
 			}
-			tv.set_scale(gw / gw0);
-			mixbt = gd - gw / gw0 * gd0;
+			// 直した H'（= wg_ × H + wc_ × 元の音）を a 倍して、元の音を b だけ足す
+			const double a = gw / gw0;
+			tv.set_scale(a * wg_);
+			mixct = a * wc_;
+			mixbt = gd - a * gd0;
 		} else if (nm == "LFO Speed") {
 			const double h0 = motif_fx::LFO_HZ[std::min(127, v0)];
 			if (h0 > 0)
 				tv.set_rate(motif_fx::LFO_HZ[std::min(127, v)] / h0);
 		}
+	}
+	// .ltv の揺れの線の直し（motif_fx::ltv_wetgain）: 出口 = wg_ × H + wc_ × 元の音
+	void ltv_wet(const std::string &dir)
+	{
+		if (!motif_fx::ltv_wetgain(dir, tv.name(), wg_, wc_, false))
+			return;
+		tv.set_scale(wg_, true);
+		mixc = mixct = wc_;
 	}
 	// Dry/Wet の倍率: 元の音 cos・揺れの線 sin（角 π/2 × (v − 1) / 126）。Chorus 1（02_039 の組）を Dry/Wet 1・32・64・96・127 で録り、
 	// 元の音の倍率（wet と dry の遅れ 0 の相関）と残りのパワーを読んだ: 元の音 1.10 × cos、揺れの線 1.35〜1.38 × sin（1.10 は EQ の高い棚）
