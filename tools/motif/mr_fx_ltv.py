@@ -1,6 +1,6 @@
 """揺れながら周波数ごとに違う動きをするインサーション（フェイザー類・V-Flanger・Vintage Flanger・Tempo Flanger・Flanger 3・Symphonic・
 Auto Wah・Vintage Auto Wah・Jump・Talking Modulator など）を、プリセットの組のまま録って、時間ごとの周波数応答 H(t, f) で持つ。
-  python mr_fx_ltv.py list | record [--only 名前,…] | analyze
+  python mr_fx_ltv.py list | record [--only 名前,…] | analyze [--only 名前,…]
 録り方: mr_fx_comp.py --wave 705 --long 8（ノイズ、音量 100、鍵 60）で dry と wet を 1 本ずつ。ノイズの波形は鳴らし始めから毎回同じ並びなので、
 音の頭でそろえれば dry と wet の入口は同じ（0.1 秒おきの短い音どうしで相関 1.000 を確かめた）。テンポに合わせる型は音色のテンポを入れる。
 読み方: 窓 4096 点（Hann）・ずらし 1024 点の STFT で、左右の出口ごとに、大きさ √(|W|² / |X|²)・位相は W·conj(X) の H を出す（どれも前後 1 枠ずつで均す）。
@@ -82,10 +82,12 @@ def stft(x):
     return np.stack([np.fft.rfft(x[i * HOP:i * HOP + NW] * w) for i in range(nf)])
 
 
-def analyze():
+def analyze(only=None):
     sys.path.insert(0, HERE)
     import mr_ref
     for k, (ins, tempo, voices) in needed().items():
+        if only and k not in only:
+            continue
         base = os.path.join(OUT, "cs%s_long" % k)
         if not os.path.exists(base + "_wet.wav"):
             continue
@@ -95,8 +97,22 @@ def analyze():
         wL, wR = np.asarray(wL, dtype=np.float64), np.asarray(wR, dtype=np.float64)
         od = int(np.argmax(np.abs(d) > 1e-4))
         ow = int(np.argmax((np.abs(wL) + np.abs(wR)) > 1e-4))
+        # dry と wet は別々に録るので、録り始めの位置が ±500 サンプルほどぶれる（音の頭 od は 11300〜12400）。頭が 4ms より離れたときは、
+        # 前はファイルどうしが同じ所から始まるとみなして ow = od にしていたが、それだと録り始めのぶれが元の音の遅れとして .ltv に入る
+        # （コーラス系の 40 組で 5〜11ms。相関で見た遅れは頭の差にぴったり一致していた。2026-10-30）。元の音が十分あれば（相関の山の
+        # 倍率 0.3 以上）、相関の山でそろえる。無ければ（Dry/Wet 127 など）wet の頭のまま。近似の組は前のまま
         if abs(ow - od) > int(0.004 * FS):
-            ow = od
+            if (ins["type"] >> 7, ins["type"] & 0x7F) in APPROX_TYPES:
+                ow = od
+            else:
+                a0 = od + FS
+                x = d[a0:a0 + 3 * FS]
+                w = (wL + wR) / 2
+                seg = w[a0 - 1000:a0 + 3 * FS + 1000]
+                c = np.fft.irfft(np.fft.rfft(seg, 2 ** 19) * np.conj(np.fft.rfft(x, 2 ** 19)), 2 ** 19)[:2001]
+                j = int(np.argmax(np.abs(c)))
+                if abs(c[j]) / np.dot(x, x) >= 0.3:
+                    ow = od + j - 1000
         n = int(8.0 * FS)
         d, wL, wR = d[od:od + n], wL[ow:ow + n], wR[ow:ow + n]
         m = min(len(d), len(wL))
@@ -224,7 +240,7 @@ def main():
     elif cmd == "record":
         record(set(a[a.index("--only") + 1].split(",")) if "--only" in a else None)
     elif cmd == "analyze":
-        analyze()
+        analyze(set(a[a.index("--only") + 1].split(",")) if "--only" in a else None)
 
 
 if __name__ == "__main__":
