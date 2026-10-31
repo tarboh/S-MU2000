@@ -22,6 +22,7 @@
 #include <thread>
 #include <cstdlib>
 #include <cstring>
+#include <list>
 #include <map>
 #include <memory>
 #include <random>
@@ -89,13 +90,7 @@ inline bool load_smpx(const std::string &path, sample &s)
 	std::fclose(f);
 	if (got != buf.size())
 		return false;
-	s.L.resize(n);
-	s.R.resize(n);
-	for (int i = 0; i < n; i++) {
-		s.L[i] = buf[2 * i];
-		s.R[i] = buf[2 * i + 1];
-	}
-	s.pack();       // 16bit に詰める（モノラルは 1 本）
+	s.pack_interleaved(buf.data(), size_t(n));       // 16bit に詰める（モノラルは 1 本）
 	return true;
 }
 
@@ -187,20 +182,41 @@ struct engine_options {
 	double part_detune = 0;
 };
 
-// 区間のサンプルは、同じファイルなら音色（エンジン）をまたいで 1 つを使い回す（マルチで同じ波形のパートが並んでも、メモリを食わない）
+// 区間のサンプルは、同じファイルなら音色（エンジン）をまたいで 1 つを使い回す（マルチで同じ波形のパートが並んでも、メモリを食わない）。
+// 一度読んだものは、どの音色も使わなくなっても SAMPLE_KEEP_BYTES まで手元に残す（プログラムチェンジで同じ音色へ戻ったとき、読み直さない）。
+// 超えたら、使っている音色の無いものを古い順に手放す。読むのは錠の外（いくつもの糸で同時に読める）
+constexpr size_t SAMPLE_KEEP_BYTES = size_t(1) << 30;
 inline std::shared_ptr<sample> shared_sample(const std::string &path)
 {
 	static std::mutex m;
-	static std::map<std::string, std::weak_ptr<sample>> reg;
-	std::lock_guard<std::mutex> lk(m);
-	auto it = reg.find(path);
-	if (it != reg.end())
-		if (auto sp = it->second.lock())
-			return sp;
+	static std::map<std::string, std::shared_ptr<sample>> reg;
+	static std::list<std::string> order;      // 読んだ順（古いものが前）
+	static size_t bytes = 0;
+	{
+		std::lock_guard<std::mutex> lk(m);
+		auto it = reg.find(path);
+		if (it != reg.end())
+			return it->second;
+	}
 	auto smp = std::make_shared<sample>();
 	if (!load_smpx(path, *smp))
 		return nullptr;
-	reg[path] = smp;
+	std::lock_guard<std::mutex> lk(m);
+	auto [it, added] = reg.emplace(path, smp);
+	if (!added)
+		return it->second;                    // ほかの糸が先に読んだ
+	order.push_back(path);
+	bytes += smp->q.size() * sizeof(int16_t);
+	for (auto o = order.begin(); bytes > SAMPLE_KEEP_BYTES && o != order.end();) {
+		auto r = reg.find(*o);
+		if (r->second.use_count() > 1 || *o == path) {
+			++o;
+			continue;
+		}
+		bytes -= r->second->q.size() * sizeof(int16_t);
+		reg.erase(r);
+		o = order.erase(o);
+	}
 	return smp;
 }
 
@@ -235,12 +251,30 @@ public:
 		apply_ctl();
 	}
 
-	// 区間のサンプルを全部先に読む（GUI の音の糸の中でディスクを読まないように）
+	// 区間のサンプルを全部先に読む（GUI の音の糸の中でディスクを読まないように）。まだ読んでいないファイルは、いくつもの糸で同時に読む
+	// （1 音色に 100 ほどのファイル、大きい音色で 80MB ある。1 本の糸だと 0.1〜0.2 秒かかり、プログラムチェンジが次の音に間に合わなかった）
 	void preload()
 	{
+		std::vector<std::string> files;
 		for (const element &e : pt.els)
 			for (const zone &z : e.zones)
-				get_sample(z.file);
+				if (!cache.count(z.file) && std::find(files.begin(), files.end(), z.file) == files.end())
+					files.push_back(z.file);
+		const size_t nt = std::min<size_t>(files.size(), std::max(1u, std::min(8u, std::thread::hardware_concurrency())));
+		if (nt > 1) {
+			std::vector<std::shared_ptr<sample>> got(files.size());
+			std::atomic<size_t> next{0};
+			std::vector<std::thread> th;
+			for (size_t t = 0; t < nt; t++)
+				th.emplace_back([&]() {
+					for (size_t i; (i = next++) < files.size();)
+						got[i] = shared_sample(pt.dir + files[i]);
+				});
+			for (auto &t : th)
+				t.join();
+		}
+		for (const std::string &f : files)
+			get_sample(f);
 	}
 
 	static bool bipolar(int src) { return src == 0 || src == 6 || src == 8 || src == 9; }

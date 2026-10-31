@@ -1201,10 +1201,11 @@ int main(int argc, char **argv)
 				for (const auto &r : pl->mul->take_requests()) {
 					std::string bank;
 					const std::string file = motif_multi::patch_of(r.msb, r.lsb, r.prog, bank);
-					if (file.empty())
-						continue;
-					motif_multi::part_voice v = pl->mul->build_voice(r.part, file, bank, r.pan, &r.cfg);
-					pl->mul->swap_voice(*pl->mul->parts[size_t(r.part)], v);
+					if (!file.empty()) {
+						motif_multi::part_voice v = pl->mul->build_voice(r.part, file, bank, r.pan, &r.cfg);
+						pl->mul->swap_voice(*pl->mul->parts[size_t(r.part)], v);
+					}
+					pl->mul->pc_finished(r.part);
 				}
 			}
 			for (auto &x : selftest_ins)
@@ -1261,6 +1262,19 @@ int main(int argc, char **argv)
 						if (M) {
 							pl->mul = std::move(M);
 							std::printf("一括ロードのマルチ %s に入れ替えた\n", pl->mul->cfg.name.c_str());
+						}
+					}
+					// プログラムチェンジも、その場で読んで入れ替える（画面の糸の道と同じく、待たせたノートはそのあと鳴る）
+					{
+						std::lock_guard<std::mutex> lk(pl->mtx);
+						for (const auto &r : pl->mul->take_requests()) {
+							std::string bank;
+							const std::string file = motif_multi::patch_of(r.msb, r.lsb, r.prog, bank);
+							if (!file.empty()) {
+								motif_multi::part_voice v = pl->mul->build_voice(r.part, file, bank, r.pan, &r.cfg);
+								pl->mul->swap_voice(*pl->mul->parts[size_t(r.part)], v);
+							}
+							pl->mul->pc_finished(r.part);
 						}
 					}
 					pl->fill(buf.data(), 4410);
@@ -1458,9 +1472,8 @@ int main(int argc, char **argv)
 	// マルチのプログラムチェンジで、パートの音色を読む糸
 	std::thread pv_loader;
 	bool pv_busy = false, pv_ready = false;
-	int pv_part = -1;
 	const motif_multi::multi *pv_multi = nullptr;
-	motif_multi::part_voice pv_new;
+	std::vector<std::pair<int, motif_multi::part_voice>> pv_new;   // 読み終わったパートと音色（まとめて頼まれたものは同時に読む）
 	std::vector<motif_multi::pc_request> pc_queue;
 	std::mutex ready_mtx;
 	int selected = -1, want = list.empty() ? -1 : 0;
@@ -1551,11 +1564,16 @@ int main(int argc, char **argv)
 				{
 					std::lock_guard<std::mutex> lk(pl->mtx);
 					if (pl->mul.get() == pv_multi) {
-						pl->mul->swap_voice(*pl->mul->parts[size_t(pv_part)], pv_new);
+						for (auto &[i, v] : pv_new) {
+							pl->mul->swap_voice(*pl->mul->parts[size_t(i)], v);
+							// 読んでいる間に同じパートへ次のプログラムチェンジが来ていたら、ノートはそれを読み終えるまで待たせる
+							if (std::none_of(pc_queue.begin(), pc_queue.end(), [&](const motif_multi::pc_request &q) { return q.part == i; }))
+								pl->mul->pc_finished(i);
+						}
 						pl->set_polyphony(polyphony);
 					}
 				}
-				pv_new = motif_multi::part_voice();     // 前の音色は mtx の外で捨てる
+				pv_new.clear();     // 前の音色は mtx の外で捨てる
 				pv_ready = false;
 				pv_busy = false;
 			}
@@ -1571,18 +1589,34 @@ int main(int argc, char **argv)
 				}
 			}
 			if (!pv_busy && !pc_queue.empty() && pl->mul && !loading) {
-				const motif_multi::pc_request r = pc_queue.front();
-				pc_queue.erase(pc_queue.begin());
-				std::string bank;
-				const std::string file = motif_multi::patch_of(r.msb, r.lsb, r.prog, bank);
-				if (!file.empty()) {
+				// 溜まった頼みを全部、パートごとの糸で同時に読む
+				std::vector<std::tuple<motif_multi::pc_request, std::string, std::string>> jobs;
+				for (const auto &r : pc_queue) {
+					std::string bank;
+					const std::string file = motif_multi::patch_of(r.msb, r.lsb, r.prog, bank);
+					if (!file.empty())
+						jobs.emplace_back(r, file, bank);
+					else {
+						std::lock_guard<std::mutex> lk(pl->mtx);
+						pl->mul->pc_finished(r.part);      // 無いバンク: 音色はそのまま、待たせたノートを鳴らす
+					}
+				}
+				pc_queue.clear();
+				if (!jobs.empty()) {
 					pv_busy = true;
-					pv_part = r.part;
 					pv_multi = pl->mul.get();
-					pv_loader = std::thread([&, r, file, bank, M = pv_multi]() {
-						motif_multi::part_voice v = M->build_voice(r.part, file, bank, r.pan, &r.cfg);
+					pv_loader = std::thread([&, jobs, M = pv_multi]() {
+						std::vector<std::pair<int, motif_multi::part_voice>> out(jobs.size());
+						std::vector<std::thread> th;
+						for (size_t k = 0; k < jobs.size(); k++)
+							th.emplace_back([&, k]() {
+								const auto &[r, file, bank] = jobs[k];
+								out[k] = {r.part, M->build_voice(r.part, file, bank, r.pan, &r.cfg)};
+							});
+						for (auto &t : th)
+							t.join();
 						std::lock_guard<std::mutex> lk(ready_mtx);
-						pv_new = std::move(v);
+						pv_new = std::move(out);
 						pv_ready = true;
 					});
 				}
@@ -1602,7 +1636,7 @@ int main(int argc, char **argv)
 				// 前のマルチの音色を読んでいる糸は、終わるのを待ってから捨てる
 				if (pv_loader.joinable())
 					pv_loader.join();
-				pv_new = motif_multi::part_voice();
+				pv_new.clear();
 				pv_ready = pv_busy = false;
 				pc_queue.clear();
 				std::unique_ptr<motif_multi::multi> old;

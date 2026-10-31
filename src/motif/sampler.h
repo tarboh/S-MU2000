@@ -44,26 +44,40 @@ struct sample {
 
 	void pack()
 	{
-		frames = L.size();
+		std::vector<float> x(2 * L.size());
+		for (size_t i = 0; i < L.size(); i++) {
+			x[2 * i] = L[i];
+			x[2 * i + 1] = R[i];
+		}
+		std::vector<float>().swap(L);
+		std::vector<float>().swap(R);
+		pack_interleaved(x.data(), x.size() / 2);
+	}
+	// 左右交互の n フレームを 16bit に詰める（pack() と同じ値。ファイルから読むときは L・R を作らずにこちら）
+	void pack_interleaved(const float *x, size_t n)
+	{
+		frames = n;
 		float peak = 0, diff = 0;
 		for (size_t i = 0; i < frames; i++) {
-			peak = std::max(peak, std::max(std::fabs(L[i]), std::fabs(R[i])));
-			diff = std::max(diff, std::fabs(L[i] - R[i]));
+			const float l = x[2 * i], r = x[2 * i + 1];
+			peak = std::max(peak, std::max(std::fabs(l), std::fabs(r)));
+			diff = std::max(diff, std::fabs(l - r));
 		}
 		stereo = diff > peak * 1e-4f;
 		scale = peak > 0 ? peak / 32767.0f : 1.0f;
 		const float k = 1.0f / scale;
-		auto q16 = [&](float v) { return int16_t(std::lround(std::max(-32767.0f, std::min(32767.0f, v * k)))); };
+		// std::lround と同じ（0 から遠い側へ丸める）。|y| < 2^15 なので double の y ± 0.5 は丸めずに表せる。lround を呼ぶより 1 桁速い
+		auto q16 = [&](float v) {
+			const double y = std::max(-32767.0f, std::min(32767.0f, v * k));
+			return int16_t(y >= 0 ? int(y + 0.5) : -int(-y + 0.5));
+		};
 		q.resize(stereo ? 2 * frames : frames);
-		for (size_t i = 0; i < frames; i++) {
-			if (stereo) {
-				q[2 * i] = q16(L[i]);
-				q[2 * i + 1] = q16(R[i]);
-			} else
-				q[i] = q16(L[i]);
-		}
-		std::vector<float>().swap(L);
-		std::vector<float>().swap(R);
+		if (stereo)
+			for (size_t i = 0; i < 2 * frames; i++)
+				q[i] = q16(x[i]);
+		else
+			for (size_t i = 0; i < frames; i++)
+				q[i] = q16(x[2 * i]);
 	}
 	// i 番目（0..frames − 1）の左右
 	float left(size_t i) const { return float(q[stereo ? 2 * i : i]) * scale; }

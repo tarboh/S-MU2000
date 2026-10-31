@@ -19,6 +19,7 @@
 #include <cstring>
 #include <array>
 #include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -1392,7 +1393,9 @@ inline bool ltv_type(const block &b)
 // オフライン（下の ltvfx）は、その場で回す芯（sampler_fx_rt.h）より揺れの線が 1.2〜1.3 倍大きく出るので、g・c を別に測ってある（offline）
 inline bool ltv_wetgain(const std::string &ltvdir, const std::string &key, double &g, double &c, bool offline)
 {
+	static std::mutex mtx;     // マルチのプログラムチェンジは、いくつもの糸で同時に音色を作る
 	static std::map<std::string, std::map<std::string, std::array<double, 4>>> cache;
+	std::lock_guard<std::mutex> lk(mtx);
 	auto it = cache.find(ltvdir);
 	if (it == cache.end()) {
 		std::map<std::string, std::array<double, 4>> m;

@@ -416,6 +416,10 @@ struct part {
 	std::atomic<float> peak{0};
 	double ins_rev = 0, ins_cho = 0;      // ドラム: インサーションを通った音のリバーブ・コーラスへの送り（/ 127）
 	int ins_quiet = 0;                     // 入る音も出る音も無いまま続いたサンプルの数（鳴らす糸だけ）
+	// プログラムチェンジで音色を読んでいる間に来たノート（鍵・ベロシティ、0 はノートオフ）。読み終えて入れ替えたら新しい音色で鳴らす
+	// （実機はすぐ替わるので、シーケンサーは同じ時刻にプログラムチェンジとノートオンを送ってくる。前は古い音色で鳴った）
+	bool pc_wait = false;
+	std::vector<std::array<int, 2>> held;
 	swp50_eq::part_eq peq;                 // パートの EQ（37 pp 2E〜38）
 	// 描いた音（render の中だけ）。rs・cs はリバーブ・コーラスへ送る音（ふつうの音色は ol・orr と同じ、ドラムは鍵ごとの送りを掛けたもの）
 	float ol[256] = {}, orr[256] = {}, rsl[256] = {}, rsr[256] = {}, csl[256] = {}, csr[256] = {};
@@ -794,7 +798,25 @@ public:
 			// 同じパートの前の頼みは捨てる（続けて送られたら最後のものだけ）
 			requests.erase(std::remove_if(requests.begin(), requests.end(), [&](const pc_request &r) { return r.part == int(i); }), requests.end());
 			requests.push_back({int(i), bank_msb[ch] < 0 ? 63 : bank_msb[ch], bank_lsb[ch] < 0 ? 0 : bank_lsb[ch], prog, P.pan, P.cfg});
+			P.pc_wait = true;
 		}
+	}
+	// プログラムチェンジの音色を入れ替えた（読めなかったときも）あと（mtx の中で）: 待たせたノートを鳴らす
+	void pc_finished(int i)
+	{
+		if (i < 0 || i >= 16)
+			return;
+		if (std::any_of(requests.begin(), requests.end(), [&](const pc_request &r) { return r.part == i; }))
+			return;                            // 次の頼みがまだある
+		part &P = *parts[size_t(i)];
+		P.pc_wait = false;
+		for (const auto &e : P.held) {
+			if (e[1] > 0)
+				part_on(P, e[0], e[1]);
+			else
+				part_off(P, e[0]);
+		}
+		P.held.clear();
 	}
 	std::vector<pc_request> take_requests()
 	{
@@ -821,16 +843,24 @@ public:
 			}
 		}
 		for (auto &p : parts)
-			if (p->ch == ch)
-				part_on(*p, key, vel);
+			if (p->ch == ch) {
+				if (p->pc_wait && p->held.size() < 512)
+					p->held.push_back({key, vel});
+				else
+					part_on(*p, key, vel);
+			}
 	}
 	void note_off(int ch, int key)
 	{
 		if (ch == arp_ch && arp.key_off(key) && !arp.passes_through())
 			return;
 		for (auto &p : parts)
-			if (p->ch == ch)
-				part_off(*p, key);
+			if (p->ch == ch) {
+				if (p->pc_wait)
+					p->held.push_back({key, 0});    // ノートオフは数を限らない（鳴りっぱなしにしない）
+				else
+					part_off(*p, key);
+			}
 	}
 	// パートの受信スイッチ（37 pp 1F〜21、Data List の MIX PART の並び）で、この CC を受けるか。1F bit2 が CC 全体、そのうえで
 	// 20 bit0 音量/エクスプレッション（7・11）・bit1 パン（10）・bit3 サステイン/ソステヌート（64・66）・bit5 MW（1）、21 bit2 FC1（4）・bit3 BC（2）・
@@ -958,6 +988,7 @@ public:
 		arp.all_off();
 		arp_ch = -1;
 		for (auto &p : parts) {
+			p->held.clear();
 			p->ped.clear();
 			for (int &d : p->down)
 				d = 0;
