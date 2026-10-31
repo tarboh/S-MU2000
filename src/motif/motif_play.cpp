@@ -13,11 +13,14 @@
 // --selftest は、画面を出さずに音色を 1 つ読み、音の糸と同じ道（fill）で和音を 2 秒鳴らして WAV に書いて終わる（試験用。--arp で音色のアルペジオを入れて）。
 // アルペジオ（sampler_arp.h）は、型の表 capture/arp_prog.txt（tools/motif/mr_arp_fit.py が実機のアルペジオの MIDI 出力から作る）があれば使える。
 // 設定は音色を読むたびに音色のもの（パッチの arp 行）になる。スイッチだけは覚えておく。
+// ボイスエディット（voice_edit.h）: ボイスモードの窓で、パッチの共通・エレメントの欄を替えてその場で鳴らし、capture/patches_edit/ED_nnn.patch に書き出す。
+// --edit [タブ] で窓を開いておく。試験は --selftest に --vedit エレメント:欄=値（0 は共通）と --vedit-save 書き出し.patch。
 
 #include "motif_multi.h"
 #include "sampler_arp.h"
 #include "sampler_engine.h"
 #include "sampler_fx_rt.h"
+#include "voice_edit.h"
 #include "ui/audio_out.h"
 #include "ui/midi_in.h"
 
@@ -122,6 +125,7 @@ struct loaded {
 	motif_fx_rt::reverb_rt rev;
 	motif_fx_rt::chorus_rt cho;
 	std::string label, ins_name, rev_name, cho_name;
+	std::string file;                         // 読んだパッチ（エディットの書き出しで、行の並びと区間をここから写す）
 	double ins_rev = 0, ins_cho = 0;          // ドラム: インサーションを通った音のリバーブ・コーラスへの送り（/ 127）
 	// リバーブ・コーラスへの送り（0〜127。初めは音色の値。画面のつまみと CC91・CC93 で替わる）。リバーブ・コーラスは送り 127 で作り、入れる音に送り / 127 を掛ける
 	std::atomic<int> rev_send{0}, cho_send{0};
@@ -690,6 +694,7 @@ std::unique_ptr<loaded> load_voice(const voice_entry &v)
 	// エレメントを描く糸（結果は変わらない。32 音 × 3 エレメントで 1 本の 6 倍ほど速い）
 	L->eg->set_threads(int(std::min(8u, std::max(1u, std::thread::hardware_concurrency() - 1))));
 	L->label = v.bank + ":" + std::to_string(v.number) + " " + v.name;
+	L->file = v.file;
 	L->ins_rev = motif_sampler::geti(L->pt.fxline, "insrev") / 127.0;
 	L->ins_cho = motif_sampler::geti(L->pt.fxline, "inscho") / 127.0;
 	auto get = [&](const char *k) { auto it = L->pt.fxline.find(k); return it == L->pt.fxline.end() ? motif_fx::block() : motif_fx::parse_block(it->second); };
@@ -726,6 +731,220 @@ void set_voice_fx(player &P, const std::string &key, const std::string &value)
 	L.ins_name = F.ins_name;
 	L.rev_name = F.rev_name;
 	L.cho_name = F.cho_name;
+}
+
+// ボイスエディットで voice 行・ctrl 行を替えたとき: engine を作り直す（それらは engine を作るときに読む）。読むのは鍵の外、入れ替えは中。
+// つまみ（ソース）の値と同時発音数は前の engine から写す。鳴っている音は切れる
+int g_vedit_tab = -1;      // ボイスエディットの窓で、初めに選んでおくタブ（--edit 番号。0 は共通）
+
+void rebuild_voice_engine(player &P)
+{
+	loaded &L = *P.cur;
+	auto e = std::make_unique<motif_sampler::engine>(L.pt);
+	e->preload();
+	e->set_threads(int(std::min(8u, std::max(1u, std::thread::hardware_concurrency() - 1))));
+	std::unique_ptr<motif_sampler::engine> old;
+	{
+		std::lock_guard<std::mutex> lk(P.mtx);
+		e->set_polyphony(P.poly);
+		for (int s = 0; s < 16; s++)
+			e->set_source(s, L.eg->source(s));
+		old = std::move(L.eg);
+		L.eg = std::move(e);
+	}
+}
+
+// ボイスエディットの窓（ボイスモード）。パッチの欄を書き換える（motif_voice_edit の表）。エレメントの欄は次に鳴らす音から、
+// voice 行・ctrl 行はつまみを離したときに engine を作り直して効く。書き出しは edit_dir の ED_nnn.patch（一覧の「エディットしたもの」）
+void voice_edit_window(player &P, bool &open, std::vector<voice_entry> &list, const std::function<std::vector<voice_entry>()> &rescan, int &selected,
+                       int &want, const fs::path &edit_dir)
+{
+	namespace ve = motif_voice_edit;
+	loaded &L = *P.cur;
+	static const loaded *for_ptr = nullptr;
+	static std::string for_file;
+	static motif_sampler::patch orig;          // 読んだときの値（元に戻す・変わったかどうか）
+	static char name[64] = {};
+	static bool need_rebuild = false;
+	static std::string msg;
+	if (for_ptr != &L || for_file != L.file) {
+		for_ptr = &L;
+		for_file = L.file;
+		orig = L.pt;
+		std::snprintf(name, sizeof name, "%s", L.pt.name.c_str());
+		need_rebuild = false;
+		msg.clear();
+	}
+	ImGui::SetNextWindowSize(ImVec2(640, 760), ImGuiCond_FirstUseEver);
+	ImGui::SetNextWindowPos(ImVec2(360, 40), ImGuiCond_FirstUseEver);
+	ImGui::SetNextWindowBgAlpha(1.0f);
+	if (!ImGui::Begin("ボイスエディット", &open)) {
+		ImGui::End();
+		return;
+	}
+	motif_sampler::patch &pt = L.pt;
+	bool dirty = pt.name != orig.name || pt.voiceline != orig.voiceline || pt.ctrlline != orig.ctrlline || pt.clfoline != orig.clfoline;
+	for (size_t i = 0; i < pt.els.size() && i < orig.els.size(); i++)
+		dirty |= pt.els[i].f != orig.els[i].f;
+	ImGui::Text("%s%s", L.label.c_str(), dirty ? "（変更あり・まだ書き出していない）" : "");
+	ImGui::SetNextItemWidth(260);
+	if (ImGui::InputText("名前", name, sizeof name)) {
+		std::lock_guard<std::mutex> lk(P.mtx);
+		pt.name = name;
+	}
+	ImGui::SameLine(0, 20);
+	if (ImGui::Button("元に戻す") && dirty) {
+		{
+			std::lock_guard<std::mutex> lk(P.mtx);
+			pt.name = orig.name;
+			pt.voiceline = orig.voiceline;
+			pt.ctrlline = orig.ctrlline;
+			pt.clfoline = orig.clfoline;
+			for (size_t i = 0; i < pt.els.size() && i < orig.els.size(); i++)
+				pt.els[i].f = orig.els[i].f;
+		}
+		std::snprintf(name, sizeof name, "%s", pt.name.c_str());
+		rebuild_voice_engine(P);
+		need_rebuild = false;
+	}
+	// 書き出し: 新しい ED_nnn か、いま開いているのが patches_edit のものならそこへ上書き
+	std::error_code ec;
+	const bool in_edit = fs::equivalent(fs::path(L.file).parent_path(), edit_dir, ec);
+	auto save = [&](const std::string &out) {
+		std::string err;
+		if (out.empty())
+			msg = "書き出す名前が尽きた（ED_000〜999）";
+		else if (!ve::save_patch(pt, L.file, out, err))
+			msg = err;
+		else {
+			list = rescan();
+			for (size_t i = 0; i < list.size(); i++)
+				if (fs::equivalent(list[i].file, out, ec)) {
+					selected = want = int(i);
+					L.label = list[i].bank + ":" + std::to_string(list[i].number) + " " + list[i].name;
+				}
+			msg = "書き出した: " + out;
+			L.file = for_file = out;
+			orig = pt;
+		}
+	};
+	ImGui::SameLine();
+	if (ImGui::Button("新しく書き出す"))
+		save(ve::next_edit_file(edit_dir.string()));
+	if (in_edit) {
+		ImGui::SameLine();
+		if (ImGui::Button("上書き"))
+			save(L.file);
+	}
+	if (!msg.empty())
+		ImGui::TextWrapped("%s", msg.c_str());
+	ImGui::PushTextWrapPos(0.0f);
+	ImGui::TextDisabled("エレメントの値は次に鳴らす音から、共通（モノ・ポルタメント・コントロールセットなど）はつまみを離したときに効く（鳴っている音は切れる）");
+	ImGui::PopTextWrapPos();
+
+	// 1 つのつまみ。共通の voice・ctrl 行なら engine を作り直す印を付ける
+	auto widget = [&](motif_sampler::kv &m, const ve::param &p, bool rebuild, const std::string &id) {
+		int x = ve::get(m, p);
+		bool ch;
+		const std::string lab = std::string(p.label) + "##" + id + p.key + std::to_string(p.idx);
+		if (p.idx > 0)
+			ImGui::SameLine();
+		ImGui::SetNextItemWidth(p.idx >= 0 ? 80.0f : 220.0f);
+		if (p.names) {
+			int i = std::max(0, std::min(p.hi - p.lo, x - p.lo));
+			ch = ImGui::Combo(lab.c_str(), &i, p.names, p.hi - p.lo + 1);
+			x = p.lo + i;
+		} else
+			ch = ImGui::SliderInt(lab.c_str(), &x, p.lo, p.hi);
+		if (ch) {
+			std::lock_guard<std::mutex> lk(P.mtx);
+			ve::set(m, p, std::max(p.lo, std::min(p.hi, x)));
+			need_rebuild |= rebuild;
+		}
+	};
+	if (ImGui::BeginTabBar("vedit_tabs")) {
+		if (ImGui::BeginTabItem("共通", nullptr, g_vedit_tab == 0 ? ImGuiTabItemFlags_SetSelected : 0)) {
+			ImGui::BeginChild("vedit_common");
+			for (const auto &cg : ve::common_groups()) {
+				motif_sampler::kv &m = cg.line == 0 ? pt.voiceline : cg.line == 1 ? pt.ctrlline : pt.clfoline;
+				if (!ImGui::CollapsingHeader(cg.g.title, cg.g.open ? ImGuiTreeNodeFlags_DefaultOpen : 0))
+					continue;
+				if (cg.line == 2 && m.empty()) {
+					ImGui::TextDisabled("この音色にはコモン LFO の設定が無い（使っていない）");
+					continue;
+				}
+				for (const auto &p : cg.g.ps)
+					widget(m, p, p.rebuild || cg.line == 1, "c");
+			}
+			if (ImGui::CollapsingHeader("コントロールセット", ImGuiTreeNodeFlags_DefaultOpen)) {
+				std::vector<ve::cset> sets = ve::get_sets(pt.ctrlline);
+				bool ch = false;
+				for (size_t k = 0; k < 6; k++) {
+					ImGui::PushID(int(k));
+					ImGui::Text("%zu", k + 1);
+					ImGui::SameLine();
+					ImGui::SetNextItemWidth(130);
+					if (ImGui::BeginCombo("##src", source_name(sets[k].src))) {
+						for (int s = 0; s < 16; s++)
+							if (ImGui::Selectable((std::string(source_name(s)) + "##s" + std::to_string(s)).c_str(), s == sets[k].src)) {
+								sets[k].src = s;
+								ch = true;
+							}
+						ImGui::EndCombo();
+					}
+					ImGui::SameLine();
+					ImGui::SetNextItemWidth(130);
+					if (ImGui::BeginCombo("##dest", dest_name(sets[k].dest).c_str())) {
+						for (int d = 0; d < 69; d++)
+							if (ImGui::Selectable((dest_name(d) + "##d" + std::to_string(d)).c_str(), d == sets[k].dest)) {
+								sets[k].dest = d;
+								ch = true;
+							}
+						ImGui::EndCombo();
+					}
+					ImGui::SameLine();
+					int dp = sets[k].depth - 64;
+					ImGui::SetNextItemWidth(200);
+					if (ImGui::SliderInt("深さ", &dp, -64, 63)) {
+						sets[k].depth = dp + 64;
+						ch = true;
+					}
+					ImGui::PopID();
+				}
+				if (ch) {
+					std::lock_guard<std::mutex> lk(P.mtx);
+					ve::set_sets(pt.ctrlline, sets);
+					need_rebuild = true;
+				}
+			}
+			ImGui::EndChild();
+			ImGui::EndTabItem();
+		}
+		for (size_t e = 0; e < pt.els.size(); e++) {
+			if (!ImGui::BeginTabItem(("E" + std::to_string(e + 1)).c_str(), nullptr, g_vedit_tab == int(e) + 1 ? ImGuiTabItemFlags_SetSelected : 0))
+				continue;
+			motif_sampler::kv &m = pt.els[e].f;
+			ImGui::BeginChild("vedit_el");
+			ImGui::TextDisabled("波形 %d・区間 %zu%s", motif_sampler::geti(m, "wave"), pt.els[e].zones.size(),
+			                    motif_sampler::geti(m, "dnote", -1) >= 0 ? "・ドラムの鍵" : "");
+			const std::string id = "e" + std::to_string(e);
+			for (const auto &g : ve::element_groups()) {
+				if (!ImGui::CollapsingHeader((std::string(g.title) + "##" + id).c_str(), g.open ? ImGuiTreeNodeFlags_DefaultOpen : 0))
+					continue;
+				for (const auto &p : g.ps)
+					widget(m, p, false, id);
+			}
+			ImGui::EndChild();
+			ImGui::EndTabItem();
+		}
+		ImGui::EndTabBar();
+		g_vedit_tab = -1;
+	}
+	ImGui::End();
+	if (need_rebuild && !ImGui::IsAnyItemActive()) {
+		rebuild_voice_engine(P);
+		need_rebuild = false;
+	}
 }
 
 // エフェクトの型の名前（「MSB LSB 名前」。一覧に無い型は番号だけ）
@@ -1095,6 +1314,9 @@ int main(int argc, char **argv)
 	std::string selftest_seq;
 	int selftest_poly = 0, gui_voice = -1;
 	bool selftest_arp = false;
+	bool vedit_open = false;
+	std::vector<std::pair<int, std::string>> selftest_vedit;     // --vedit エレメント:欄=値（0 は共通の voice 行）
+	std::string selftest_vedit_save;
 	for (int i = 1; i < argc; i++) {
 		const std::string a = argv[i];
 		if (a == "--arp")
@@ -1138,6 +1360,19 @@ int main(int argc, char **argv)
 			midi_dev = std::atoi(argv[++i]);
 		else if (a == "--nomidi")
 			nomidi = true;
+		else if (a == "--edit") {
+			vedit_open = true;      // ボイスエディットの窓を開いておく（--shot でも）。--edit 番号 で、初めに見せるエレメントのタブ（0 は共通）
+			if (i + 1 < argc && argv[i + 1][0] != '-')
+				g_vedit_tab = std::atoi(argv[++i]);
+		}
+		else if (a == "--vedit" && i + 1 < argc) {
+			// 試験: --vedit エレメント:欄=値（0 は共通の voice 行）。画面のエディットと同じく、パッチの欄を書き換えて engine を作り直す
+			const std::string v = argv[++i];
+			const size_t c = v.find(':');
+			if (c != std::string::npos)
+				selftest_vedit.push_back({std::atoi(v.c_str()), v.substr(c + 1)});
+		} else if (a == "--vedit-save" && i + 1 < argc)
+			selftest_vedit_save = argv[++i];      // 試験: --vedit のあとのパッチを書き出す（画面の「書き出す」と同じ道）
 		else if (a == "--shot" && i + 1 < argc)
 			shot = argv[++i];
 		else if (a == "--shot-keys" && i + 1 < argc) {
@@ -1158,7 +1393,14 @@ int main(int argc, char **argv)
 	}
 	if (dir.empty())
 		dir = default_patch_dir();
-	std::vector<voice_entry> list = scan_patches(dir);
+	// エディットして書き出した音色（capture/patches_edit/ED_nnn.patch）は、一覧の後ろに
+	const fs::path edit_dir = (dir / ".." / "patches_edit").lexically_normal();
+	auto scan_all = [&]() {
+		std::vector<voice_entry> v = scan_patches(dir), e = scan_patches(edit_dir);
+		v.insert(v.end(), e.begin(), e.end());
+		return v;
+	};
+	std::vector<voice_entry> list = scan_all();
 	// マルチ（tools/motif/mr_multi_export.py が capture/multis に書く）
 	std::vector<std::pair<std::string, std::string>> mlist = motif_multi::scan(dir / ".." / "multis");
 	// インサーションの型の一覧（mr_ins_types.py）
@@ -1323,6 +1565,26 @@ int main(int argc, char **argv)
 		pl->cur = load_voice(list[std::min<size_t>(selftest_voice, list.size() - 1)]);
 		if (!pl->cur)
 			return 1;
+		if (!selftest_vedit.empty()) {
+			for (const auto &[e, kv] : selftest_vedit) {
+				const size_t q = kv.find('=');
+				if (q == std::string::npos || e < 0 || e > int(pl->cur->pt.els.size()))
+					continue;
+				motif_sampler::kv &m = e == 0 ? pl->cur->pt.voiceline : pl->cur->pt.els[size_t(e - 1)].f;
+				std::printf("エディット %s %s: %s → %s\n", e == 0 ? "共通" : ("E" + std::to_string(e)).c_str(), kv.substr(0, q).c_str(),
+				            m.count(kv.substr(0, q)) ? m[kv.substr(0, q)].c_str() : "-", kv.substr(q + 1).c_str());
+				m[kv.substr(0, q)] = kv.substr(q + 1);
+			}
+			rebuild_voice_engine(*pl);
+			if (!selftest_vedit_save.empty()) {
+				std::string err;
+				if (!motif_voice_edit::save_patch(pl->cur->pt, pl->cur->file, selftest_vedit_save, err)) {
+					std::printf("書き出せない: %s\n", err.c_str());
+					return 1;
+				}
+				std::printf("書き出した: %s\n", selftest_vedit_save.c_str());
+			}
+		}
 		for (auto &x : selftest_fxparam) {
 			// ボイス: --fxparam のパートは使わない。画面のつまみと同じ道（set_voice_fx）で
 			static const char *keys[] = {"insa", "insb", "reverb", "chorus"};
@@ -1780,7 +2042,8 @@ int main(int argc, char **argv)
 				last_bank = list[i].bank;
 				// バンクの名前（ダンプの番地の mm。00〜05 = PRE1〜6、06 = GM、08〜0A = USER1〜3、20・21・28 = ドラム）
 				static const std::map<std::string, std::string> bn = {{"00", "PRE1"}, {"01", "PRE2"}, {"02", "PRE3"}, {"03", "PRE4"}, {"04", "PRE5"},
-					{"05", "PRE6"}, {"06", "GM"}, {"08", "USER1"}, {"09", "USER2"}, {"0A", "USER3"}, {"20", "ドラム PRE"}, {"21", "ドラム GM"}, {"28", "ドラム USER"}};
+					{"05", "PRE6"}, {"06", "GM"}, {"08", "USER1"}, {"09", "USER2"}, {"0A", "USER3"}, {"20", "ドラム PRE"}, {"21", "ドラム GM"}, {"28", "ドラム USER"},
+					{"ED", "エディットしたもの（patches_edit）"}};
 				auto it = bn.find(last_bank);
 				ImGui::SeparatorText((it != bn.end() ? it->second : "バンク " + last_bank).c_str());
 			}
@@ -2114,6 +2377,8 @@ int main(int argc, char **argv)
 			ImGui::Checkbox(("リバーブ（" + pl->cur->rev_name + "）").c_str(), &pl->use_rev);
 			ImGui::SameLine(0, 30);
 			ImGui::Checkbox(("コーラスの枠（" + pl->cur->cho_name + "）").c_str(), &pl->use_cho);
+			ImGui::SameLine(0, 30);
+			ImGui::Checkbox("ボイスエディット（窓）", &vedit_open);
 			// エフェクトのパラメーター: 音色のインサーション A・B（型とつなぎ方も）と、リバーブ・コーラスの枠。マルチの画面と同じつまみ。
 			// 音色の fx 行を書き換えるので、音色を替えると、その音色のものに戻る
 			if (!shot.empty())
@@ -2241,6 +2506,8 @@ int main(int argc, char **argv)
 		// PC キーボードの 2 段（Z の段の C から 2 オクターブ）の真ん中が、画面の鍵盤の真ん中に来るように
 		draw_keyboard(*pl, 12 * (octave + 1) + 12, mouse_key, velocity);
 		ImGui::End();
+		if (vedit_open && !multi_ui && pl->cur)
+			voice_edit_window(*pl, vedit_open, list, scan_all, selected, want, edit_dir);
 
 		ImGui::Render();
 		const float clear[4] = {0.08f, 0.08f, 0.09f, 1.0f};
