@@ -79,6 +79,7 @@ endif
 # MSYS2 の DLL に依存させない。動的リンクのままだと、MSYS2 の環境の外
 # （素の PowerShell など）では起動に失敗して何も言わずに終わる
 LDFLAGS  ?= -static -static-libgcc -static-libstdc++
+VERIFY_LIBS := -lwinmm
 EXE      := .exe
 # 32 ビット MinGW (i686) は既定で浮動小数を x87 の 80 ビット中間値で計算する
 # (__FLT_EVAL_METHOD__=2)。x86-64/arm64 は SSE2 の 64 ビットなので、
@@ -313,9 +314,10 @@ SRCS := \
 	src/compat/compat.cpp \
 	src/sampling.cpp \
 	src/smartmedia.cpp \
-	src/card_fs.cpp \
 	src/card_folder.cpp \
+	src/card_fs.cpp \
 	src/m2a.cpp \
+	src/rcp.cpp \
 	src/mame/sound/swp30.cpp \
 	src/mame/sound/swp30_jit.cpp \
 	src/mame/video/hd44780.cpp \
@@ -357,9 +359,9 @@ all: $(BUILD)/verify$(EXE) $(BUILD)/boot$(EXE) $(BUILD)/render$(EXE) \
      au $(BUILD)/aubprobe$(EXE)
 endif
 
-$(BUILD)/verify$(EXE): $(OBJS) $(BUILD)/src/smf.o $(BUILD)/src/verify.o
+$(BUILD)/verify$(EXE): $(OBJS) $(BUILD)/src/smf.o $(BUILD)/src/verify.o $(BUILD)/src/ui/player.o
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) $(VERIFY_LIBS)
 
 $(BUILD)/boot$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/boot.o
 	@mkdir -p $(dir $@)

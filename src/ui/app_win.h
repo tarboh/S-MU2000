@@ -102,7 +102,7 @@ public:
 	std::string ask_midi_file_path() override
 	{
 		const std::wstring title = to_wide(UI_TEXT(dlg_midi_open, "MIDI file to play"));
-		const std::wstring filter = dlg_filter(UI_TEXT(dlg_midi_desc, "MIDI files"), "*.mid;*.midi",
+		const std::wstring filter = dlg_filter(UI_TEXT(dlg_midi_desc, "MIDI files"), "*.mid;*.midi;*.rcp;*.r36",
 		                                       UI_TEXT(dlg_all_files, "All files"), "*.*");
 		return win_open_file(hwnd, title.c_str(), filter.c_str(),
 		                         nullptr);

@@ -72,7 +72,7 @@ public:
 	{
 		static const sdl_popup::file_filter f[] = {
 			{ "SmartMedia images", "img" },
-			{ "All files", "*" },
+			{ UI_TEXT(dlg_all_files, "All files"), "*" },
 		};
 		return sdl_popup::open_file(win, quit, f, 2, "");
 	}
@@ -90,7 +90,7 @@ public:
 	std::string ask_midi_file_path() override
 	{
 		static const sdl_popup::file_filter f[] = {
-			{ "MIDI files", "mid;midi" },
+			{ UI_TEXT(dlg_midi_desc, "MIDI files"), "mid;midi;rcp;r36" },
 			{ "All files", "*" },
 		};
 		return sdl_popup::open_file(win, quit, f, 2, "");

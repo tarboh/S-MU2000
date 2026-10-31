@@ -56,8 +56,8 @@ add_library(smu2000_core STATIC
   src/compat/compat.cpp
   src/sampling.cpp
   src/smartmedia.cpp
-  src/card_fs.cpp
   src/card_folder.cpp
+  src/card_fs.cpp
   src/m2a.cpp
   src/mame/sound/swp30.cpp
   src/mame/sound/swp30_jit.cpp
@@ -78,6 +78,7 @@ add_library(smu2000_core STATIC
   src/mame/cpu/sh_sci.cpp
   src/mu2000.cpp
   src/smf.cpp
+  src/rcp.cpp
 )
 target_include_directories(smu2000_core PUBLIC src src/compat)
 # -Wall and friends are GCC/Clang spellings; MSVC builds on the /W3 default
@@ -119,6 +120,11 @@ foreach(tool verify boot render panel statetest blocktime)
   add_executable(${tool} src/${tool}.cpp)
   target_link_libraries(${tool} PRIVATE smu2000_core)
 endforeach()
+# Verify the public in-memory player API alongside the parser helpers.
+target_sources(verify PRIVATE src/ui/player.cpp)
+if(WIN32)
+  target_link_libraries(verify PRIVATE winmm)
+endif()
 foreach(tool xgtest samptest)
   add_executable(${tool} src/${tool}.cpp src/xg/model.cpp)
   target_link_libraries(${tool} PRIVATE smu2000_core)

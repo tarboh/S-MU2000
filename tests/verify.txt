@@ -12,5 +12,53 @@ a64 emitter selftest: 0 mismatch(es)
   4.6 秒: 小節 3・拍 1・テンポ 60
 頭出しの追いかけ（2.0 秒へ）: 音符 0・SysEx 1・音色 2（最後 10）・ボリューム 1 個（値 80）・ベンド 1・バンクが音色より先 合
 頭（0 秒）へ: 0 個
+RCP2 mute flag 0x00: OK (parsed=0x00)
+RCP2 mute flag 0x01: OK (parsed=0x01)
+RCP2 mute flag 0x02: OK (parsed=0x02)
+RCP2 mute flag 0x04: OK (parsed=0x04)
+RCP2 mute flag preservation: OK
+RCP2 固定ヘッダー: 識別 合・項目 合・短い入力 合/合・不一致 合・null 合・トラックヘッダー 合・ミュートフラグ 合・短いトラック 合・null トラック 合
+RCP2 シーケンスレコード: 内容/FE 終端 合・終端なし拒否 合・途中切れ拒否 合・FE 後の断片無視 合・null 拒否 合・F6/F7 raw 保持 合・別レコード順序保持 合・F6 コメント抽出 合/合/合/合
+RCP2 コメント末尾空白: 先頭/途中保持 合・全空白 合・NUL 非終端扱い 合・空白なし 合
+RCP2 F5 キー署名: シャープ 合・フラット 合・短調 合・フラット短調 合・コマンド境界拒否 合
+RCP2 F5 時間展開: tick 維持 合・未対応コマンド拒否 合
+RCP2 ノート解釈: フィールド分離 合・上端ノート 合・コマンド境界拒否 合・duration 0 保持 合・エラー解除 合
+RCP2 ノート時間展開（ノート専用）: tick/順序/duration 0 合・FE 後を無視 合・未知コマンド拒否 合・FE なし拒否 合
+RCP2 E7 テンポ計算（実験）: 120/64=合・120/32=合・BPM 0 拒否 合・scale 0 拒否 合
+RCP2 E7 イベント解釈（実験）: p0/p1/p2 保持 合・誤コマンド拒否 合・scale 0 拒否 合
+RCP2 E7 時間展開（実験）: テンポ位置/次ノート tick 合・F5 同 tick/順序 合・F6/F7 コメント処理 合・scale 0 拒否 合・p2 値保持 合・FE 終端/後続未知無視 合・未対応コマンド混在拒否 合・FE なし/空入力拒否 合
+RCP2 F8/F9 有限ループ: 単純反復 合・入れ子 合・1回境界 合・FC後の連携 合・不対 F8/F9 拒否 合・未確定反復数拒否 合
+RCP2 同一 tick の順序（Note Off→CC→次の Note On）: 合
+RCP2 同一 tick の順序（Note Off→CC7→CC32）: 合
+RCP2 FC 小節参照: 有効参照/時刻 合・FC 連鎖 合・FD 復帰/通常境界 合・参照終端から復帰 合・ヘッダー内/未整列/範囲外拒否 合・FE 参照拒否 合・循環拒否 合・展開予算超過拒否 合
+RCP2 複数トラック時間統合: tick 順/同 tick 安定順序 合・逆順拒否 合・空入力 合
+RCP2 EB/EC/EE MIDI コマンド: CC/Program/Pitch Bend と tick 合・特殊 EC 拒否 合・7-bit 範囲外拒否 合
+RCP2 文書移調適用: トラック/文書移調 合・リズム抑止 合
+RCP2 ノート移調（参照実装準拠）: トラック符号付き 合・文書符号付き 合・リズムチャンネル 合・7-bit 折返し 合・範囲外ノート拒否 合
+RCP2 符号付き tick オフセット: 負値クランプ 合・正値加算 合・32-bit 超過拒否 合
+RCP2 ノート長展開: duration 0 抑止 合・同音高の終了更新 合・note-off 時刻/音高 合
+RCP2 明示的 Note Off 同tick順序: CC の後に Note Off 合
+RCP2 文書時間展開: 複数トラック統合/トラック識別 合・符号付き開始オフセット 合・オフセット境界 合・全イベント種別オフセット 合・未対応コマンド拒否 合・空文書 合
+RCP2 ミュートトラック: イベント除外/未対応コマンド無視 合
+RCP2 EA/ED アフタータッチ: Channel/Poly decode 合・MIDI符号化 合・時間展開 合・7-bit 範囲外拒否 合
+RCP2 D0/D2/D3 MIDI alias: decode 合・時間展開 合
+RCP2 E5 Key Scan: no MIDI event + p0 tick advance 合
+RCP2 E1/E2 MIDI command: XG/GS bank+program and timeline 合・範囲外拒否 合
+RCP2 E6 MIDI route: port/channel 切替・dummy 切替・tick 進行 合
+RCP2 90..97 ユーザー SysEx: header/置換/チェックサム/tick 合・dummy 抑止 合・7-bit 拒否 合
+RCP2 98 可変長 SysEx: F7連結/置換/チェックサム/tick 合・孤立F7スキップ 合
+RCP2 98 ループ外F7: 前のループ内SysExへ誤接続しない 合
+RCP2 98 ループ境界: 各反復でSysEx再生成 合・不正パラメーター拒否 合・未知高位バイトをスキップ 合
+RCP2 98 空 payload: SysEx省略/tick維持 合
+RCP2 99 外部コマンド: F7連結/MIDI出力なし/tick 合・ループ境界 合
+RCP2 DD/DE/DF GS SysEx: state/checksum/tick 合・7-bit 範囲外拒否 合
+RCP2 MIDIメッセージ符号化: Note On 合・Note Off 合・CC 合・Program Change 合・Pitch Bend 合・不正チャンネル拒否 合・メタデータ分離 合
+RCP2 tick→秒変換: テンポ変更前後 合・PPQ 0 拒否 合・初期 BPM 0 拒否 合・逆順 tick 拒否 合・テンポ値 0 拒否 合
+RCP2 秒イベント→MIDI出力: 割当/メタデータ除外 合・割当不足拒否 合・逆順時刻拒否 合
+RCP2 トラック MIDI 割当: ポート/チャンネル分離 合・E6 動的切替/dummy 除外 合・Note Off 発音時ルート維持 合
+RCP2 トラック走査: 複数トラック/FE 後の余剰 合・短い長さ拒否 合・末尾越え拒否 合・FE なし拒否 合
+RCP2 中間表現: 生レコード保持/順序 合・不正入力時に出力を消去 合
+RCP2 E6 Note Off 回帰: 解析/展開/秒変換/MIDI 合・Note Off 発音時ポート維持 合
+RCP2 プレイヤー経路（解析→秒→MIDI）: 解析 合・展開 合・時刻 合・割当 合・変換 合・Note On/Off 合・F8/F9 順序/時刻 合
 文字ファイルを読めるか: glyf 1・CFF 1・CFF2 だけ 0・Unicode の表なし 0・loca なし 0・束の 1 つ目 0・2 つ目 1・無い番号 0・ごみ 0・途中で切れた 0
 Roland の液晶のデータを抜く: 抜いた 1・通した 2（GS リセットと XG）

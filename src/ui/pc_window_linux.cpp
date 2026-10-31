@@ -54,7 +54,7 @@ void file_dialog(SDL_Window *win, xgui::file_ask ask, const std::vector<u8> &byt
 		return;
 	file_filter f[2];
 	if (midi)
-		f[0] = { UI_TEXT(dlg_midi_desc, "MIDI files"), "mid;midi;smf;m3u;m3u8" };
+		f[0] = { UI_TEXT(dlg_midi_desc, "MIDI files"), "mid;midi;smf;rcp;r36;m3u;m3u8" };
 	else if (dls)
 		f[0] = { UI_TEXT(dlg_dls_desc, "DLS sound bank"), "dls" };
 	else if (card)

@@ -61,6 +61,9 @@ struct song_meta {
 	void bar_beat(double sec, int &bar, int &beat, double &bpm) const;
 };
 
+// 曲名などのファイル内テキストを UTF-8 に正規化する。
+std::string title_text(const std::string &raw);
+
 // format 0/1 に対応。テンポ変化は追う。SMPTE 単位には未対応。meta を渡せば曲名と目盛りも返す
 bool load(const std::string &path, std::vector<event> &out, std::string &err, song_meta *meta = nullptr);
 

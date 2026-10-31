@@ -42,7 +42,7 @@ void file_dialog(HWND owner, xgui::file_ask ask, const std::vector<u8> &bytes)
 	// MIDI ファイル（プレイヤーの窓）。何個でも選べるので、道の入れ物を大きく取って別に開く
 	if (ask == xgui::file_ask::open && xgui::file_ask_is_midi()) {
 		std::vector<wchar_t> many(32768, 0);
-		const std::wstring mf = dlg_filter(UI_TEXT(dlg_midi_desc, "MIDI files"), "*.mid;*.midi;*.smf;*.m3u;*.m3u8",
+		const std::wstring mf = dlg_filter(UI_TEXT(dlg_midi_desc, "MIDI files"), "*.mid;*.midi;*.smf;*.m3u;*.m3u8;*.rcp;*.r36",
 		                                   UI_TEXT(dlg_all_files, "All files"), "*.*");
 		OPENFILENAMEW m{};
 		m.lStructSize = sizeof(m);
