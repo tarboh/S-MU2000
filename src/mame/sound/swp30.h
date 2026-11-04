@@ -245,8 +245,10 @@ private:
 		s32 m_filter_2_n = 0;
 
 		void clear();
-		void keyon();
-		s32 step(s16 input);
+		// cur は滑っている途中の切る高さ（<< 16）。状態の保存の形を変えないよう、持ち主は装置の m_filter_cur
+		void keyon(u32 &cur);
+		s32 step(s16 input, u32 &cur);
+		static s32 filter_p1(u32 a) { return (0x101 + (a & 0xff)) << ((a >> 8) & 7); }
 
 		void f1_chamberlin_step(s16 input);
 
@@ -493,6 +495,7 @@ private:
 	std::array<u16, 0x40> m_pitch_offset = {};
 	std::array<u16, 0x40> m_peg_rate = {};
 	std::array<s32, 0x40> m_peg_cur = {};
+	std::array<u32, 0x40> m_filter_cur = {};   // 滑っている途中のフィルタ 1 の切る高さ（<< 16）
 	std::array<u8,  0x40> m_peg_reached = {};
 public:
 	// **ピッチ EG が目標に着いたか**。firmware は内部レジスタ 4 の bit14 で
