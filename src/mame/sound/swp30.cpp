@@ -1135,7 +1135,7 @@ void swp30_device::filter_block::clear()
 	m_filter_2_n = 0;
 }
 
-void swp30_device::filter_block::keyon(u32 &cur)
+void swp30_device::filter_block::keyon(u32 &cur, s32 &cur2)
 {
 	m_filter_1_y0 = 0;
 	m_filter_1_y1 = 0;
@@ -1160,9 +1160,11 @@ void swp30_device::filter_block::keyon(u32 &cur)
 	// 鍵を押したら、切る高さは滑らせずに書いてある値から始める
 	cur = u32(m_filter_1_a & 0x7ff) << 16;
 	m_filter_1_p1 = filter_p1(m_filter_1_a);
+	cur2 = filter_2_target(m_filter_2_a);
+	m_filter_2_p1 = filter_p1(cur2 < 0 ? 0 : cur2 >> 16);
 }
 
-s32 swp30_device::filter_block::step(s16 input, u32 &cur)
+s32 swp30_device::filter_block::step(s16 input, u32 &cur, s32 &cur2)
 {
 	s32 y0 = 0;
 	// S-MU2000: 切る高さ（0x00 の下 11bit）は、書いた値へすぐ飛ばずに滑っていく。速さは 0x01 の上 7bit を
@@ -1178,6 +1180,21 @@ s32 swp30_device::filter_block::step(s16 input, u32 &cur)
 			cur = cur - target <= r ? target : cur - r;
 		m_filter_1_p1 = filter_p1(cur >> 16);
 	}
+	// S-MU2000: フィルタ 2（0x02）も滑る。速さは 0x03 の上 7bit を同じ形で読んだものの 1.5 倍（firmware は
+	// いつも 0x5010 を書くので、1 サンプルに 0.75 単位）。切る高さ 0（HPF を切ったときの 0x8000）の行き先は
+	// 0 ではなく 0x800 下で、そこから上げると約 60ms 何も起きずに、0 を越えてから効き始める。0 より下にいる
+	// あいだは素通し。実機の録音で確かめた（doc/upstream.md の 41）
+	const s32 target2 = filter_2_target(m_filter_2_a);
+	if(cur2 != target2) {
+		const u32 code = (m_level_2 >> 8) & 0x7f;
+		const s32 r = ((8 + (code & 7)) << ((code >> 3) + 2)) * 3 / 2;
+		if(cur2 < target2)
+			cur2 = target2 - cur2 <= r ? target2 : cur2 + r;
+		else
+			cur2 = cur2 - target2 <= r ? target2 : cur2 - r;
+		m_filter_2_p1 = filter_p1(cur2 < 0 ? 0 : cur2 >> 16);
+	}
+	const u32 filter_2_on = (m_filter_2_a & 0x7800) | (cur2 < 0 ? 0 : cur2 >> 16);
 	// S-MU2000: レゾナンス（b）は、その段の種類がレゾナンス付き（bit 12）のときだけ効く。
 	// MAME は 1 段目の種類で決めた値を 2 段目にも使っていたので、Q 固定のはずの 2 段目
 	// （ギターの 160Hz のハイパスなど）に山ができていた。b を書いた後に種類が変わった
@@ -1215,7 +1232,7 @@ s32 swp30_device::filter_block::step(s16 input, u32 &cur)
 			m_filter_1_y0 = y0;
 		}
 
-		if(m_filter_2_a & 0x7fff) {
+		if(filter_2_on) {
 			if(!BIT(m_filter_2_a, 13)) {
 				m_filter_2_h = y0 - m_filter_2_l - ((s64(p2_2) * m_filter_2_b) >> 7);
 				m_filter_2_b = m_filter_2_b + ((s64(m_filter_2_p1) * m_filter_2_h) >> 16);
@@ -1296,7 +1313,7 @@ void swp30_device::filter_block::level_1_w(u16 data)
 void swp30_device::filter_block::filter_2_a_w(u16 data)
 {
 	m_filter_2_a = data;
-	m_filter_2_p1 = (0x101 + (m_filter_2_a & 0xff)) << ((m_filter_2_a >> 8) & 7);
+	// p1 は step で、滑っている途中の値から出す
 }
 
 void swp30_device::filter_block::level_2_w(u16 data)
@@ -1575,10 +1592,11 @@ void swp30_device::filter_impulse(u16 f1a, u16 level1, u16 f2a, u16 level2, u16 
 	f.level_2_w(level2);
 	f.filter_b_w(fb);
 	u32 cur = 0;
-	f.keyon(cur);
+	s32 cur2 = 0;
+	f.keyon(cur, cur2);
 	constexpr s16 ONE = 0x4000;
 	for(int i = 0; i < n; i++)
-		out[i] = float(f.step(i == 0 ? ONE : 0, cur)) / float(s32(ONE) << 6);
+		out[i] = float(f.step(i == 0 ? ONE : 0, cur, cur2)) / float(s32(ONE) << 6);
 }
 
 // S-MU2000: 画面がビブラートを描くための口。声の LFO と同じ step・get_pitch を回す
@@ -1908,7 +1926,7 @@ void swp30_device::awm2_step(std::array<s32, 0x40> &samples_per_chan)
 			m_envelope[chan].trigger_release();
 
 		// S-MU2000: 1 声の中身を追う（--dump-dac のとき、決めた声だけ）
-		s32 sample2 = m_filter[chan].step(sample1, m_filter_cur[chan]);
+		s32 sample2 = m_filter[chan].step(sample1, m_filter_cur[chan], m_filter2_cur[chan]);
 		s32 sample3 = m_iir1[chan].step(sample2);
 		s32 sample4 = volume_apply(m_envelope[chan].step(m_meg->m_sample_counter) + lfo.get_amplitude(), sample3);
 
@@ -2034,6 +2052,7 @@ void swp30_device::reset()
 	m_peg_cur.fill(0);
 	m_peg_reached.fill(0);
 	m_filter_cur.fill(0);
+	m_filter2_cur.fill(0);
 	for(auto &f : m_filter)
 		f.clear();
 	for(auto &i : m_iir1)
@@ -2308,7 +2327,7 @@ void swp30_device::keyon_w(u16)
 				m_dbg_energy[chan] = m_dbg_len[chan] = 0;
 			}
 			m_streaming[chan].keyon();
-			m_filter   [chan].keyon(m_filter_cur[chan]);
+			m_filter   [chan].keyon(m_filter_cur[chan], m_filter2_cur[chan]);
 			m_iir1     [chan].keyon();
 			m_envelope [chan].keyon();
 			m_lfo      [chan].keyon(*this);
@@ -4867,5 +4886,12 @@ void swp30_device::state(state_io &s)
 	} else if(!s.writing()) {
 		for(int i = 0; i < 0x40; i++)
 			m_filter_cur[i] = u32(m_filter[i].m_filter_1_a & 0x7ff) << 16;
+	}
+	// 版 17 から: 同じくフィルタ 2
+	if(s.version() >= 17) {
+		s.stdarr(m_filter2_cur);
+	} else if(!s.writing()) {
+		for(int i = 0; i < 0x40; i++)
+			m_filter2_cur[i] = filter_block::filter_2_target(m_filter[i].m_filter_2_a);
 	}
 }

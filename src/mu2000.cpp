@@ -4421,7 +4421,7 @@ namespace {
 
 // 保存の形。中身の並びを変えたら上げる
 constexpr u32 STATE_MAGIC   = 0x554d3253;   // "S2MU"
-constexpr u32 STATE_VERSION = 16;  // 16: SWP30 の滑っている途中の切る高さ / 15: MEG の書き換わった命令（6.238） / 14: MEG の静まった区画（6.237） / 13: d80000（LCD のコントラスト） / 2: MIDI の入口が A/B の 2 口になった / 3: SWP30 のピッチ EG / 4: サンプリングの録音の位置 / 5: SmartMedia の命令の途中 / 6: MEG の印と 2 つ目の idx / 7: USB の口（C・D）の受け取り途中 / 8: 2 つ目の A/D 変換器（AN4 = HOST SELECT） / 9: SWP30 の書き込みの待ち / 10: USB のコマンド（M37640 からの知らせ） / 11: 液晶の「native の持ち物」（6.188） / 12: 外字の「native の持ち物」（6.190）
+constexpr u32 STATE_VERSION = 17;  // 17: SWP30 のフィルタ 2 の滑っている途中の切る高さ / 16: SWP30 の滑っている途中の切る高さ / 15: MEG の書き換わった命令（6.238） / 14: MEG の静まった区画（6.237） / 13: d80000（LCD のコントラスト） / 2: MIDI の入口が A/B の 2 口になった / 3: SWP30 のピッチ EG / 4: サンプリングの録音の位置 / 5: SmartMedia の命令の途中 / 6: MEG の印と 2 つ目の idx / 7: USB の口（C・D）の受け取り途中 / 8: 2 つ目の A/D 変換器（AN4 = HOST SELECT） / 9: SWP30 の書き込みの待ち / 10: USB のコマンド（M37640 からの知らせ） / 11: 液晶の「native の持ち物」（6.188） / 12: 外字の「native の持ち物」（6.190）
 constexpr u32 STATE_VERSION_OLDEST = 2;
 
 } // namespace
