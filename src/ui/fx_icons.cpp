@@ -171,7 +171,7 @@ void fx_icon_inline(int msb, ImU32 color)
 
 bool begin_fx_combo(const char *id, int type, ImGuiComboFlags flags)
 {
-	const bool open = ImGui::BeginCombo(id, "", flags | ImGuiComboFlags_CustomPreview);
+	const bool open = ImGui::BeginCombo(id, "", flags);
 	if (ImGui::BeginComboPreview()) {
 		if (type >= 0) {
 			fx_icon_inline(type >> 7, ImGui::GetColorU32(ImGuiCol_Text));
