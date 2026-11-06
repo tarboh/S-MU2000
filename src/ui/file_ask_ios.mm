@@ -288,7 +288,15 @@ void service_file_asks(UIView *view)
 	// refuses to copy. We want the bytes or a copy of our own, either way.
 	NSArray<UTType *> *types;
 	if (ui::xgui::file_ask_is_midi()) {
-		types = @[ UTTypeMIDI ];
+		// RCP-family files are MIDI inputs too, but iOS does not identify their
+		// extensions as UTTypeMIDI. Add their filename-derived types explicitly.
+		NSMutableArray<UTType *> *midiTypes = [NSMutableArray arrayWithObject:UTTypeMIDI];
+		for (NSString *ext in @[ @"rcp", @"r36", @"g36" ]) {
+			UTType *type = [UTType typeWithFilenameExtension:ext];
+			if (type)
+				[midiTypes addObject:type];
+		}
+		types = [midiTypes copy];
 		g_kind = ask_kind::midi_paths;
 	} else if (ui::xgui::file_ask_is_dls() || ui::xgui::file_ask_is_card()) {
 		// .dls, .img, .sm and .m2a are all public.data to the system, so asking
