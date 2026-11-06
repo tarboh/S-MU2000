@@ -849,13 +849,16 @@ const clap_plugin_gui_t mu_plugin::s_gui = {
 	},
 	// can_resize
 	[](const clap_plugin_t *) { return true; },
-	// get_resize_hints。横に長い機械なので、縦横比はこちらで決める
+	// get_resize_hints。横に長い機械なので、縦横比はこちらで決める。ただし比はホストに保たせない:
+	// 高さは「幅 × 400/1000 ＋ 上の帯」で、単純な比ではない。1000:400 を保たせると、ホストが比に
+	// 合わせて幅を広げ、adjust_size が帯の分だけ高さを足し、また幅を広げ…と、開くたび・つまむたびに
+	// 大きくなっていった（issue #246）。比は adjust_size（checkSizeConstraint）だけが決める
 	[](const clap_plugin_t *, clap_gui_resize_hints_t *hints) {
 		if (!hints)
 			return false;
 		hints->can_resize_horizontally = true;
 		hints->can_resize_vertically   = true;
-		hints->preserve_aspect_ratio   = true;
+		hints->preserve_aspect_ratio   = false;
 		hints->aspect_ratio_width      = uint32_t(ui::LOGICAL_W);
 		hints->aspect_ratio_height     = uint32_t(ui::LOGICAL_H);
 		return true;

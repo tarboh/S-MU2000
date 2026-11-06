@@ -167,6 +167,13 @@ bool win_window::attach(void *parent, int w, int h)
 		return false;
 	}
 	m_owner.fonts_ready();   // the context is up and no frame is open
+	// ホストの窓とこの窓の DPI をログへ（issue #246: 開くたびに大きくなる）。2 つが違えば、ホストは
+	// この窓を別の DPI の扱いで抱えている。GetDpiForWindow は Windows 10 1607 から。名前で引く
+	using dpi_fn = UINT(WINAPI *)(HWND);
+	if (const auto dpi = reinterpret_cast<dpi_fn>(reinterpret_cast<void *>(
+	        GetProcAddress(GetModuleHandleA("user32.dll"), "GetDpiForWindow"))))
+		engine::trace("window dpi (host, view)", this,
+		              dpi(reinterpret_cast<HWND>(parent)), dpi(m_hwnd));
 	return true;
 }
 
