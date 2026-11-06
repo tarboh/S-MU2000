@@ -254,7 +254,7 @@ tresult PLUGIN_API plug_view::isPlatformTypeSupported(FIDString type)
 
 tresult PLUGIN_API plug_view::attached(void *parent, FIDString type)
 {
-	engine::trace("view attached", this);
+	engine::trace("view attached", this, m_w, m_h);
 	if (isPlatformTypeSupported(type) != kResultTrue || !parent)
 		return kResultFalse;
 	if (m_window)
@@ -281,6 +281,7 @@ tresult PLUGIN_API plug_view::removed()
 	// Once per close, not on every step of a drag
 	if (m_resized) {
 		m_resized = false;
+		engine::trace("view width saved", this, m_w);
 		save_last_width(m_w);
 	}
 	if (m_window) {
@@ -318,6 +319,8 @@ tresult PLUGIN_API plug_view::onSize(ViewRect *r)
 	// Hosts also call this with the size they were just given, which is not
 	// the user resizing anything
 	if (m_w != was) {
+		// 開くたびに大きくなる、という報告があった（issue #246）。ホストがどの幅を渡してきたかを残す
+		engine::trace("view onSize", this, was, m_w);
 		m_resized = true;
 		m_engine.set_view_width(m_w);
 	}
