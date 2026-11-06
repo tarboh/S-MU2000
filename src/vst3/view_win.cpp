@@ -34,6 +34,7 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <commdlg.h>
+#include <cstdlib>
 #include <cwchar>
 #include <d3d11.h>
 #include <string>
@@ -93,6 +94,15 @@ plug_key plug_key_of(WPARAM vk)
 	return plug_key_of_button(int(b));
 }
 
+// GetDpiForWindow は Windows 10 1607 から。名前で引く（無い Windows でも DLL が読めるように）
+using dpi_fn = UINT(WINAPI *)(HWND);
+dpi_fn dpi_for_window()
+{
+	static const dpi_fn f = reinterpret_cast<dpi_fn>(reinterpret_cast<void *>(
+	        GetProcAddress(GetModuleHandleA("user32.dll"), "GetDpiForWindow")));
+	return f;
+}
+
 } // namespace
 
 
@@ -105,6 +115,7 @@ public:
 	bool attach(void *parent, int w, int h) override;
 	void detach() override;
 	void set_size(int w, int h) override;
+	double host_scale() const override;
 	void card_menu(int x, int y) override;
 	void panel_menu(int x, int y) override;
 	void alert(const std::string &text) override;
@@ -125,6 +136,7 @@ private:
 
 	plug_view &m_owner;
 	HWND m_hwnd = nullptr;
+	HWND m_parent = nullptr;
 	bool m_painted = false;         // 記録用: 最初の 1 枚を描き終えたか
 
 	// Direct3D 11 + Dear ImGui, shared with the GUI front end's window
@@ -156,6 +168,7 @@ bool win_window::attach(void *parent, int w, int h)
 	if (!m_hwnd)
 		return false;
 
+	m_parent = reinterpret_cast<HWND>(parent);
 	// The window procedure has to find its way back to this object
 	SetWindowLongPtrA(m_hwnd, GWLP_USERDATA, LONG_PTR(this));
 	m_painted = false;
@@ -168,13 +181,21 @@ bool win_window::attach(void *parent, int w, int h)
 	}
 	m_owner.fonts_ready();   // the context is up and no frame is open
 	// ホストの窓とこの窓の DPI をログへ（issue #246: 開くたびに大きくなる）。2 つが違えば、ホストは
-	// この窓を別の DPI の扱いで抱えている。GetDpiForWindow は Windows 10 1607 から。名前で引く
-	using dpi_fn = UINT(WINAPI *)(HWND);
-	if (const auto dpi = reinterpret_cast<dpi_fn>(reinterpret_cast<void *>(
-	        GetProcAddress(GetModuleHandleA("user32.dll"), "GetDpiForWindow"))))
-		engine::trace("window dpi (host, view)", this,
-		              dpi(reinterpret_cast<HWND>(parent)), dpi(m_hwnd));
+	// この窓を別の DPI の扱いで抱えている
+	if (const auto dpi = dpi_for_window())
+		engine::trace("window dpi (host, view)", this, dpi(m_parent), dpi(m_hwnd));
 	return true;
+}
+
+double win_window::host_scale() const
+{
+	// 試験用: 拡大率を掛けるホストのまね（vst3probe --fl）。100% の画面でも 150% の動きを試せるように
+	if (const char *e = std::getenv("S_MU2000_TEST_HOST_SCALE"))
+		if (const double s = std::atof(e); s > 0)
+			return s;
+	const auto dpi = dpi_for_window();
+	const UINT d = (dpi && m_parent) ? dpi(m_parent) : 0;
+	return d ? d / 96.0 : 1.0;
 }
 
 void win_window::detach()

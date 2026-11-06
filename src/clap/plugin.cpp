@@ -843,8 +843,8 @@ const clap_plugin_gui_t mu_plugin::s_gui = {
 		plug_view *v = self(p)->m_view;
 		if (!v || !w || !h)
 			return false;
-		*w = uint32_t(v->width());
-		*h = uint32_t(v->height());
+		*w = uint32_t(v->reported_width());
+		*h = uint32_t(v->reported_height());
 		return true;
 	},
 	// can_resize
