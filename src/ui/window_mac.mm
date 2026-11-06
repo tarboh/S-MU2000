@@ -592,6 +592,7 @@ std::string open_midi_file_panel()
 	if (midi) [types addObject:midi];
 	if (rcp)  [types addObject:rcp];
 	if (r36)  [types addObject:r36];
+	if (g36)  [types addObject:g36];
 	if ([types count])
 		[panel setAllowedContentTypes:types];
 	[panel setAllowsOtherFileTypes:YES];
