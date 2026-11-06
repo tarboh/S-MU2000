@@ -79,6 +79,7 @@ add_library(smu2000_core STATIC
   src/mu2000.cpp
   src/smf.cpp
   src/rcp.cpp
+  src/rcp3.cpp
 )
 target_include_directories(smu2000_core PUBLIC src src/compat)
 # -Wall and friends are GCC/Clang spellings; MSVC builds on the /W3 default

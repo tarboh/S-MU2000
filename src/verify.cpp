@@ -5,6 +5,7 @@ static bool rcp_mute_flags_test_ok = true;
 static bool rcp_player_api_test_ok = true;
 static bool rcp_loop_budget_test_ok = true;
 static bool rcp_e6_note_off_route_test_ok = true;
+static bool rcp3_parser_test_ok = true;
 //
 // 移植が成立しているかの最小確認
 #include "mame/sound/swp30.h"
@@ -13,6 +14,7 @@ static bool rcp_e6_note_off_route_test_ok = true;
 #include "ui/player.h"
 #include "smf.h"
 #include "rcp.h"
+#include "rcp3.h"
 #include "ui/font_check.h"
 #include <algorithm>
 #include <cstdio>
@@ -27,6 +29,87 @@ static bool rcp_e6_note_off_route_test_ok = true;
 
 // 再生のピッチベンドの間引き（ui/bend_thinner.h）。1ms おきに 1000 個のベンドの途中に音符を挟み、
 // 送った数、音符の直前に送ったベンドがその時点の最新の値か、最後の値が届くかを見る
+// RCP3.0/G36 parser regression checks. These cover structure only, not playback semantics.
+static void check_rcp3_parser()
+{
+    std::vector<u8> bytes(rcp3::fixed_header_size, 0);
+    const char signature[] = "COME ON MUSIC RECOMPOSER RCP3.0";
+    std::copy(signature, signature + sizeof(signature), bytes.begin());
+    bytes[0x208] = 2; // two tracks, deliberately sharing the same track ID
+    bytes[0x20a] = 0x30; // TPQ = 48
+    bytes[0x20b] = 0;
+    bytes[0x20c] = 120;
+    bytes[0x20d] = 0;
+    const size_t track_start = bytes.size();
+    // track_header_size already includes the 4-byte encoded_length field.
+    const u32 track_length = static_cast<u32>(rcp3::track_header_size) +
+        static_cast<u32>(rcp3::event_size);
+    bytes.resize(track_start + track_length, 0);
+    auto put32 = [&bytes](size_t at, u32 v) {
+        bytes[at] = static_cast<u8>(v);
+        bytes[at + 1] = static_cast<u8>(v >> 8);
+        bytes[at + 2] = static_cast<u8>(v >> 16);
+        bytes[at + 3] = static_cast<u8>(v >> 24);
+    };
+    put32(track_start, track_length);
+    bytes[track_start + 4] = 1; // track ID
+    bytes[track_start + 10] = 'T';
+    bytes[track_start + 11] = '1';
+    const size_t event_at = track_start + rcp3::track_header_size;
+    bytes[event_at] = 0xfe; // Track End
+
+    // A second, distinct track with the same ID must remain a separate record.
+    const size_t second_track_start = bytes.size();
+    bytes.resize(second_track_start + track_length, 0);
+    put32(second_track_start, track_length);
+    bytes[second_track_start + 4] = 1; // duplicate track ID
+    bytes[second_track_start + 6] = 1; // different MIDI channel
+    bytes[second_track_start + 10] = 'T';
+    bytes[second_track_start + 11] = '2';
+    bytes[second_track_start + rcp3::track_header_size] = 0xfe;
+
+    std::string err;
+    rcp3::header_info header;
+    const bool header_ok = rcp3::parse_header(bytes.data(), bytes.size(), header, err) &&
+        header.track_count == 2 && header.ticks_per_quarter == 48 &&
+        header.tempo_bpm == 120;
+    rcp3::track_header th;
+    const bool track_header_ok = rcp3::parse_track_header(bytes.data() + track_start,
+        bytes.size() - track_start, th, err) &&
+        th.encoded_length == track_length && th.track_id == 1 && th.name == "T1";
+    std::vector<rcp3::track> tracks;
+    const bool tracks_ok = rcp3::parse_tracks(bytes.data(), bytes.size(), header, tracks, err) &&
+        tracks.size() == 2 &&
+        tracks[0].header.track_id == 1 && tracks[1].header.track_id == 1 &&
+        tracks[0].header.name == "T1" && tracks[1].header.name == "T2" &&
+        tracks[0].header.midi_channel == 0 && tracks[1].header.midi_channel == 1 &&
+        tracks[0].sequence.size() == 1 && tracks[1].sequence.size() == 1 &&
+        tracks[0].sequence[0].code == 0xfe && tracks[1].sequence[0].code == 0xfe;
+    std::vector<u8> bad = bytes;
+    bad[0] = 'X';
+    const bool signature_reject_ok = !rcp3::inspect_header(bad.data(), bad.size(), err) &&
+        !err.empty();
+    std::vector<u8> no_end = { 60, 90, 0, 0, 1, 0 };
+    std::vector<rcp3::sequence_event> seq;
+    size_t consumed = 99;
+    const bool missing_end_reject_ok = !rcp3::parse_sequence(no_end.data(), no_end.size(),
+        seq, consumed, err) && seq.empty() && consumed == 0 && !err.empty();
+    std::vector<u8> partial = { 0xfe, 0, 0 };
+    const bool partial_reject_ok = !rcp3::parse_sequence(partial.data(), partial.size(),
+        seq, consumed, err) && seq.empty() && consumed == 0 && !err.empty();
+
+    const bool ok = header_ok && track_header_ok && tracks_ok &&
+        signature_reject_ok && missing_end_reject_ok && partial_reject_ok;
+    std::printf("RCP3.0/G36 構造解析: ヘッダー/トラック/FE終端 %s・重複IDトラック独立保持 %s・署名不一致拒否 %s・終端なし拒否 %s・6バイト途中切れ拒否 %s\n",
+        header_ok && track_header_ok && tracks_ok ? "合" : "NG",
+        tracks_ok ? "合" : "NG",
+        signature_reject_ok ? "合" : "NG",
+        missing_end_reject_ok ? "合" : "NG",
+        partial_reject_ok ? "合" : "NG");
+    (void)ok; // Result is also printed; global exit status is wired below.
+    rcp3_parser_test_ok = ok;
+}
+
 static void check_bend_thinner()
 {
 	ui::bend_thinner th;
@@ -2618,6 +2701,7 @@ int main(int argc, char **argv)
 	check_rcp_intermediate();
 	check_rcp2_e6_note_off_route();
 	check_rcp2_player_event_pipeline();
+	check_rcp3_parser();
 	check_font_parses();
 
 	// Roland の液晶のデータ（F0 41 10 45 12）だけを抜き、GS リセット（F0 41 10 42 12）と XG（F0 43）は通す
@@ -2633,5 +2717,5 @@ int main(int argc, char **argv)
 		th.event(0, xg, sizeof(xg), 0.0, send);
 		std::printf("Roland の液晶のデータを抜く: 抜いた %zu・通した %d（GS リセットと XG）\n", th.dropped(), passed);
 	}
-	return (rcp_mute_flags_test_ok && rcp_player_api_test_ok && rcp_loop_budget_test_ok && rcp_e6_note_off_route_test_ok) ? 0 : 1;
+	return (rcp_mute_flags_test_ok && rcp_player_api_test_ok && rcp_loop_budget_test_ok && rcp_e6_note_off_route_test_ok && rcp3_parser_test_ok) ? 0 : 1;
 }
