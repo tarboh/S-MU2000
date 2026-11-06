@@ -267,6 +267,7 @@ tresult PLUGIN_API plug_view::attached(void *parent, FIDString type)
 		return kResultFalse;
 	}
 	m_impl->panel.resize(m_w, m_h);
+	detect_scale();
 	engine::trace("view attached done", this);
 	return kResultOk;
 }
@@ -281,8 +282,8 @@ tresult PLUGIN_API plug_view::removed()
 	// Once per close, not on every step of a drag
 	if (m_resized) {
 		m_resized = false;
-		engine::trace("view width saved", this, m_w);
-		save_last_width(m_w);
+		engine::trace("view width saved", this, logical_w());
+		save_last_width(logical_w());
 	}
 	if (m_window) {
 		m_window->detach();
@@ -305,8 +306,35 @@ tresult PLUGIN_API plug_view::getSize(ViewRect *size)
 	if (!size)
 		return kInvalidArgument;
 	size->left = 0; size->top = 0;
-	size->right = m_w; size->bottom = m_h;
+	size->right = reported_width(); size->bottom = reported_height();
+	if (!m_scale_known) {
+		m_offered_w = reported_width();
+		m_first_on_w = 0;
+	}
 	return kResultOk;
+}
+
+int plug_view::logical_w() const
+{
+	return std::clamp(int(m_w / m_scale + 0.5), VIEW_W_MIN, VIEW_W_MAX);
+}
+int plug_view::reported_width() const  { return m_scale_known ? int(m_w / m_scale + 0.5) : m_w; }
+int plug_view::reported_height() const { return m_scale_known ? int(m_h / m_scale + 0.5) : m_h; }
+
+// 開いた直後の onSize の幅が、getSize で答えた幅のちょうど拡大率倍（2% 以内）なら、ホストは拡大率を掛ける側。
+// 答えた幅のままなら掛けない側。どちらも 1 度決めたらこの画面のあいだは変えない。ホストの窓が無いうち
+// （attached の前に onSize が来るホスト）は、attached で決める
+void plug_view::detect_scale()
+{
+	if (m_scale_known || !m_window || !m_offered_w || !m_first_on_w)
+		return;
+	const double s = m_window->host_scale();
+	const double r = double(m_first_on_w) / m_offered_w;
+	m_scale_known = true;
+	if (s > 1.01 && r > s * 0.98 && r < s * 1.02)
+		m_scale = s;
+	engine::trace("view scale (x1000: host, used)", this, (long long)(s * 1000 + 0.5), (long long)(m_scale * 1000 + 0.5));
+	m_engine.set_view_width(logical_w());
 }
 
 tresult PLUGIN_API plug_view::onSize(ViewRect *r)
@@ -318,11 +346,14 @@ tresult PLUGIN_API plug_view::onSize(ViewRect *r)
 	m_h = std::max<int32>(r->getHeight(), 180);
 	// Hosts also call this with the size they were just given, which is not
 	// the user resizing anything
+	if (!m_scale_known && m_offered_w && !m_first_on_w)
+		m_first_on_w = m_w;
+	detect_scale();
 	if (m_w != was) {
 		// 開くたびに大きくなる、という報告があった（issue #246）。ホストがどの幅を渡してきたかを残す
 		engine::trace("view onSize", this, was, m_w);
 		m_resized = true;
-		m_engine.set_view_width(m_w);
+		m_engine.set_view_width(logical_w());
 	}
 	if (m_window)
 		m_window->set_size(m_w, m_h);

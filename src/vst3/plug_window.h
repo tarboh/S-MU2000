@@ -100,6 +100,8 @@ public:
 	virtual bool attach(void *parent, int w, int h) = 0;
 	virtual void detach() = 0;
 	virtual void set_size(int w, int h) = 0;
+	// ホストの窓の拡大率（Windows: その窓の DPI / 96）。分からなければ 1
+	virtual double host_scale() const { return 1.0; }
 
 	// The SmartMedia menu, at a point inside the panel. A popup menu and a file
 	// dialog are native on both platforms, so the window builds them and calls
