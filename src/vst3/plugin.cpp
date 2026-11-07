@@ -1432,9 +1432,9 @@ factory g_factory;
 // ---- DLL の出口
 //
 // The entry points differ by platform: a Windows DLL is opened with
-// LoadLibrary and announces InitDll/ExitDll, while macOS loads the bundle with
-// CFBundle and looks for bundleEntry/bundleExit. Both still have to hand back
-// the same factory.
+// LoadLibrary and announces InitDll/ExitDll, macOS loads the bundle with
+// CFBundle and looks for bundleEntry/bundleExit, and Linux hosts dlopen the .so
+// and call ModuleEntry/ModuleExit. All still have to hand back the same factory.
 
 extern "C" {
 
@@ -1492,6 +1492,28 @@ SMTG_EXPORT_SYMBOL bool bundleEntry(CFBundleRef bundle)
 
 SMTG_EXPORT_SYMBOL bool bundleExit(void)
 {
+	smu2000::vst3::engine::park_all();
+	return true;
+}
+
+#else
+
+// Linux。SDK の決まりで、ホストは ModuleEntry が無い .so を VST3 と認めない（REAPER は一覧に
+// 出さない。issue #247）。引数は dlopen の手。ModuleExit は Windows の ExitDll と同じく、手放されずに
+// 残った本体のスレッドを止める
+SMTG_EXPORT_SYMBOL bool ModuleEntry(void *shared_library_handle);
+SMTG_EXPORT_SYMBOL bool ModuleExit(void);
+
+SMTG_EXPORT_SYMBOL bool ModuleEntry(void *shared_library_handle)
+{
+	(void)shared_library_handle;
+	smu2000::vst3::engine::trace("ModuleEntry");
+	return true;
+}
+
+SMTG_EXPORT_SYMBOL bool ModuleExit(void)
+{
+	smu2000::vst3::engine::trace("ModuleExit");
 	smu2000::vst3::engine::park_all();
 	return true;
 }
