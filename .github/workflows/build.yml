@@ -90,20 +90,18 @@ jobs:
           msystem: mingw64
           update: true
           install: mingw-w64-x86_64-toolchain mingw-w64-x86_64-make mingw-w64-x86_64-python make
-      # mingw-w64 の r532（MSYS2、2026-10-24）で、DLL（プラグイン）をリンクすると libmingwex の
-      # fesetenv が __mingw_fe_dfl_env を見つけられずに落ちる（#238）。exe は通る。上流で直るまで、
-      # 通っていた r495 の crt・headers・winpthreads に戻す。直ったらこの段を消す
-      - name: Pin mingw-w64 crt/headers/winpthreads to r495
-        run: |
-          base=https://repo.msys2.org/mingw/mingw64
-          pacman -U --noconfirm \
-            $base/mingw-w64-x86_64-crt-14.0.0.r495.g63ebe6cdb-1-any.pkg.tar.zst \
-            $base/mingw-w64-x86_64-headers-14.0.0.r495.g63ebe6cdb-1-any.pkg.tar.zst \
-            $base/mingw-w64-x86_64-winpthreads-14.0.0.r495.g63ebe6cdb-2-any.pkg.tar.zst
       - run: make check-audio-output
       - run: make check-audio-input
       - run: make check-fx
       - run: make -j$(nproc) all
+      # プラグインが Windows に読み込めるか。ビルドが通っても、読み込みの時点で断られる DLL が
+      # できることがある（2026-10、crt を r495 に戻した組み合わせ。#241・#246）
+      - name: Plug-ins load (no 32-bit pseudo relocations, VST3/CLAP probes)
+        run: |
+          python3 tools/check_pe_relocs.py build/S-MU2000.dll build/S-MU2000.clap \
+            build/S-MU2000.vst3/Contents/x86_64-win/S-MU2000.vst3 build/gui.exe
+          build/vst3probe.exe build/S-MU2000.vst3/Contents/x86_64-win/S-MU2000.vst3 --load
+          build/clapprobe.exe build/S-MU2000.clap --load
       - run: make check-settings
       - run: python3 tools/check_texts.py
       - run: make test
@@ -171,14 +169,4 @@ jobs:
           update: true
           # mingw-w64-i686-make は MSYS2 の 32bit の配布から外された（2026-10-25）。使うのは MSYS の make
           install: mingw-w64-i686-toolchain mingw-w64-i686-python make
-      # mingw-w64 の r532（MSYS2、2026-10-24）で、DLL（プラグイン）をリンクすると libmingwex の
-      # fesetenv が __mingw_fe_dfl_env を見つけられずに落ちる（#238）。exe は通る。上流で直るまで、
-      # 通っていた r495 の crt・headers・winpthreads に戻す。直ったらこの段を消す
-      - name: Pin mingw-w64 crt/headers/winpthreads to r495
-        run: |
-          base=https://repo.msys2.org/mingw/mingw32
-          pacman -U --noconfirm \
-            $base/mingw-w64-i686-crt-14.0.0.r495.g63ebe6cdb-1-any.pkg.tar.zst \
-            $base/mingw-w64-i686-headers-14.0.0.r495.g63ebe6cdb-1-any.pkg.tar.zst \
-            $base/mingw-w64-i686-winpthreads-14.0.0.r495.g63ebe6cdb-2-any.pkg.tar.zst
       - run: make -j$(nproc) all
