@@ -1275,6 +1275,7 @@ int main(int argc, char **argv)
 	bool data_midi = false;  // VSTHost のまね。チャンネルメッセージも DataEvent で渡す
 	bool restart = false;    // DAW の「止めて再生」のまね（流す直前に setProcessing を切り入れする）
 	bool automation = false;
+	bool load_only = false;  // --load: 作って起動して止めるだけ。ROM が無くても通る（CI 用。#241・#246）
 	int  view_seconds = 0;
 	// ホストが保存した状態を戻してから鳴らす（issue #51。foobar2000 の foo_midi は
 	// 起動中のプラグインに状態を戻してから、すぐ曲頭を流す）
@@ -1291,6 +1292,7 @@ int main(int argc, char **argv)
 		else if (!std::strcmp(argv[i], "--data-midi")) data_midi = true;
 		else if (!std::strcmp(argv[i], "--restart")) restart = true;
 		else if (!std::strcmp(argv[i], "--automation")) automation = true;
+		else if (!std::strcmp(argv[i], "--load")) load_only = true;
 		else if (!std::strcmp(argv[i], "--state") && i + 1 < argc) state_in = argv[++i];
 		else if (!std::strcmp(argv[i], "--save-state") && i + 1 < argc) state_out = argv[++i];
 		else if (!std::strcmp(argv[i], "--view")) view_seconds =
@@ -1489,6 +1491,18 @@ int main(int argc, char **argv)
 		if (map)  map->release();
 		comp->release();
 		return rc;
+	}
+
+	if (load_only) {
+		proc->setProcessing(false);
+		comp->setActive(false);
+		comp->terminate();
+		if (proc) proc->release();
+		if (ctrl) ctrl->release();
+		if (map)  map->release();
+		comp->release();
+		std::printf("OK: 読み込んで作り、起動して止められた\n");
+		return 0;
 	}
 
 	if (automation) {

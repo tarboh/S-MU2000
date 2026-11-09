@@ -359,7 +359,9 @@ int run_automation(const clap_plugin_factory_t *fac, const char *id)
 int main(int argc, char **argv)
 {
 	smu2000::init_console_utf8();
-	if (argc == 3 && !std::strcmp(argv[2], "--automation")) {
+	// --load: 読み込んで 1 つ作って捨てるだけ。ROM が無くても通るので、CI で出来た DLL を確かめられる
+	// （2026-10 に、Windows が読み込みの時点で断る DLL をリリースしてしまった。#241・#246）
+	if (argc == 3 && (!std::strcmp(argv[2], "--automation") || !std::strcmp(argv[2], "--load"))) {
 		std::setvbuf(stdout, nullptr, _IONBF, 0);
 #if defined(_WIN32)
 		HMODULE mod = LoadLibraryA(argv[1]);
@@ -370,7 +372,18 @@ int main(int argc, char **argv)
 #endif
 		if (!entry || !entry->init(argv[1])) { std::fprintf(stderr, "clap_entry が無い\n"); return 1; }
 		const auto *fac = static_cast<const clap_plugin_factory_t *>(entry->get_factory(CLAP_PLUGIN_FACTORY_ID));
-		const int rc = run_automation(fac, fac->get_plugin_descriptor(fac, 0)->id);
+		if (!fac || fac->get_plugin_count(fac) == 0) { std::fprintf(stderr, "工場が空\n"); return 1; }
+		const char *id = fac->get_plugin_descriptor(fac, 0)->id;
+		if (!std::strcmp(argv[2], "--load")) {
+			const clap_plugin_t *p = fac->create_plugin(fac, &kHost, id);
+			const bool ok = p && p->init(p);
+			if (p)
+				p->destroy(p);
+			entry->deinit();
+			std::printf(ok ? "OK: %s を読み込んで作れた\n" : "NG: %s を作れない\n", id);
+			return ok ? 0 : 1;
+		}
+		const int rc = run_automation(fac, id);
 		entry->deinit();
 		return rc;
 	}

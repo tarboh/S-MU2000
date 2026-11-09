@@ -71,17 +71,16 @@ jobs:
           msystem: mingw64
           update: true
           install: mingw-w64-x86_64-toolchain mingw-w64-x86_64-make mingw-w64-x86_64-python make
-      # build.yml と同じ: mingw-w64 r532 で DLL のリンクが落ちるので、直るまで r495 に戻す（#238）
-      - name: Pin mingw-w64 crt/headers/winpthreads to r495
-        run: |
-          base=https://repo.msys2.org/mingw/mingw64
-          pacman -U --noconfirm \
-            $base/mingw-w64-x86_64-crt-14.0.0.r495.g63ebe6cdb-1-any.pkg.tar.zst \
-            $base/mingw-w64-x86_64-headers-14.0.0.r495.g63ebe6cdb-1-any.pkg.tar.zst \
-            $base/mingw-w64-x86_64-winpthreads-14.0.0.r495.g63ebe6cdb-2-any.pkg.tar.zst
       - run: make -j$(nproc) all
       - run: make test
       - run: bash scripts/package-windows.sh build dist-windows
+      # 配る物そのものが Windows に読み込めるか（build.yml と同じ検査。#241・#246）
+      - name: Packaged plug-ins load
+        run: |
+          python3 tools/check_pe_relocs.py dist-windows/plugins/S-MU2000.dll dist-windows/plugins/S-MU2000.clap \
+            dist-windows/plugins/S-MU2000.vst3/Contents/x86_64-win/S-MU2000.vst3 dist-windows/bin/gui.exe
+          build/vst3probe.exe dist-windows/plugins/S-MU2000.vst3/Contents/x86_64-win/S-MU2000.vst3 --load
+          build/clapprobe.exe dist-windows/plugins/S-MU2000.clap --load
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4 pinned
         with:
           name: dist-windows
