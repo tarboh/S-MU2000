@@ -381,6 +381,8 @@ inline const ui_texts &ja_texts()
 		.fxe_noeffect = "NO EFFECT（種類を選ぶと、ここにつまみが並ぶ）",
 		.fxe_thru = "THRU（パラメータは無い）",
 		.fxe_no_table = "この種類のパラメータの表はまだ無い",
+		.fxe_link_ad = "AD1/AD2 をリンク",
+		.fxe_link_ad_tip_fmt = "ここでの変更を、もう片方の A/D 入力に掛かっている INS %d にも送る。種類もつまみの値も両方で同じになる。オンにしたときに 1 度、このエフェクトを INS %d へ写す。AD のパートのパンは一覧で好みに（ステレオの音なら左右に振り切る）",
 		.me_sys = "システム",
 		.me_tune_note = "チューンは 0.1 セントの目盛り、\n移調は半音",
 		.me_fx = "システムエフェクト",

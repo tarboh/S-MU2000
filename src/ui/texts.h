@@ -456,6 +456,8 @@ struct ui_texts {
 	const char *fxe_noeffect;
 	const char *fxe_thru;
 	const char *fxe_no_table;
+	const char *fxe_link_ad;
+	const char *fxe_link_ad_tip_fmt;  // %d %d: the partner INS number, twice
 	// Master editor (master_editor.cpp).
 	const char *me_sys;
 	const char *me_tune_note;        // may contain \n
