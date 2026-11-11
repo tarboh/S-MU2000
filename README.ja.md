@@ -242,6 +242,8 @@ make install-vsti   VSTI_INSTALL（既定は Program Files/VstPlugins）へ複�
 
 **macOS**（Apple silicon）では VST3 と Audio Unit（AUv2、`aumu`）が作れる。
 `make` で道具と両方のバンドルができる。くわしくは [doc/porting-macos.md](doc/porting-macos.md)。
+配布物（Apple silicon と Intel の両方）は **macOS 11 Big Sur 以降** が要る。10.14 Mojave などの
+古い版では、プラグインもアプリも読み込めない（#206）。
 
 ## スタンドアロンの設定
 
