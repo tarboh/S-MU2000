@@ -243,6 +243,8 @@ write `usb=0` in `%LOCALAPPDATA%\S-MU2000\plugin.ini`.
 
 **macOS** (Apple silicon) can build VST3 and Audio Unit (AUv2, `aumu`).
 `make` builds the tools and both bundles. Details: [doc/porting-macos.md](doc/porting-macos.md).
+The release (Apple silicon and Intel) needs **macOS 11 Big Sur or later**. On older versions,
+such as 10.14 Mojave, the plug-ins and the app don't load (#206).
 
 ## Standalone settings
 
