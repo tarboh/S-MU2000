@@ -736,7 +736,8 @@ $(BUILD)/gui$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/smf.o \
 #
 # Steinberg's SDK is not used, only the MIT interface headers in
 # third_party/vst3. The bundle holds an ELF .so at Contents/x86_64-linux/;
-# hosts dlopen it and call GetPluginFactory directly (no InitDll, no CFBundle).
+# hosts dlopen it, call ModuleEntry, then GetPluginFactory (no InitDll, no
+# CFBundle). A .so without ModuleEntry/ModuleExit is skipped (issue #247).
 
 VST3_DIR  := $(BUILD)/S-MU2000.vst3
 VST3_BIN  := $(VST3_DIR)/Contents/x86_64-linux/S-MU2000.so

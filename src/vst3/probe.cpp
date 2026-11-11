@@ -1390,11 +1390,23 @@ int main(int argc, char **argv)
 		CFBundleGetFunctionPointerForName(bundle, CFSTR("GetPluginFactory")));
 #elif defined(__linux__)
 	// Linux: the argument is the ELF .so itself (bundle Contents/x86_64-linux).
-	// Hosts dlopen it and call GetPluginFactory directly; no InitDll.
+	// Hosts dlopen it and call ModuleEntry with the handle before anything else;
+	// a module without it is not a VST3 to them (REAPER drops it, issue #247)
 	dl_mod = dlopen(dll.c_str(), RTLD_NOW);
 	if (!dl_mod) {
 		std::fprintf(stderr, "読めない: %s (%s)\n", dll.c_str(), dlerror());
 		return 1;
+	}
+	{
+		auto entry = reinterpret_cast<bool (*)(void *)>(dlsym(dl_mod, "ModuleEntry"));
+		if (!entry || !dlsym(dl_mod, "ModuleExit")) {
+			std::fprintf(stderr, "ModuleEntry / ModuleExit が無い（Linux のホストは読まない）\n");
+			return 1;
+		}
+		if (!entry(dl_mod)) {
+			std::fprintf(stderr, "ModuleEntry が失敗した\n");
+			return 1;
+		}
 	}
 	getf = reinterpret_cast<IPluginFactory *(PLUGIN_API *)()>(
 		dlsym(dl_mod, "GetPluginFactory"));
@@ -1583,6 +1595,8 @@ int main(int argc, char **argv)
 		bool (*exit_dll)() = nullptr;
 #if defined(_WIN32)
 		exit_dll = reinterpret_cast<bool (*)()>(GetProcAddress(lib, "ExitDll"));
+#elif defined(__linux__)
+		exit_dll = reinterpret_cast<bool (*)()>(dlsym(dl_mod, "ModuleExit"));
 #endif
 		const int r = run_fl(fac, cid, rate, block, exit_dll);
 #if defined(_WIN32)

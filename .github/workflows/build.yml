@@ -75,6 +75,12 @@ jobs:
           export PKG_CONFIG_PATH="$HOME/sdl3/lib/pkgconfig:$HOME/sdl3/lib/x86_64-linux-gnu/pkgconfig"
           export LD_LIBRARY_PATH="$HOME/sdl3/lib:$HOME/sdl3/lib/x86_64-linux-gnu"
           SDL_VIDEODRIVER=dummy make test
+      # Linux hosts skip a VST3 that does not export these (issue #247)
+      - run: |
+          so=build-linux/S-MU2000.vst3/Contents/x86_64-linux/S-MU2000.so
+          for f in GetPluginFactory ModuleEntry ModuleExit; do
+            nm -D --defined-only "$so" | grep -qw "$f" || { echo "missing export: $f"; exit 1; }
+          done
 
   windows:
     # The owner's own setup (MSYS2 mingw64): native build, texts, and the
