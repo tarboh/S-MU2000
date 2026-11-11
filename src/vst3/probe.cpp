@@ -727,6 +727,51 @@ int run_fl(IPluginFactory *fac, const TUID cid, double rate, int block, bool (*e
 			bad++;
 	}
 
+	// 0c. 拡大率を掛けるホストのまね（issue #246。Windows の Cubase・REAPER は 150% の画面で getSize の 1.5 倍の
+	//     窓を作り、onSize でその大きさを渡してくる）。開いて閉じるのを 3 回くり返しても、答える幅が増えないこと
+#if defined(_WIN32)
+	{
+		_putenv("S_MU2000_TEST_HOST_SCALE=1.5");
+		instance in;
+		if (!make_instance(fac, cid, in)) { std::printf("NG: 作れない\n"); return 1; }
+		start_instance(in, rate, block);
+		int got[3] = {};
+		bool ok = true;
+		for (int round = 0; ok && round < 3; round++) {
+			IPlugView *view = in.ctrl->createView(ViewType::kEditor);
+			std::unique_ptr<probe_host> host(probe_host_create());
+			ViewRect vr{};
+			ok = view && view->getSize(&vr) == kResultOk;
+			if (!ok)
+				break;
+			got[round] = vr.getWidth();
+			ViewRect big(0, 0, int(vr.getWidth() * 1.5 + 0.5), int(vr.getHeight() * 1.5 + 0.5));
+			ok = host->create(big.getWidth(), big.getHeight()) && host->attach(view);
+			if (ok) {
+				view->onSize(&big);
+				host->show();
+				host->pump(1);
+				view->removed();
+			}
+			host->destroy();
+			view->release();
+		}
+		ok = ok && got[0] == got[1] && got[1] == got[2];
+		in.proc->setProcessing(false);
+		in.comp->setActive(false);
+		in.comp->terminate();
+		in.ctrl->terminate();
+		in.proc->release();
+		in.ctrl->release();
+		in.comp->release();
+		_putenv("S_MU2000_TEST_HOST_SCALE=");
+		std::printf("%s: 拡大率 1.5 を掛けるホストで開き直しても幅が増えない（%d → %d → %d）\n",
+		            ok ? "OK" : "NG", got[0], got[1], got[2]);
+		if (!ok)
+			bad++;
+	}
+#endif
+
 	// 1. 挿して画面を出し、外す。親の窓を先に壊し、terminate の後で受け口を片付けてから手放す
 	{
 		instance in;

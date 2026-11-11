@@ -78,6 +78,9 @@ public:
 	// already inside a frame: dl is the background draw list to paint into.
 	int  width() const { return m_w; }
 	int  height() const { return m_h; }
+	// ホストへ答える大きさ（getSize・CLAP の get_size）。拡大率を掛けるホストには、割り戻した値
+	int  reported_width() const;
+	int  reported_height() const;
 	// 開く前の大きさ（VST2 は窓を作る前に聞いてくる）。1000 × (400 + 上の帯)
 	static int default_width();
 	static int default_height();
@@ -137,6 +140,16 @@ private:
 	// The host resized the editor while it was open: the width is written
 	// to the settings folder when the window goes (view.cpp, last_width)
 	bool m_resized = false;
+	// ホストが getSize の大きさに画面の拡大率を掛けて窓を作るか（issue #246）。Windows の Cubase・REAPER は、
+	// 150% の画面で 1500 と答えると 2250 の窓を作り、onSize で 2250 を渡してくる。それをそのまま覚えると、
+	// 次に開くときまた 1.5 倍される。開いた直後の onSize が、答えた幅のちょうど拡大率倍なら、そのホストは
+	// 掛ける側だと見て、m_scale で割った幅を答え・覚える。掛けないホストでは 1 のまま
+	double m_scale = 1.0;
+	bool m_scale_known = false;
+	int m_offered_w = 0;                    // getSize で最後に答えた幅
+	int m_first_on_w = 0;                   // その後、最初に onSize で来た幅
+	void detect_scale();
+	int logical_w() const;
 	Steinberg::int32 m_refs = 1;
 	Steinberg::IPlugFrame *m_frame = nullptr;
 };
