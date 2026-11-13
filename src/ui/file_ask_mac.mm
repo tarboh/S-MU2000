@@ -150,7 +150,7 @@ void service_file_asks()
 		// Many at once, and paths rather than bytes: the player keeps a list and
 		// re-reads a song whenever it comes back to it.
 		std::vector<std::string> paths = open_files(UI_TEXT(dlg_midi_desc, "MIDI files"),
-		                                            { "mid", "midi", "smf", "rcp", "r36", "g36" }, true);
+		                                            { "mid", "midi", "smf", "rcp", "r36", "g18", "g36" }, true);
 		if (!paths.empty())
 			xgui::give_opened_midi(std::move(paths));
 		return;

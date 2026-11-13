@@ -291,7 +291,7 @@ void service_file_asks(UIView *view)
 		// RCP-family files are MIDI inputs too, but iOS does not identify their
 		// extensions as UTTypeMIDI. Add their filename-derived types explicitly.
 		NSMutableArray<UTType *> *midiTypes = [NSMutableArray arrayWithObject:UTTypeMIDI];
-		for (NSString *ext in @[ @"rcp", @"r36", @"g36" ]) {
+		for (NSString *ext in @[ @"rcp", @"r36", @"g18", @"g36" ]) {
 			UTType *type = [UTType typeWithFilenameExtension:ext];
 			if (type)
 				[midiTypes addObject:type];
