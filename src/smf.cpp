@@ -71,7 +71,7 @@ u16 be16(const u8 *p) { return u16((p[0] << 8) | p[1]); }
 
 // 曲名を UTF-8 に。UTF-8 として読めればそのまま。読めなければ Windows は Shift_JIS（日本の曲に多い）から直し、
 // ほかは空にする（画面は UTF-8 しか出せない。空ならファイル名を出す）
-std::string title_text(const std::string &raw)
+std::string normalize_title_text(const std::string &raw)
 {
 	bool utf8 = true;
 	for (size_t i = 0; i < raw.size() && utf8;) {
@@ -104,6 +104,11 @@ std::string title_text(const std::string &raw)
 	return std::string();
 }
 } // namespace
+
+std::string title_text(const std::string &raw)
+{
+	return normalize_title_text(raw);
+}
 
 void song_meta::bar_beat(double sec, int &bar, int &beat, double &bpm) const
 {
