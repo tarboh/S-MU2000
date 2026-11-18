@@ -146,7 +146,8 @@ using smu2000::vst3::midi_length;
 class mu_plugin
 {
 public:
-	explicit mu_plugin(const clap_host_t *host, bool fx = false) : m_host(host), m_fx(fx)
+	explicit mu_plugin(const clap_host_t *host, bool fx = false)
+		: m_host(host), m_fx(fx), m_fold_reaper_broadcast(host && host->name && std::strcmp(host->name, "REAPER") == 0)
 	{
 		m_plugin.desc = m_fx ? &kFxDescriptor : &kDescriptor;
 		if (m_fx)
@@ -559,6 +560,7 @@ private:
 	clap_plugin_t          m_plugin{};
 	const clap_host_t     *m_host = nullptr;
 	const bool             m_fx = false;        // エフェクトとして作られた（kFxPlugId）
+	const bool             m_fold_reaper_broadcast;
 	const clap_host_params_t *m_host_params = nullptr;
 	engine                 m_engine;
 	autom::host            m_xg{m_engine};
@@ -933,10 +935,12 @@ clap_process_status mu_plugin::process(const clap_process_t *pr)
 		// ホストによっては SysEx をチャンネルメッセージの後ろにまとめて渡してくる
 		const uint32_t count = ev->size(ev);
 		m_order.clear();
-		mark_broadcast(ev, count, n);
+		// Fold the REAPER fan-out from #59. Other hosts can intentionally layer the same note on separate ports.
+		if (m_fold_reaper_broadcast)
+			mark_broadcast(ev, count, n);
 		for (uint32_t i = 0; i < count; i++) {
 			const clap_event_header_t *h = ev->get(ev, i);
-			if (!h || h->space_id != CLAP_CORE_EVENT_SPACE_ID || m_drop[i])
+			if (!h || h->space_id != CLAP_CORE_EVENT_SPACE_ID || (m_fold_reaper_broadcast && m_drop[i]))
 				continue;
 			bool reset = false;
 			if (h->type == CLAP_EVENT_MIDI_SYSEX) {

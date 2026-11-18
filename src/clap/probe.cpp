@@ -431,7 +431,10 @@ int main(int argc, char **argv)
 	if (fx && fac->get_plugin_count(fac) < 2) { std::fprintf(stderr, "エフェクトとしての口が無い\n"); return 1; }
 	const clap_plugin_descriptor_t *desc = fac->get_plugin_descriptor(fac, fx ? 1 : 0);
 	std::printf("%s（%s）\n", desc->name, desc->id);
-	const clap_plugin_t *plug = fac->create_plugin(fac, &kHost, desc->id);
+	clap_host_t host = kHost;
+	if (broadcast)
+		host.name = "REAPER";
+	const clap_plugin_t *plug = fac->create_plugin(fac, &host, desc->id);
 	if (!plug || !plug->init(plug)) { std::fprintf(stderr, "作れない\n"); return 1; }
 	if (const auto *ports = static_cast<const clap_plugin_audio_ports_t *>(plug->get_extension(plug, CLAP_EXT_AUDIO_PORTS))) {
 		clap_audio_port_info_t info{};
