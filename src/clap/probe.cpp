@@ -388,7 +388,7 @@ int main(int argc, char **argv)
 		return rc;
 	}
 	if (argc < 4) {
-		std::fprintf(stderr, "使い方: clapprobe <S-MU2000.clap> <MIDI> <出力 wav> [--rate 48000] [--block 512] [--adc-silence] [--sysex-last] [--broadcast]\n");
+		std::fprintf(stderr, "使い方: clapprobe <S-MU2000.clap> <MIDI> <出力 wav> [--rate 48000] [--block 512] [--adc-silence] [--sysex-last] [--broadcast] [--host-name 名前 | --null-host-name]\n");
 		return 1;
 	}
 	const std::string dll = argv[1], mid = argv[2], wav = argv[3];
@@ -404,6 +404,8 @@ int main(int argc, char **argv)
 	bool sysex_last = false;
 	// どのイベントも 4 つの口すべてへ同じものを配る（issue #59。REAPER のまね）
 	bool broadcast = false;
+	const char *host_name = kHost.name;
+	bool custom_host_name = false;
 	for (int i = 4; i < argc; i++) {
 		if (!std::strcmp(argv[i], "--rate") && i + 1 < argc) rate = std::atof(argv[++i]);
 		else if (!std::strcmp(argv[i], "--block") && i + 1 < argc) block = std::atoi(argv[++i]);
@@ -413,6 +415,14 @@ int main(int argc, char **argv)
 		else if (!std::strcmp(argv[i], "--clap-notes")) clap_notes = true;
 		else if (!std::strcmp(argv[i], "--sysex-last")) sysex_last = true;
 		else if (!std::strcmp(argv[i], "--broadcast")) broadcast = true;
+		else if (!std::strcmp(argv[i], "--host-name") && i + 1 < argc) {
+			host_name = argv[++i];
+			custom_host_name = true;
+		}
+		else if (!std::strcmp(argv[i], "--null-host-name")) {
+			host_name = nullptr;
+			custom_host_name = true;
+		}
 	}
 
 #if defined(_WIN32)
@@ -431,7 +441,9 @@ int main(int argc, char **argv)
 	if (fx && fac->get_plugin_count(fac) < 2) { std::fprintf(stderr, "エフェクトとしての口が無い\n"); return 1; }
 	const clap_plugin_descriptor_t *desc = fac->get_plugin_descriptor(fac, fx ? 1 : 0);
 	std::printf("%s（%s）\n", desc->name, desc->id);
-	const clap_plugin_t *plug = fac->create_plugin(fac, &kHost, desc->id);
+	clap_host_t host = kHost;
+	host.name = broadcast && !custom_host_name ? "REAPER" : host_name;
+	const clap_plugin_t *plug = fac->create_plugin(fac, &host, desc->id);
 	if (!plug || !plug->init(plug)) { std::fprintf(stderr, "作れない\n"); return 1; }
 	if (const auto *ports = static_cast<const clap_plugin_audio_ports_t *>(plug->get_extension(plug, CLAP_EXT_AUDIO_PORTS))) {
 		clap_audio_port_info_t info{};

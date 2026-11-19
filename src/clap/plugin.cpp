@@ -140,13 +140,35 @@ bool read_all(const clap_istream_t *s, void *p, size_t n)
 // MIDI 1 メッセージの長さ（smu2000::vst3::midi_length）は VST3 版と同じものを使う
 using smu2000::vst3::midi_length;
 
+bool is_reaper(const char *name)
+{
+	if (!name)
+		return false;
+	const auto lower = [](char c) { return c >= 'A' && c <= 'Z' ? char(c + ('a' - 'A')) : c; };
+	const auto is_alnum = [&](char c) { return (lower(c) >= 'a' && lower(c) <= 'z') || (c >= '0' && c <= '9'); };
+	for (const char *word = name; *word; ++word) {
+		if (word != name && is_alnum(word[-1]))
+			continue;
+		const char *p = word;
+		const char *expected = "reaper";
+		while (*expected && lower(*p) == *expected) {
+			++p;
+			++expected;
+		}
+		if (!*expected && !is_alnum(*p))
+			return true;
+	}
+	return false;
+}
+
 
 // ---- 本体
 
 class mu_plugin
 {
 public:
-	explicit mu_plugin(const clap_host_t *host, bool fx = false) : m_host(host), m_fx(fx)
+	explicit mu_plugin(const clap_host_t *host, bool fx = false)
+		: m_host(host), m_fx(fx), m_fold_reaper_broadcast(is_reaper(host ? host->name : nullptr))
 	{
 		m_plugin.desc = m_fx ? &kFxDescriptor : &kDescriptor;
 		if (m_fx)
@@ -192,6 +214,7 @@ private:
 		// ROM 読みと起動（音にして 4 秒ぶんの空回し）は時間がかかるので、
 		// ここでは走らせるだけ。終わるまでは無音を返す
 		m_engine.start();
+		m_engine.log_line((std::string("CLAP ホスト名: ") + (m_host->name ? m_host->name : "(なし)")).c_str());
 		return true;
 	}
 
@@ -559,6 +582,7 @@ private:
 	clap_plugin_t          m_plugin{};
 	const clap_host_t     *m_host = nullptr;
 	const bool             m_fx = false;        // エフェクトとして作られた（kFxPlugId）
+	const bool             m_fold_reaper_broadcast;
 	const clap_host_params_t *m_host_params = nullptr;
 	engine                 m_engine;
 	autom::host            m_xg{m_engine};
@@ -612,12 +636,13 @@ private:
 	struct ordered { uint32_t time, rank, index; };
 	std::vector<ordered> m_order;
 
-	// **全部の口に配られた同じメッセージは、口 A の 1 つだけ使う**（issue #59）。
+	// REAPER に限り、**全部の口に配られた同じメッセージは、口 A の 1 つだけ使う**（issue #59）。
 	// REAPER は CLAP のノートの口を 4 つ持つプラグインに、トラックの MIDI を
 	// 4 つの口すべてへ同じものとして配る（ログで確かめた: 1 音で A・B・C・D に 6 件ずつ）。
 	// そのままでは口 B-D のパート（初期のピアノ）も鳴って、音色が重なって聞こえる。
 	// 同じ時刻・同じ中身のものが**4 つの口すべて**に来たときだけ口 A に寄せるので、
-	// 口ごとに違うものを渡すホストや、2-3 口に重ねる使い方はそのまま
+	// REAPER でも 2–3 口への重ね打ちはそのまま。ほかのホストでは、独立した口への
+	// 同時刻・同内容のメッセージもすべて通す（issue #258）。
 	struct bcast { uint64_t key; uint32_t index; uint8_t port; };
 	std::vector<bcast>   m_bcast;
 	std::vector<uint8_t> m_drop;
@@ -933,10 +958,12 @@ clap_process_status mu_plugin::process(const clap_process_t *pr)
 		// ホストによっては SysEx をチャンネルメッセージの後ろにまとめて渡してくる
 		const uint32_t count = ev->size(ev);
 		m_order.clear();
-		mark_broadcast(ev, count, n);
+		// #59 の REAPER の同報だけを畳む。ほかのホストでは別々の口に同じノートを同時に重ねられる（#258）。
+		if (m_fold_reaper_broadcast)
+			mark_broadcast(ev, count, n);
 		for (uint32_t i = 0; i < count; i++) {
 			const clap_event_header_t *h = ev->get(ev, i);
-			if (!h || h->space_id != CLAP_CORE_EVENT_SPACE_ID || m_drop[i])
+			if (!h || h->space_id != CLAP_CORE_EVENT_SPACE_ID || (m_fold_reaper_broadcast && m_drop[i]))
 				continue;
 			bool reset = false;
 			if (h->type == CLAP_EVENT_MIDI_SYSEX) {
