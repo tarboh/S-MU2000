@@ -452,11 +452,12 @@ bool pc_window::create(std::string &err)
 	// ways), the way the desktop front ends go through the OS clipboard. The
 	// get buffer is static: ImGui uses the pointer only synchronously, and
 	// every editor context runs on the main thread.
-	io.SetClipboardTextFn = [](void *, const char *text) {
+	ImGuiPlatformIO &platform_io = ImGui::GetPlatformIO();
+	platform_io.Platform_SetClipboardTextFn = [](ImGuiContext *, const char *text) {
 		if (text)
 			[UIPasteboard generalPasteboard].string = [NSString stringWithUTF8String:text];
 	};
-	io.GetClipboardTextFn = [](void *) -> const char * {
+	platform_io.Platform_GetClipboardTextFn = [](ImGuiContext *) -> const char * {
 		static std::string buf;
 		NSString *s = [UIPasteboard generalPasteboard].string;
 		buf = s ? [s UTF8String] : "";
